@@ -13,6 +13,10 @@ pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side) {
     spawn_unit(commands, lib, side, UnitKind::Miner);
 }
 
+pub fn spawn_archer(commands: &mut Commands, lib: &MatLibrary, side: Side) {
+    spawn_unit(commands, lib, side, UnitKind::Archer);
+}
+
 fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitKind) {
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
@@ -32,6 +36,13 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
             0,
             MINER_SPEED,
             MINER_COOLDOWN,
+        ),
+        UnitKind::Archer => (
+            base_x + side.forward() * ARCHER_SPAWN_OFFSET,
+            ARCHER_HP,
+            ARCHER_DAMAGE,
+            ARCHER_SPEED,
+            ARCHER_COOLDOWN,
         ),
     };
     let z = (rand_jitter() - 0.5) * SPAWN_Z_JITTER * 2.0;
@@ -74,12 +85,6 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
         &dark_mat,
     );
 
-    // Weapon attaches to the right arm pivot so it follows the swing.
-    match kind {
-        UnitKind::Soldier => attach_spear(commands, arm_right, lib),
-        UnitKind::Miner => attach_pickaxe(commands, arm_right, lib),
-    }
-
     let bob = commands
         .spawn((
             Transform::from_xyz(0.0, BOB_BASE_Y, 0.0),
@@ -113,6 +118,15 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
 
     commands.entity(bob).add_children(&[arm_left, arm_right]);
 
+    // Weapon attachment. The archer's bow is parented to the left arm; the
+    // left arm's rotation is overridden in animate_units to keep it raised
+    // forward (holding the bow at chest height).
+    match kind {
+        UnitKind::Soldier => attach_spear(commands, arm_right, lib),
+        UnitKind::Miner => attach_pickaxe(commands, arm_right, lib),
+        UnitKind::Archer => attach_bow_and_arrow(commands, arm_left, arm_right, lib),
+    }
+
     commands
         .spawn((
             Transform {
@@ -142,7 +156,7 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
 
 fn unit_base_rotation(side: Side, kind: UnitKind) -> Quat {
     let face_forward_world = match kind {
-        UnitKind::Soldier => side.forward(),
+        UnitKind::Soldier | UnitKind::Archer => side.forward(),
         UnitKind::Miner => -side.forward(),
     };
     if face_forward_world > 0.0 {
@@ -199,18 +213,24 @@ fn attach_spear(commands: &mut Commands, arm: Entity, lib: &MatLibrary) {
 }
 
 fn attach_pickaxe(commands: &mut Commands, arm: Entity, lib: &MatLibrary) {
-    // Pickaxe is held with handle vertical (Y-aligned, head up). When the arm
-    // swings forward, the head arcs forward and down — looks like a mining strike.
+    // Pickaxe held by the hand: pivot at the hand, tilted 30° forward so the
+    // handle clears the arm cylinder instead of intersecting it. Head sits
+    // forward-and-up at the top of the handle.
     let pick = commands
-        .spawn((Transform::from_xyz(0.0, -0.36, 0.0), Visibility::default()))
+        .spawn((
+            Transform {
+                translation: Vec3::new(0.0, -0.36, 0.0),
+                rotation: Quat::from_rotation_z(-0.55),
+                scale: Vec3::ONE,
+            },
+            Visibility::default(),
+        ))
         .with_children(|p| {
-            // Handle, extending up from the hand.
             p.spawn((
                 Mesh3d(lib.pickaxe_handle.clone()),
                 MeshMaterial3d(lib.wood_mat.clone()),
                 Transform::from_xyz(0.0, 0.27, 0.0),
             ));
-            // Head, perpendicular at the top of the handle.
             p.spawn((
                 Mesh3d(lib.pickaxe_head.clone()),
                 MeshMaterial3d(lib.metal_mat.clone()),
@@ -219,6 +239,93 @@ fn attach_pickaxe(commands: &mut Commands, arm: Entity, lib: &MatLibrary) {
         })
         .id();
     commands.entity(arm).add_children(&[pick]);
+}
+
+fn attach_bow_and_arrow(
+    commands: &mut Commands,
+    arm_left: Entity,
+    arm_right: Entity,
+    lib: &MatLibrary,
+) {
+    // Bow: attached to the left arm at the hand. The left arm is held raised
+    // forward (animate_units overrides it to +π/2 around Z for archers), which
+    // brings the hand up to chest height in front of the body. The bow has a
+    // -π/2 rotation that cancels the arm rotation, so its internal D-shape
+    // stays in the world XY plane (visible to the 3/4 camera) regardless.
+    let bow = commands
+        .spawn((
+            Transform {
+                translation: Vec3::new(0.0, -0.36, 0.0),
+                rotation: Quat::from_rotation_z(-FRAC_PI_2),
+                scale: Vec3::ONE,
+            },
+            Visibility::default(),
+        ))
+        .with_children(|b| {
+            let arc: [((f32, f32), (f32, f32)); 4] = [
+                ((0.0, 0.30), (0.09, 0.18)),
+                ((0.09, 0.18), (0.13, 0.0)),
+                ((0.13, 0.0), (0.09, -0.18)),
+                ((0.09, -0.18), (0.0, -0.30)),
+            ];
+            for (start, end) in arc {
+                let a = Vec3::new(start.0, start.1, 0.0);
+                let c = Vec3::new(end.0, end.1, 0.0);
+                let mid = (a + c) * 0.5;
+                let dir = c - a;
+                let length = dir.length();
+                let rotation = Quat::from_rotation_arc(Vec3::Y, dir.normalize());
+                b.spawn((
+                    Mesh3d(lib.bow_limb.clone()),
+                    MeshMaterial3d(lib.wood_mat.clone()),
+                    Transform {
+                        translation: mid,
+                        rotation,
+                        scale: Vec3::new(1.0, length / 0.36, 1.0),
+                    },
+                ));
+            }
+            // Bowstring: straight vertical chord on the back side of the arc.
+            b.spawn((
+                Mesh3d(lib.bow_string.clone()),
+                MeshMaterial3d(lib.eye_mat.clone()),
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
+        })
+        .id();
+    commands.entity(arm_left).add_children(&[bow]);
+
+    // Nocked arrow: held in the right hand, shaft along +X (forward). The shaft
+    // and tip cylinders/cone are Y-aligned by default; rotating -90° around Z
+    // aligns them with +X.
+    let arrow = commands
+        .spawn((
+            Transform {
+                translation: Vec3::new(0.0, -0.36, 0.0),
+                rotation: Quat::from_rotation_z(-FRAC_PI_2),
+                scale: Vec3::ONE,
+            },
+            Visibility::default(),
+        ))
+        .with_children(|a| {
+            a.spawn((
+                Mesh3d(lib.arrow_shaft.clone()),
+                MeshMaterial3d(lib.wood_mat.clone()),
+                Transform::default(),
+            ));
+            a.spawn((
+                Mesh3d(lib.arrow_tip.clone()),
+                MeshMaterial3d(lib.metal_mat.clone()),
+                Transform::from_xyz(0.0, 0.32, 0.0),
+            ));
+            a.spawn((
+                Mesh3d(lib.arrow_fletch.clone()),
+                MeshMaterial3d(lib.eye_mat.clone()),
+                Transform::from_xyz(0.0, -0.25, 0.0),
+            ));
+        })
+        .id();
+    commands.entity(arm_right).add_children(&[arrow]);
 }
 
 fn rand_jitter() -> f32 {
@@ -244,13 +351,16 @@ struct Combatant {
 enum CombatantKind {
     Soldier,
     Miner,
+    Archer,
     Base,
     Rock,
 }
 
 pub fn combat_tick(
+    mut commands: Commands,
     time: Res<Time>,
     state: Res<GameState>,
+    lib: Res<MatLibrary>,
     mut gold: ResMut<Gold>,
     mut sets: ParamSet<(
         Query<
@@ -285,6 +395,7 @@ pub fn combat_tick(
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
+            UnitKind::Archer => CombatantKind::Archer,
         };
         combatants.push(Combatant {
             entity,
@@ -335,6 +446,7 @@ pub fn combat_tick(
                         c.side != *side
                             && (c.kind == CombatantKind::Soldier
                                 || c.kind == CombatantKind::Miner
+                                || c.kind == CombatantKind::Archer
                                 || c.kind == CombatantKind::Base)
                     })
                     .map(|c| (c, xz_distance(c.pos, pos)))
@@ -398,6 +510,68 @@ pub fn combat_tick(
                     pos,
                     walk_sign,
                     CombatantKind::Miner,
+                ) {
+                    anim.walking = false;
+                    continue;
+                }
+                transform.translation.x += walk_sign * speed.0 * dt;
+                anim.walking = true;
+            }
+            UnitKind::Archer => {
+                let walk_sign = side.forward();
+                let enemy = combatants
+                    .iter()
+                    .filter(|c| {
+                        c.side != *side
+                            && (c.kind == CombatantKind::Soldier
+                                || c.kind == CombatantKind::Miner
+                                || c.kind == CombatantKind::Archer
+                                || c.kind == CombatantKind::Base)
+                    })
+                    .map(|c| (c, xz_distance(c.pos, pos)))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                if let Some((target, dist)) = enemy {
+                    if dist <= ARCHER_RANGE {
+                        cooldown.0.tick(time.delta());
+                        anim.attacking = true;
+                        anim.attack_phase = cooldown.0.fraction();
+                        if cooldown.0.just_finished() {
+                            // Arrow leaves the bow (hand-raised left arm), which sits
+                            // ~0.36 in front of the body at chest height (0.65), offset
+                            // toward the left-arm side (Z = +ARM_SPREAD_Z) before the
+                            // unit's facing rotation. side.forward() flips X and Z for
+                            // the Right side (rotated by Y(PI)).
+                            let start = pos
+                                + Vec3::new(
+                                    side.forward() * 0.36,
+                                    0.65,
+                                    side.forward() * ARM_SPREAD_Z,
+                                );
+                            spawn_arrow(
+                                &mut commands,
+                                &lib,
+                                *side,
+                                start,
+                                target.entity,
+                                target.pos,
+                                damage.0,
+                            );
+                        }
+                        anim.walking = false;
+                        continue;
+                    }
+                }
+
+                anim.attacking = false;
+
+                if ally_blocking(
+                    &combatants,
+                    entity,
+                    *side,
+                    pos,
+                    walk_sign,
+                    CombatantKind::Archer,
                 ) {
                     anim.walking = false;
                     continue;
@@ -519,7 +693,12 @@ pub fn animate_units(
             t.rotation = Quat::from_rotation_z(-leg_angle);
         }
         if let Ok(mut t) = transforms.get_mut(rig.arm_left) {
-            t.rotation = Quat::from_rotation_z(-arm_angle);
+            t.rotation = if matches!(*kind, UnitKind::Archer) {
+                // Archer holds the bow steady: left arm raised forward at chest height.
+                Quat::from_rotation_z(FRAC_PI_2)
+            } else {
+                Quat::from_rotation_z(-arm_angle)
+            };
         }
         if let Ok(mut t) = transforms.get_mut(rig.arm_right) {
             t.rotation = Quat::from_rotation_z(right_arm_angle);
@@ -559,16 +738,145 @@ fn attack_arm_angle(kind: UnitKind, phase: f32) -> f32 {
     match kind {
         UnitKind::Soldier => (p * PI).sin() * ATTACK_SWING_AMPLITUDE,
         UnitKind::Miner => {
-            // Wind up high, then strike forward, then ease back to rest.
-            if p < 0.40 {
-                -0.85 * (p / 0.40)
+            // Light wind-back, then a moderate forward tap with the head, then return.
+            if p < 0.35 {
+                -0.30 * (p / 0.35)
             } else if p < 0.55 {
-                let k = (p - 0.40) / 0.15;
-                -0.85 + (1.45 - (-0.85)) * k
+                let k = (p - 0.35) / 0.20;
+                -0.30 + 0.90 * k
             } else {
                 let k = (p - 0.55) / 0.45;
-                1.45 * (1.0 - k)
+                0.60 * (1.0 - k)
             }
+        }
+        UnitKind::Archer => {
+            // Draw the bowstring back, hold briefly, then return to rest at release.
+            // No forward overshoot so the motion reads as a bow shot, not a throw.
+            if p < 0.75 {
+                let k = (p / 0.75).powf(1.3);
+                -0.80 * k
+            } else if p < 0.88 {
+                -0.80
+            } else {
+                let k = (p - 0.88) / 0.12;
+                -0.80 * (1.0 - k)
+            }
+        }
+    }
+}
+
+fn spawn_arrow(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    side: Side,
+    start: Vec3,
+    target_entity: Entity,
+    target_pos: Vec3,
+    damage: i32,
+) {
+    // Aim at the target's chest so arrows visibly strike the body, not its feet.
+    let aim = target_pos + Vec3::new(0.0, 0.55, 0.0);
+    let dist = (aim - start).length();
+    let total = (dist / ARROW_TRAVEL_SPEED).max(0.2);
+    let apex = (dist * ARROW_ARC_FRACTION).max(ARROW_MIN_ARC);
+
+    let main_mat = match side {
+        Side::Left => lib.left.clone(),
+        Side::Right => lib.right.clone(),
+    };
+
+    commands
+        .spawn((
+            Transform::from_translation(start),
+            Visibility::default(),
+            Arrow {
+                start,
+                target_entity,
+                target_pos: aim,
+                elapsed: 0.0,
+                total,
+                apex,
+                damage,
+            },
+        ))
+        .with_children(|a| {
+            // The arrow's local +X is "forward"; the parent transform rotates so
+            // +X follows the velocity vector each frame. Inside, the cylinder/cone
+            // (originally Y-aligned) are rotated -90° around Z so they lie along +X.
+            a.spawn((
+                Mesh3d(lib.arrow_shaft.clone()),
+                MeshMaterial3d(lib.wood_mat.clone()),
+                Transform {
+                    translation: Vec3::ZERO,
+                    rotation: Quat::from_rotation_z(-FRAC_PI_2),
+                    scale: Vec3::ONE,
+                },
+            ));
+            a.spawn((
+                Mesh3d(lib.arrow_tip.clone()),
+                MeshMaterial3d(lib.metal_mat.clone()),
+                Transform {
+                    translation: Vec3::new(0.32, 0.0, 0.0),
+                    rotation: Quat::from_rotation_z(-FRAC_PI_2),
+                    scale: Vec3::ONE,
+                },
+            ));
+            a.spawn((
+                Mesh3d(lib.arrow_fletch.clone()),
+                MeshMaterial3d(main_mat),
+                Transform::from_xyz(-0.25, 0.0, 0.0),
+            ));
+        });
+}
+
+pub fn arrow_flight_system(
+    mut commands: Commands,
+    time: Res<Time>,
+    state: Res<GameState>,
+    mut arrows: Query<(Entity, &mut Arrow, &mut Transform)>,
+    targets: Query<&Transform, (Or<(With<Unit>, With<Base>)>, Without<Arrow>)>,
+    mut healths: Query<&mut Health>,
+) {
+    if *state != GameState::Playing {
+        return;
+    }
+    let dt = time.delta_secs();
+    for (entity, mut arrow, mut transform) in arrows.iter_mut() {
+        arrow.elapsed += dt;
+        // Light homing: keep aiming at the target's current chest position if it
+        // still exists, so a slowly-moving target still gets hit.
+        if let Ok(target_t) = targets.get(arrow.target_entity) {
+            arrow.target_pos = target_t.translation + Vec3::new(0.0, 0.55, 0.0);
+        }
+
+        let t = (arrow.elapsed / arrow.total).clamp(0.0, 1.0);
+        let start = arrow.start;
+        let target = arrow.target_pos;
+        let pos_y_linear = start.y + (target.y - start.y) * t;
+        let arc = 4.0 * arrow.apex * t * (1.0 - t);
+        let pos = Vec3::new(
+            start.x + (target.x - start.x) * t,
+            pos_y_linear + arc,
+            start.z + (target.z - start.z) * t,
+        );
+        transform.translation = pos;
+
+        // Orient the arrow along its velocity.
+        let total_time = arrow.total.max(1e-3);
+        let vx = (target.x - start.x) / total_time;
+        let vz = (target.z - start.z) / total_time;
+        let vy =
+            (target.y - start.y) / total_time + (4.0 * arrow.apex / total_time) * (1.0 - 2.0 * t);
+        let velocity = Vec3::new(vx, vy, vz);
+        if velocity.length_squared() > 1e-6 {
+            transform.rotation = Quat::from_rotation_arc(Vec3::X, velocity.normalize());
+        }
+
+        if t >= 1.0 {
+            if let Ok(mut hp) = healths.get_mut(arrow.target_entity) {
+                hp.current -= arrow.damage;
+            }
+            commands.entity(entity).despawn();
         }
     }
 }

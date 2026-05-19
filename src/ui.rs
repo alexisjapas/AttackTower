@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::common::*;
-use crate::units::{spawn_miner, spawn_soldier};
+use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
 
 #[derive(Component)]
 pub struct BuyButton {
@@ -81,6 +81,7 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
         .with_children(|panel| {
             spawn_buy_button(panel, side, UnitKind::Soldier, "Soldier", SOLDIER_COST);
             spawn_buy_button(panel, side, UnitKind::Miner, "Miner", MINER_COST);
+            spawn_buy_button(panel, side, UnitKind::Archer, "Archer", ARCHER_COST);
             panel.spawn((
                 Text::new("Gold: 10"),
                 TextFont::from_font_size(18.0),
@@ -133,11 +134,13 @@ pub fn buy_button_system(
                 let cost = match buy.kind {
                     UnitKind::Soldier => SOLDIER_COST,
                     UnitKind::Miner => MINER_COST,
+                    UnitKind::Archer => ARCHER_COST,
                 };
                 if gold.try_spend(buy.side, cost) {
                     match buy.kind {
                         UnitKind::Soldier => spawn_soldier(&mut commands, &lib, buy.side),
                         UnitKind::Miner => spawn_miner(&mut commands, &lib, buy.side),
+                        UnitKind::Archer => spawn_archer(&mut commands, &lib, buy.side),
                     }
                 }
             }
@@ -233,6 +236,7 @@ pub fn restart_button_system(
     mut state: ResMut<GameState>,
     mut gold: ResMut<Gold>,
     units: Query<Entity, With<Unit>>,
+    arrows: Query<Entity, With<Arrow>>,
     mut bases: Query<&mut Health, With<Base>>,
 ) {
     for (interaction, mut bg) in interactions.iter_mut() {
@@ -240,6 +244,9 @@ pub fn restart_button_system(
             Interaction::Pressed => {
                 bg.0 = BTN_PRESSED;
                 for entity in &units {
+                    commands.entity(entity).despawn();
+                }
+                for entity in &arrows {
                     commands.entity(entity).despawn();
                 }
                 for mut hp in bases.iter_mut() {

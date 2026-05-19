@@ -38,6 +38,7 @@ fn main() {
             (
                 buy_button_system,
                 combat_tick,
+                arrow_flight_system,
                 process_damage_effects,
                 animate_units,
                 cleanup_dead_units,

@@ -16,17 +16,31 @@ pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
 
+// Archer
+pub const ARCHER_HP: i32 = 7;
+pub const ARCHER_DAMAGE: i32 = 2;
+pub const ARCHER_COST: u32 = 3;
+pub const ARCHER_SPEED: f32 = 1.5;
+pub const ARCHER_COOLDOWN: f32 = 1.7;
+pub const ARCHER_RANGE: f32 = 6.5;
+pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
+
+// Arrows
+pub const ARROW_TRAVEL_SPEED: f32 = 7.0;
+pub const ARROW_ARC_FRACTION: f32 = 0.22;
+pub const ARROW_MIN_ARC: f32 = 1.0;
+
 pub const STARTING_GOLD: u32 = 10;
 pub const ENGAGE_RANGE: f32 = 1.4;
 pub const MINE_RANGE: f32 = 1.4;
 
-pub const LEFT_BASE_X: f32 = -8.0;
-pub const RIGHT_BASE_X: f32 = 8.0;
+pub const LEFT_BASE_X: f32 = -14.0;
+pub const RIGHT_BASE_X: f32 = 14.0;
 
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
-pub const ROCK_OFFSET: f32 = 3.0;
+pub const ROCK_OFFSET: f32 = 5.5;
 pub const SPAWN_Z_JITTER: f32 = 0.6;
 
 pub const BOB_BASE_Y: f32 = 0.55;
@@ -100,6 +114,7 @@ impl Side {
 pub enum UnitKind {
     Soldier,
     Miner,
+    Archer,
 }
 
 #[derive(Component)]
@@ -110,6 +125,17 @@ pub struct Unit;
 
 #[derive(Component)]
 pub struct Rock;
+
+#[derive(Component)]
+pub struct Arrow {
+    pub start: Vec3,
+    pub target_entity: Entity,
+    pub target_pos: Vec3,
+    pub elapsed: f32,
+    pub total: f32,
+    pub apex: f32,
+    pub damage: i32,
+}
 
 #[derive(Component, Clone, Copy)]
 pub struct Health {
@@ -236,4 +262,19 @@ pub struct MatLibrary {
     pub spear_tip: Handle<Mesh>,
     pub pickaxe_handle: Handle<Mesh>,
     pub pickaxe_head: Handle<Mesh>,
+    pub bow_limb: Handle<Mesh>,
+    pub bow_string: Handle<Mesh>,
+    pub arrow_shaft: Handle<Mesh>,
+    pub arrow_tip: Handle<Mesh>,
+    pub arrow_fletch: Handle<Mesh>,
+    // Scenery
+    pub grass_blade: Handle<Mesh>,
+    pub bush_mesh: Handle<Mesh>,
+    pub plant_stem: Handle<Mesh>,
+    pub plant_flower: Handle<Mesh>,
+    pub grass_mat: Handle<StandardMaterial>,
+    pub bush_mat: Handle<StandardMaterial>,
+    pub flower_red_mat: Handle<StandardMaterial>,
+    pub flower_yellow_mat: Handle<StandardMaterial>,
+    pub flower_violet_mat: Handle<StandardMaterial>,
 }

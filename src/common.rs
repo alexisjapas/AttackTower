@@ -15,6 +15,10 @@ pub const MINER_COST: u32 = 5;
 pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
+pub const MAX_MINERS_PER_SIDE: usize = 5;
+pub const MINER_CAPACITY: u32 = 3;
+pub const MINER_RING_RADIUS: f32 = 1.6;
+pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 
 // Archer
 pub const ARCHER_HP: i32 = 7;
@@ -32,6 +36,8 @@ pub const TOWER_COST: u32 = 8;
 pub const TOWER_RANGE: f32 = 7.5;
 pub const TOWER_COOLDOWN: f32 = 1.5;
 pub const TOWER_HEIGHT: f32 = 2.6;
+pub const TOWER_RADIUS: f32 = 0.7;
+pub const TOWER_MIN_SEPARATION: f32 = 1.8;
 pub const TOWER_ARROW_HEIGHT: f32 = 2.1;
 
 // Arrows
@@ -56,6 +62,8 @@ pub const PLAYER_PANEL_SLOTS: usize = 4;
 
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
+pub const LANE_COUNT: usize = 5;
+pub const LANE_HALF_WIDTH: f32 = 2.6;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
 pub const ROCK_OFFSET: f32 = 5.5;
 pub const SPAWN_Z_JITTER: f32 = 0.6;
@@ -145,6 +153,53 @@ pub struct Rock;
 
 #[derive(Component)]
 pub struct Tower;
+
+#[derive(Component)]
+pub struct Sun;
+
+#[derive(Component)]
+pub struct TorchLight;
+
+#[derive(Component)]
+pub struct TorchFlame;
+
+pub const TORCH_INTENSITY: f32 = 250_000.0;
+pub const TORCH_RANGE: f32 = 10.0;
+pub const TORCH_COLOR: Color = Color::srgb(1.0, 0.65, 0.30);
+
+pub const SUN_DAY_PERIOD: f32 = 240.0;
+pub const SUN_DISTANCE: f32 = 55.0;
+
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TimeOfDay {
+    #[default]
+    Day,
+    Night,
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub struct DlssAvailable(pub bool);
+
+#[derive(Resource, Default, Clone, Copy)]
+pub struct GameTime(pub f32);
+
+#[derive(Resource)]
+pub struct AtmosphereHandle(pub Handle<bevy::pbr::ScatteringMedium>);
+
+#[derive(Component, Default)]
+pub struct MinerCarry {
+    pub current: u32,
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum MinerPhase {
+    ToRock,
+    Mining,
+    Returning,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct MinerSlot(pub usize);
 
 #[derive(Component)]
 pub struct TowerGhost;
@@ -289,9 +344,35 @@ pub enum GameState {
     Ended(Side),
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct GameSettings {
     pub fullscreen: bool,
+    pub vsync: bool,
+    pub raytracing: bool,
+    pub dlss: bool,
+    pub taa: bool,
+    pub bloom: bool,
+    pub atmosphere: bool,
+    pub volumetric_fog: bool,
+    pub distance_fog: bool,
+    pub tonemapping: u8, // 0=AcesFitted 1=TonyMcMapface 2=Reinhard 3=None
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        Self {
+            fullscreen: true,
+            vsync: true,
+            raytracing: false,
+            dlss: false,
+            taa: false,
+            bloom: true,
+            atmosphere: true,
+            volumetric_fog: true,
+            distance_fog: true,
+            tonemapping: 0,
+        }
+    }
 }
 
 #[derive(Resource, Default, Clone, Copy)]
@@ -393,6 +474,9 @@ pub struct MatLibrary {
     pub flower_red_mat: Handle<StandardMaterial>,
     pub flower_yellow_mat: Handle<StandardMaterial>,
     pub flower_violet_mat: Handle<StandardMaterial>,
+    pub flame_mat: Handle<StandardMaterial>,
+    pub flame_mesh: Handle<Mesh>,
+    pub torch_pole_mesh: Handle<Mesh>,
     // Tower meshes
     pub tower_foundation: Handle<Mesh>,
     pub tower_shaft: Handle<Mesh>,

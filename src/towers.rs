@@ -73,6 +73,30 @@ pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, side: Side, positi
                     ..default()
                 },
             ));
+            // Torch on the battlement (one). Lit only at night by update_torches.
+            p.spawn((
+                Mesh3d(lib.torch_pole_mesh.clone()),
+                MeshMaterial3d(lib.wood_mat.clone()),
+                Transform::from_xyz(0.0, 2.40, 0.42),
+            ));
+            p.spawn((
+                Mesh3d(lib.flame_mesh.clone()),
+                MeshMaterial3d(lib.flame_mat.clone()),
+                Transform::from_xyz(0.0, 2.62, 0.42),
+                Visibility::Hidden,
+                TorchFlame,
+            ));
+            p.spawn((
+                PointLight {
+                    color: TORCH_COLOR,
+                    intensity: 0.0,
+                    range: TORCH_RANGE,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 2.65, 0.42),
+                TorchLight,
+            ));
         });
 }
 
@@ -146,4 +170,12 @@ pub fn is_valid_tower_zone(side: Side, pos: Vec3) -> bool {
         Side::Left => pos.x >= LEFT_BASE_X + TOWER_PLACEMENT_MARGIN && pos.x <= -ZONE_BOUNDARY,
         Side::Right => pos.x >= ZONE_BOUNDARY && pos.x <= RIGHT_BASE_X - TOWER_PLACEMENT_MARGIN,
     }
+}
+
+pub fn collides_with_existing_tower(pos: Vec3, towers: &[Vec3]) -> bool {
+    towers.iter().any(|t| {
+        let dx = t.x - pos.x;
+        let dz = t.z - pos.z;
+        (dx * dx + dz * dz).sqrt() < TOWER_MIN_SEPARATION
+    })
 }

@@ -1,23 +1,47 @@
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use bevy::ecs::system::ParamSet;
 use bevy::prelude::*;
 
 use crate::common::*;
 
-pub fn spawn_soldier(commands: &mut Commands, lib: &MatLibrary, side: Side) {
-    spawn_unit(commands, lib, side, UnitKind::Soldier);
+pub fn spawn_soldier(commands: &mut Commands, lib: &MatLibrary, side: Side, lane: usize) {
+    let _ = spawn_unit(commands, lib, side, UnitKind::Soldier, Some(lane_z(lane)));
 }
 
-pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side) {
-    spawn_unit(commands, lib, side, UnitKind::Miner);
+pub fn lane_z(lane: usize) -> f32 {
+    if LANE_COUNT <= 1 {
+        return 0.0;
+    }
+    let step = (LANE_HALF_WIDTH * 2.0) / (LANE_COUNT as f32 - 1.0);
+    -LANE_HALF_WIDTH + (lane.min(LANE_COUNT - 1) as f32) * step
 }
 
-pub fn spawn_archer(commands: &mut Commands, lib: &MatLibrary, side: Side) {
-    spawn_unit(commands, lib, side, UnitKind::Archer);
+pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side, slot_index: usize) {
+    let entity = spawn_unit(commands, lib, side, UnitKind::Miner, None);
+    commands.entity(entity).insert((
+        MinerCarry::default(),
+        MinerPhase::ToRock,
+        MinerSlot(slot_index),
+    ));
 }
 
-fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitKind) {
+pub fn miner_slot_offset(slot: usize) -> Vec3 {
+    let angle = (slot as f32 / MAX_MINERS_PER_SIDE as f32) * TAU;
+    Vec3::new(angle.cos() * MINER_RING_RADIUS, 0.0, angle.sin() * MINER_RING_RADIUS)
+}
+
+pub fn spawn_archer(commands: &mut Commands, lib: &MatLibrary, side: Side, lane: usize) {
+    let _ = spawn_unit(commands, lib, side, UnitKind::Archer, Some(lane_z(lane)));
+}
+
+fn spawn_unit(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    side: Side,
+    kind: UnitKind,
+    fixed_z: Option<f32>,
+) -> Entity {
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
         Side::Right => RIGHT_BASE_X,
@@ -45,7 +69,10 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
             ARCHER_COOLDOWN,
         ),
     };
-    let z = (rand_jitter() - 0.5) * SPAWN_Z_JITTER * 2.0;
+    let z = match fixed_z {
+        Some(z) => z + (rand_jitter() - 0.5) * 0.25,
+        None => (rand_jitter() - 0.5) * SPAWN_Z_JITTER * 2.0,
+    };
     let main_mat = match side {
         Side::Left => lib.left.clone(),
         Side::Right => lib.right.clone(),
@@ -151,7 +178,8 @@ fn spawn_unit(commands: &mut Commands, lib: &MatLibrary, side: Side, kind: UnitK
                 arm_right,
             },
         ))
-        .add_children(&[bob, leg_left, leg_right]);
+        .add_children(&[bob, leg_left, leg_right])
+        .id()
 }
 
 fn unit_base_rotation(side: Side, kind: UnitKind) -> Quat {
@@ -374,6 +402,9 @@ pub fn combat_tick(
                 &mut AttackCooldown,
                 &MoveSpeed,
                 &mut UnitAnim,
+                Option<&mut MinerCarry>,
+                Option<&mut MinerPhase>,
+                Option<&MinerSlot>,
             ),
             With<Unit>,
         >,
@@ -384,7 +415,7 @@ pub fn combat_tick(
     )>,
 ) {
     if *state != GameState::Playing {
-        for (_, _, _, _, _, _, _, mut anim) in sets.p0().iter_mut() {
+        for (_, _, _, _, _, _, _, mut anim, _, _, _) in sets.p0().iter_mut() {
             anim.walking = false;
             anim.attacking = false;
         }
@@ -393,7 +424,7 @@ pub fn combat_tick(
 
     // 1. Snapshot every combatant's position.
     let mut combatants: Vec<Combatant> = Vec::new();
-    for (entity, side, kind, transform, _, _, _, _) in sets.p0().iter() {
+    for (entity, side, kind, transform, _, _, _, _, _, _, _) in sets.p0().iter() {
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
@@ -436,8 +467,19 @@ pub fn combat_tick(
     let mut gold_events: Vec<(Side, u32)> = Vec::new();
 
     // 2. Per-unit decision.
-    for (entity, side, kind, mut transform, damage, mut cooldown, speed, mut anim) in
-        sets.p0().iter_mut()
+    for (
+        entity,
+        side,
+        kind,
+        mut transform,
+        damage,
+        mut cooldown,
+        speed,
+        mut anim,
+        mut carry_opt,
+        mut phase_opt,
+        slot_opt,
+    ) in sets.p0().iter_mut()
     {
         if anim.dying {
             anim.walking = false;
@@ -485,48 +527,91 @@ pub fn combat_tick(
                     pos,
                     walk_sign,
                     CombatantKind::Soldier,
-                ) {
+                ) || enemy_tower_blocking(&combatants, *side, pos, walk_sign)
+                {
                     anim.walking = false;
                     continue;
                 }
                 transform.translation.x += walk_sign * speed.0 * dt;
+                transform.translation.z +=
+                    allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
                 anim.walking = true;
             }
             UnitKind::Miner => {
-                let walk_sign = -side.forward();
+                let _ = entity;
                 let own_rock = combatants
                     .iter()
                     .find(|c| c.side == *side && c.kind == CombatantKind::Rock);
+                let own_base = combatants
+                    .iter()
+                    .find(|c| c.side == *side && c.kind == CombatantKind::Base);
+                let slot = slot_opt.map(|s| s.0).unwrap_or(0);
 
-                if let Some(rock) = own_rock {
-                    let dist = xz_distance(rock.pos, pos);
-                    if dist <= MINE_RANGE {
+                let phase = phase_opt.as_deref().copied().unwrap_or(MinerPhase::ToRock);
+
+                match phase {
+                    MinerPhase::ToRock => {
+                        anim.attacking = false;
+                        let Some(rock) = own_rock else {
+                            anim.walking = false;
+                            continue;
+                        };
+                        let target = rock.pos + miner_slot_offset(slot);
+                        let target_xz = Vec3::new(target.x, 0.0, target.z);
+                        let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
+                        let dist = (target_xz - pos_xz).length();
+                        if dist <= MINE_RANGE * 0.5 {
+                            if let Some(phase) = phase_opt.as_deref_mut() {
+                                *phase = MinerPhase::Mining;
+                            }
+                            anim.walking = false;
+                            continue;
+                        }
+                        step_toward(&mut transform, target_xz, speed.0 * dt);
+                        anim.walking = true;
+                    }
+                    MinerPhase::Mining => {
                         cooldown.0.tick(time.delta());
                         anim.attacking = true;
                         anim.attack_phase = cooldown.0.fraction();
-                        if cooldown.0.just_finished() {
-                            gold_events.push((*side, MINER_GOLD_PER_HIT));
-                        }
                         anim.walking = false;
-                        continue;
+                        if cooldown.0.just_finished() {
+                            if let Some(carry) = carry_opt.as_deref_mut() {
+                                carry.current = carry.current.saturating_add(MINER_GOLD_PER_HIT);
+                                if carry.current >= MINER_CAPACITY {
+                                    if let Some(phase) = phase_opt.as_deref_mut() {
+                                        *phase = MinerPhase::Returning;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    MinerPhase::Returning => {
+                        anim.attacking = false;
+                        let Some(base) = own_base else {
+                            anim.walking = false;
+                            continue;
+                        };
+                        let target_xz = Vec3::new(base.pos.x, 0.0, base.pos.z);
+                        let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
+                        let dist = (target_xz - pos_xz).length();
+                        if dist <= MINER_DEPOSIT_RANGE {
+                            if let Some(carry) = carry_opt.as_deref_mut() {
+                                if carry.current > 0 {
+                                    gold_events.push((*side, carry.current));
+                                    carry.current = 0;
+                                }
+                            }
+                            if let Some(phase) = phase_opt.as_deref_mut() {
+                                *phase = MinerPhase::ToRock;
+                            }
+                            anim.walking = false;
+                            continue;
+                        }
+                        step_toward(&mut transform, target_xz, speed.0 * dt);
+                        anim.walking = true;
                     }
                 }
-
-                anim.attacking = false;
-
-                if ally_blocking(
-                    &combatants,
-                    entity,
-                    *side,
-                    pos,
-                    walk_sign,
-                    CombatantKind::Miner,
-                ) {
-                    anim.walking = false;
-                    continue;
-                }
-                transform.translation.x += walk_sign * speed.0 * dt;
-                anim.walking = true;
             }
             UnitKind::Archer => {
                 let walk_sign = side.forward();
@@ -584,11 +669,14 @@ pub fn combat_tick(
                     pos,
                     walk_sign,
                     CombatantKind::Archer,
-                ) {
+                ) || enemy_tower_blocking(&combatants, *side, pos, walk_sign)
+                {
                     anim.walking = false;
                     continue;
                 }
                 transform.translation.x += walk_sign * speed.0 * dt;
+                transform.translation.z +=
+                    allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
                 anim.walking = true;
             }
         }
@@ -604,6 +692,51 @@ pub fn combat_tick(
     for (side, amount) in gold_events {
         gold.add(side, amount);
     }
+}
+
+fn enemy_tower_blocking(
+    combatants: &[Combatant],
+    self_side: Side,
+    self_pos: Vec3,
+    walk_sign: f32,
+) -> bool {
+    combatants.iter().any(|c| {
+        if c.kind != CombatantKind::Tower || c.side == self_side {
+            return false;
+        }
+        let dx_ahead = (c.pos.x - self_pos.x) * walk_sign;
+        dx_ahead > 0.0
+            && dx_ahead < UNIT_RADIUS + TOWER_RADIUS + 0.1
+            && (c.pos.z - self_pos.z).abs() < UNIT_RADIUS + TOWER_RADIUS
+    })
+}
+
+/// If an allied tower sits in the unit's forward corridor, return a lateral Z
+/// step so the unit drifts around it. Returns 0 when no detour is needed.
+fn allied_tower_sidestep(
+    combatants: &[Combatant],
+    self_side: Side,
+    self_pos: Vec3,
+    walk_sign: f32,
+    step: f32,
+) -> f32 {
+    let look_ahead = UNIT_RADIUS + TOWER_RADIUS + 1.2;
+    let corridor = UNIT_RADIUS + TOWER_RADIUS;
+    let mut push: f32 = 0.0;
+    for c in combatants {
+        if c.kind != CombatantKind::Tower || c.side != self_side {
+            continue;
+        }
+        let dx_ahead = (c.pos.x - self_pos.x) * walk_sign;
+        let dz = self_pos.z - c.pos.z;
+        if dx_ahead > 0.0 && dx_ahead < look_ahead && dz.abs() < corridor {
+            // Push toward the freer Z side. If the unit is already centered on
+            // the tower (dz≈0) use the sign of dz, defaulting to +1.
+            let dir = if dz.abs() < 1e-3 { 1.0 } else { dz.signum() };
+            push += dir * step;
+        }
+    }
+    push
 }
 
 fn ally_blocking(
@@ -623,6 +756,22 @@ fn ally_blocking(
             && dx_ahead < UNIT_RADIUS * 2.0 + 0.05
             && (c.pos.z - self_pos.z).abs() < UNIT_RADIUS
     })
+}
+
+fn step_toward(transform: &mut Transform, target_xz: Vec3, step: f32) {
+    let pos = transform.translation;
+    let dx = target_xz.x - pos.x;
+    let dz = target_xz.z - pos.z;
+    let dist = (dx * dx + dz * dz).sqrt();
+    if dist <= 1e-4 {
+        return;
+    }
+    let s = step.min(dist);
+    transform.translation.x += dx / dist * s;
+    transform.translation.z += dz / dist * s;
+    // Face direction of motion (rotate around Y).
+    let yaw = dz.atan2(dx);
+    transform.rotation = Quat::from_rotation_y(-yaw);
 }
 
 fn xz_distance(a: Vec3, b: Vec3) -> f32 {

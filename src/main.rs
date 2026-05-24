@@ -16,19 +16,35 @@ use crate::ui::*;
 use crate::units::*;
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "AttackTower".into(),
-                ..default()
-            }),
+    let mut app = App::new();
+    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+    app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(
+        bevy::asset::uuid::uuid!("a4c91e02-d6fe-4b30-9277-91e8c6f4a9d3"),
+    ));
+    let default_plugins = DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "AttackTower".into(),
             ..default()
-        }))
-        .add_plugins(PhysicsPlugins::default())
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.10)))
+        }),
+        ..default()
+    });
+    #[cfg(feature = "raytracing")]
+    let default_plugins = default_plugins.set(bevy::render::RenderPlugin {
+        render_creation: bevy::render::settings::WgpuSettings {
+            features: bevy::solari::prelude::SolariPlugins::required_wgpu_features(),
+            ..default()
+        }
+        .into(),
+        ..default()
+    });
+    app.add_plugins(default_plugins)
+        .add_plugins(PhysicsPlugins::default());
+    #[cfg(feature = "raytracing")]
+    app.add_plugins(bevy::solari::prelude::SolariPlugins);
+    app.insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.10)))
         .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
-            brightness: 280.0,
+            brightness: 60.0,
             affects_lightmapped_meshes: true,
         })
         .init_resource::<Gold>()
@@ -39,6 +55,9 @@ fn main() {
         .init_resource::<MenuFocus>()
         .init_resource::<GameSettings>()
         .init_resource::<SettingsOrigin>()
+        .init_resource::<TimeOfDay>()
+        .init_resource::<DlssAvailable>()
+        .init_resource::<GameTime>()
         .add_systems(Startup, (init_mat_library, setup_world, setup_ui).chain())
         .add_systems(
             Update,
@@ -50,6 +69,9 @@ fn main() {
                     sideselect_input_system,
                     gameplay_input_system,
                     placement_system,
+                    advance_game_time,
+                    animate_sun,
+                    spawn_initial_miners,
                     combat_tick,
                     tower_attack_tick,
                     arrow_flight_system,
@@ -67,13 +89,19 @@ fn main() {
                     update_pause_overlay,
                     update_sideselect_overlay,
                     update_endgame_overlay,
+                    update_game_hud_visibility,
+                    update_torches,
+                    sync_raytracing_meshes,
+                    apply_raytracing_setting,
+                    detect_dlss_support,
                     update_sideselect_cards,
-                    update_fullscreen_toggle_text,
+                    update_settings_toggle_texts,
                     apply_menu_focus_visual,
                     apply_player_focus_visual,
-                    apply_window_settings,
+                    apply_graphics_settings,
                     update_gold_text,
                     update_base_hp_text,
+                    update_clock_text,
                 )
                     .chain(),
             )

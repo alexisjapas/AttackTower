@@ -3,6 +3,16 @@ name = "attack_tower"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["raytracing", "dlss", "force_disable_dlss"]
+raytracing = ["bevy/bevy_solari"]
+# DLSS is included by default but mocked (no NVIDIA NGX SDK required to build).
+# At runtime, `DlssRayReconstructionSupported` will be absent so the menu
+# entry stays disabled. To enable real DLSS, drop `force_disable_dlss`:
+#   cargo run --release --no-default-features --features raytracing,dlss
+dlss = ["bevy/dlss"]
+force_disable_dlss = ["bevy/force_disable_dlss"]
+
 [dependencies]
 avian3d = "0.6.1"
 bevy = "0.18.1"

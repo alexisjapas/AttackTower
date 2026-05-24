@@ -1,8 +1,13 @@
+use bevy::anti_alias::taa::TemporalAntiAliasing;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::light::VolumetricFog;
+use bevy::pbr::{Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff};
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
-use bevy::window::WindowMode;
+use bevy::window::{PresentMode, WindowMode};
 
 use crate::common::*;
-use crate::towers::{is_valid_tower_zone, spawn_tower};
+use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
 use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
 
 #[derive(Component, Clone, Copy)]
@@ -18,6 +23,12 @@ pub struct GoldText(pub Side);
 pub struct BaseHpText(pub Side);
 
 #[derive(Component)]
+pub struct ClockText;
+
+#[derive(Component)]
+pub struct GameHud;
+
+#[derive(Component)]
 pub struct MenuOverlay;
 
 #[derive(Component)]
@@ -29,8 +40,8 @@ pub struct SettingsOverlay;
 #[derive(Component)]
 pub struct PauseOverlay;
 
-#[derive(Component)]
-pub struct FullscreenToggleText;
+#[derive(Component, Clone, Copy)]
+pub struct SettingsToggleText(pub u8);
 
 #[derive(Component)]
 pub struct SideSelectOverlay;
@@ -50,22 +61,37 @@ const CARD_NORMAL: Color = Color::srgb(0.12, 0.13, 0.18);
 const CARD_HOVERED: Color = Color::srgb(0.22, 0.23, 0.30);
 
 pub fn setup_ui(mut commands: Commands) {
+    let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
+    let hud_border = Color::srgb(0.85, 0.85, 0.9);
     commands
-        .spawn((Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(12.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::SpaceBetween,
-            padding: UiRect::horizontal(Val::Px(24.0)),
-            ..default()
-        },))
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(12.0),
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(hud_bg),
+            BorderColor::all(hud_border),
+            Visibility::Hidden,
+            GameHud,
+        ))
         .with_children(|parent| {
             parent.spawn((
                 Text::new("Left Base: 20/20"),
                 TextFont::from_font_size(22.0),
                 TextColor(Side::Left.color()),
                 BaseHpText(Side::Left),
+            ));
+            parent.spawn((
+                Text::new("06:00"),
+                TextFont::from_font_size(24.0),
+                TextColor(Color::srgb(0.95, 0.93, 0.78)),
+                ClockText,
             ));
             parent.spawn((
                 Text::new("Right Base: 20/20"),
@@ -76,19 +102,43 @@ pub fn setup_ui(mut commands: Commands) {
         });
 
     commands
-        .spawn((Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(18.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::SpaceBetween,
-            padding: UiRect::horizontal(Val::Px(24.0)),
-            ..default()
-        },))
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(12.0),
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                justify_content: JustifyContent::SpaceBetween,
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(hud_bg),
+            BorderColor::all(hud_border),
+            Visibility::Hidden,
+            GameHud,
+        ))
         .with_children(|parent| {
             spawn_player_panel(parent, Side::Left);
             spawn_player_panel(parent, Side::Right);
         });
+}
+
+pub fn update_game_hud_visibility(
+    state: Res<GameState>,
+    mut hud: Query<&mut Visibility, With<GameHud>>,
+) {
+    if !state.is_changed() {
+        return;
+    }
+    let visible = matches!(*state, GameState::Playing | GameState::Paused);
+    for mut vis in &mut hud {
+        *vis = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
 }
 
 fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
@@ -138,6 +188,15 @@ pub fn update_gold_text(gold: Res<Gold>, mut texts: Query<(&GoldText, &mut Text)
     }
     for (slot, mut text) in &mut texts {
         text.0 = format!("Gold: {}", gold.get(slot.0));
+    }
+}
+
+pub fn update_clock_text(gtime: Res<GameTime>, mut q: Query<&mut Text, With<ClockText>>) {
+    let hours_f = (gtime.0 / SUN_DAY_PERIOD * 24.0 + 6.0).rem_euclid(24.0);
+    let h = hours_f.floor() as u32;
+    let m = ((hours_f - h as f32) * 60.0).floor() as u32;
+    for mut text in &mut q {
+        text.0 = format!("{:02}:{:02}", h, m);
     }
 }
 
@@ -210,6 +269,7 @@ pub fn update_settings_overlay(
     mut commands: Commands,
     state: Res<GameState>,
     settings: Res<GameSettings>,
+    dlss_avail: Res<DlssAvailable>,
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<SettingsOverlay>>,
 ) {
@@ -246,26 +306,11 @@ pub fn update_settings_overlay(
                 TextFont::from_font_size(56.0),
                 TextColor(Color::WHITE),
             ));
-            parent
-                .spawn((
-                    Node {
-                        padding: UiRect::axes(Val::Px(36.0), Val::Px(14.0)),
-                        border: UiRect::all(Val::Px(2.0)),
-                        min_width: Val::Px(360.0),
-                        justify_content: JustifyContent::Center,
-                        ..default()
-                    },
-                    BackgroundColor(BTN_NORMAL),
-                    BorderColor::all(Color::srgb(0.7, 0.7, 0.75)),
-                    MenuButton(0),
-                ))
-                .with_child((
-                    Text::new(fullscreen_label(settings.fullscreen)),
-                    TextFont::from_font_size(24.0),
-                    TextColor(Color::WHITE),
-                    FullscreenToggleText,
-                ));
-            spawn_menu_button(parent, 1, "Retour", Color::WHITE);
+            let labels = settings_labels(&settings, dlss_avail.0);
+            for (i, label) in labels.iter().enumerate() {
+                spawn_toggle_button(parent, i, label.clone(), SettingsToggleText(i as u8));
+            }
+            spawn_menu_button(parent, labels.len(), "Retour", Color::WHITE);
             parent.spawn((
                 Text::new("D-pad : naviguer   A : modifier / valider   B : retour"),
                 TextFont::from_font_size(16.0),
@@ -274,8 +319,64 @@ pub fn update_settings_overlay(
         });
 }
 
-fn fullscreen_label(on: bool) -> String {
-    format!("Plein ecran : {}", if on { "OUI" } else { "NON" })
+fn yn(on: bool) -> &'static str {
+    if on {
+        "OUI"
+    } else {
+        "NON"
+    }
+}
+
+pub const SETTINGS_TOGGLE_COUNT: usize = 10;
+
+fn settings_labels(s: &GameSettings, dlss_supported: bool) -> [String; SETTINGS_TOGGLE_COUNT] {
+    [
+        format!("Plein ecran : {}", yn(s.fullscreen)),
+        format!("VSync : {}", yn(s.vsync)),
+        if cfg!(feature = "raytracing") {
+            format!("Raytracing (Solari) : {}", yn(s.raytracing))
+        } else {
+            "Raytracing (Solari) : INDISPO".to_string()
+        },
+        if cfg!(feature = "dlss") && dlss_supported {
+            format!("DLSS : {}", yn(s.dlss))
+        } else {
+            "DLSS : INDISPO".to_string()
+        },
+        format!("TAA : {}", yn(s.taa)),
+        format!("Bloom : {}", yn(s.bloom)),
+        format!("Atmosphere : {}", yn(s.atmosphere)),
+        format!("Brouillard volumetrique : {}", yn(s.volumetric_fog)),
+        format!("Brouillard distance : {}", yn(s.distance_fog)),
+        format!("Tonemapping : {}", tonemapping_label(s.tonemapping)),
+    ]
+}
+
+fn spawn_toggle_button<M: Component>(
+    parent: &mut ChildSpawnerCommands,
+    index: usize,
+    label: String,
+    marker: M,
+) {
+    parent
+        .spawn((
+            Node {
+                padding: UiRect::axes(Val::Px(36.0), Val::Px(14.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                min_width: Val::Px(360.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            BorderColor::all(Color::srgb(0.7, 0.7, 0.75)),
+            MenuButton(index),
+        ))
+        .with_child((
+            Text::new(label),
+            TextFont::from_font_size(24.0),
+            TextColor(Color::WHITE),
+            marker,
+        ));
 }
 
 pub fn update_pause_overlay(
@@ -419,15 +520,19 @@ pub fn pause_input_system(
     }
 }
 
-pub fn update_fullscreen_toggle_text(
+pub fn update_settings_toggle_texts(
     settings: Res<GameSettings>,
-    mut texts: Query<&mut Text, With<FullscreenToggleText>>,
+    dlss_avail: Res<DlssAvailable>,
+    mut q: Query<(&SettingsToggleText, &mut Text)>,
 ) {
-    if !settings.is_changed() {
+    if !settings.is_changed() && !dlss_avail.is_changed() {
         return;
     }
-    for mut text in &mut texts {
-        text.0 = fullscreen_label(settings.fullscreen);
+    let labels = settings_labels(&settings, dlss_avail.0);
+    for (tag, mut text) in &mut q {
+        if let Some(label) = labels.get(tag.0 as usize) {
+            text.0 = label.clone();
+        }
     }
 }
 
@@ -626,10 +731,31 @@ pub fn apply_menu_focus_visual(
 pub fn apply_player_focus_visual(
     state: Res<GameState>,
     focuses: Query<&PlayerFocus>,
-    mut slots: Query<(&PanelSlot, &mut BackgroundColor, &mut BorderColor)>,
+    units: Query<(&Side, &UnitKind), With<Unit>>,
+    mut slots: Query<(&PanelSlot, &mut Node, &mut BackgroundColor, &mut BorderColor)>,
 ) {
     let active = matches!(*state, GameState::Playing | GameState::Paused);
-    for (slot, mut bg, mut border) in &mut slots {
+    let miners_left = units
+        .iter()
+        .filter(|(s, k)| **s == Side::Left && **k == UnitKind::Miner)
+        .count();
+    let miners_right = units
+        .iter()
+        .filter(|(s, k)| **s == Side::Right && **k == UnitKind::Miner)
+        .count();
+    for (slot, mut node, mut bg, mut border) in &mut slots {
+        let hidden = slot.index == 1
+            && match slot.side {
+                Side::Left => miners_left >= MAX_MINERS_PER_SIDE,
+                Side::Right => miners_right >= MAX_MINERS_PER_SIDE,
+            };
+        let new_display = if hidden { Display::None } else { Display::Flex };
+        if node.display != new_display {
+            node.display = new_display;
+        }
+        if hidden {
+            continue;
+        }
         let focused = active && focuses.iter().any(|f| f.side == slot.side && f.index == slot.index);
         bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
         *border = BorderColor::all(if focused { Color::WHITE } else { slot.side.color() });
@@ -905,6 +1031,23 @@ pub fn sideselect_input_system(
     }
 }
 
+pub fn spawn_initial_miners(
+    state: Res<GameState>,
+    mut commands: Commands,
+    lib: Res<MatLibrary>,
+    units: Query<Entity, With<Unit>>,
+) {
+    if !state.is_changed() || *state != GameState::Playing {
+        return;
+    }
+    // Skip if units already exist (e.g. resuming from Paused).
+    if units.iter().next().is_some() {
+        return;
+    }
+    spawn_miner(&mut commands, &lib, Side::Left, 0);
+    spawn_miner(&mut commands, &lib, Side::Right, 0);
+}
+
 pub fn gameplay_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
@@ -913,6 +1056,7 @@ pub fn gameplay_input_system(
     mut placement: ResMut<PlacementMode>,
     mut focuses: Query<(Entity, &mut PlayerFocus)>,
     gamepads: Query<&Gamepad>,
+    units: Query<(&Side, &UnitKind), With<Unit>>,
 ) {
     if *state != GameState::Playing {
         return;
@@ -933,6 +1077,12 @@ pub fn gameplay_input_system(
             continue;
         }
 
+        // While this side is placing a tower, let placement_system claim all inputs
+        // (D-pad, South, West). Otherwise re-arming would swallow the confirm press.
+        if placement.get(focus.side).is_some() {
+            continue;
+        }
+
         if pad.just_pressed(GamepadButton::DPadLeft) {
             focus.index = (focus.index + PLAYER_PANEL_SLOTS - 1) % PLAYER_PANEL_SLOTS;
         } else if pad.just_pressed(GamepadButton::DPadRight) {
@@ -947,17 +1097,31 @@ pub fn gameplay_input_system(
             match focus.index {
                 0 => {
                     if gold.try_spend(focus.side, SOLDIER_COST) {
-                        spawn_soldier(&mut commands, &lib, focus.side);
+                        let count = units
+                            .iter()
+                            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Soldier)
+                            .count();
+                        spawn_soldier(&mut commands, &lib, focus.side, count % LANE_COUNT);
                     }
                 }
                 1 => {
-                    if gold.try_spend(focus.side, MINER_COST) {
-                        spawn_miner(&mut commands, &lib, focus.side);
+                    let miner_count = units
+                        .iter()
+                        .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
+                        .count();
+                    if miner_count < MAX_MINERS_PER_SIDE
+                        && gold.try_spend(focus.side, MINER_COST)
+                    {
+                        spawn_miner(&mut commands, &lib, focus.side, miner_count);
                     }
                 }
                 2 => {
                     if gold.try_spend(focus.side, ARCHER_COST) {
-                        spawn_archer(&mut commands, &lib, focus.side);
+                        let count = units
+                            .iter()
+                            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Archer)
+                            .count();
+                        spawn_archer(&mut commands, &lib, focus.side, count % LANE_COUNT);
                     }
                 }
                 3 => arm_placement(&mut placement, focus.side),
@@ -981,6 +1145,7 @@ pub fn placement_system(
     players: Res<PlayerControllers>,
     gamepads: Query<&Gamepad>,
     ghosts: Query<(Entity, &Side), With<TowerGhost>>,
+    existing_towers: Query<&Transform, With<Tower>>,
 ) {
     // While paused, keep the ghosts visible in place but skip input handling.
     if *state == GameState::Paused {
@@ -1050,9 +1215,11 @@ pub fn placement_system(
         // Stick Y positive = up on screen → -Z in world (closer to camera-far).
         pos.z -= dz * GAMEPAD_CURSOR_SPEED * dt;
 
+        let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
         let in_zone = is_valid_tower_zone(side, pos);
+        let no_overlap = !collides_with_existing_tower(pos, &tower_positions);
         let can_afford = gold.get(side) >= TOWER_COST;
-        let valid = in_zone && can_afford;
+        let valid = in_zone && no_overlap && can_afford;
 
         // Place on A.
         if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(side, TOWER_COST) {
@@ -1110,6 +1277,7 @@ fn default_placement_pos(side: Side) -> Vec3 {
 pub fn settings_input_system(
     mut state: ResMut<GameState>,
     mut settings: ResMut<GameSettings>,
+    dlss_avail: Res<DlssAvailable>,
     mut menu_focus: ResMut<MenuFocus>,
     origin: Res<SettingsOrigin>,
     gamepads: Query<&Gamepad>,
@@ -1121,7 +1289,7 @@ pub fn settings_input_system(
         return;
     }
 
-    const SLOTS: usize = 2;
+    const SLOTS: usize = SETTINGS_TOGGLE_COUNT + 1; // toggles + Retour
     if menu_focus.index >= SLOTS {
         menu_focus.index = 0;
     }
@@ -1157,30 +1325,118 @@ pub fn settings_input_system(
         return;
     }
 
-    if activate {
-        match menu_focus.index {
-            0 => settings.fullscreen = !settings.fullscreen,
-            1 => *state = origin.to_state(),
-            _ => {}
+    if !activate {
+        return;
+    }
+    match menu_focus.index {
+        0 => settings.fullscreen = !settings.fullscreen,
+        1 => settings.vsync = !settings.vsync,
+        2 => {
+            if cfg!(feature = "raytracing") {
+                settings.raytracing = !settings.raytracing;
+            }
         }
+        3 => {
+            if cfg!(feature = "dlss") && dlss_avail.0 {
+                settings.dlss = !settings.dlss;
+            }
+        }
+        4 => settings.taa = !settings.taa,
+        5 => settings.bloom = !settings.bloom,
+        6 => settings.atmosphere = !settings.atmosphere,
+        7 => settings.volumetric_fog = !settings.volumetric_fog,
+        8 => settings.distance_fog = !settings.distance_fog,
+        9 => settings.tonemapping = (settings.tonemapping + 1) % 4,
+        n if n == SETTINGS_TOGGLE_COUNT => *state = origin.to_state(),
+        _ => {}
     }
 }
 
-pub fn apply_window_settings(
+pub fn apply_graphics_settings(
     settings: Res<GameSettings>,
+    atmo: Res<AtmosphereHandle>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    mut tonemap: Query<&mut Tonemapping>,
     mut windows: Query<&mut Window>,
 ) {
     if !settings.is_changed() {
         return;
     }
+    // Window mode + vsync.
     let mode = if settings.fullscreen {
         WindowMode::BorderlessFullscreen(MonitorSelection::Current)
     } else {
         WindowMode::Windowed
     };
+    let present = if settings.vsync {
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::AutoNoVsync
+    };
     for mut window in &mut windows {
         if window.mode != mode {
             window.mode = mode;
         }
+        if window.present_mode != present {
+            window.present_mode = present;
+        }
+    }
+    // Per-camera components.
+    for cam in &cameras {
+        let mut e = commands.entity(cam);
+        if settings.bloom {
+            e.insert(Bloom::NATURAL);
+        } else {
+            e.remove::<Bloom>();
+        }
+        if settings.atmosphere {
+            e.insert((
+                Atmosphere::earthlike(atmo.0.clone()),
+                AtmosphereSettings::default(),
+            ));
+        } else {
+            e.remove::<Atmosphere>().remove::<AtmosphereSettings>();
+        }
+        if settings.volumetric_fog {
+            e.insert(VolumetricFog {
+                ambient_intensity: 0.05,
+                ..default()
+            });
+        } else {
+            e.remove::<VolumetricFog>();
+        }
+        if settings.distance_fog {
+            e.insert(DistanceFog {
+                color: Color::srgba(0.55, 0.70, 0.85, 1.0),
+                falloff: FogFalloff::ExponentialSquared { density: 0.012 },
+                ..default()
+            });
+        } else {
+            e.remove::<DistanceFog>();
+        }
+        if settings.taa {
+            e.insert(TemporalAntiAliasing::default());
+        } else {
+            e.remove::<TemporalAntiAliasing>();
+        }
+    }
+    // Tonemapping (mutates existing component on the camera).
+    for mut t in &mut tonemap {
+        *t = match settings.tonemapping {
+            0 => Tonemapping::AcesFitted,
+            1 => Tonemapping::TonyMcMapface,
+            2 => Tonemapping::Reinhard,
+            _ => Tonemapping::None,
+        };
+    }
+}
+
+pub fn tonemapping_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "ACES Fitted",
+        1 => "Tony McMapface",
+        2 => "Reinhard",
+        _ => "None",
     }
 }

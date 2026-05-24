@@ -1,3 +1,13 @@
+#[cfg(feature = "raytracing")]
+use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
+use bevy::camera::Exposure;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::light::light_consts::lux;
+use bevy::light::{
+    CascadeShadowConfigBuilder, FogVolume, NotShadowCaster, VolumetricFog, VolumetricLight,
+};
+use bevy::pbr::{Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScatteringMedium};
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 
 use crate::common::*;
@@ -88,6 +98,14 @@ pub fn init_mat_library(
         perceptual_roughness: 0.85,
         ..default()
     });
+    lib.flame_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.65, 0.25),
+        emissive: LinearRgba::rgb(8.0, 4.0, 1.0),
+        unlit: true,
+        ..default()
+    });
+    lib.flame_mesh = meshes.add(Cone::new(0.09, 0.20));
+    lib.torch_pole_mesh = meshes.add(Cylinder::new(0.025, 0.30));
 
     lib.body_mesh = meshes.add(Capsule3d::new(0.20, 0.28));
     lib.head_mesh = meshes.add(Sphere::new(0.17));
@@ -147,20 +165,50 @@ pub fn setup_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut scattering_mediums: ResMut<Assets<ScatteringMedium>>,
     lib: Res<MatLibrary>,
 ) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 20.0, 24.0).looking_at(Vec3::ZERO, Vec3::Y),
+    let medium = scattering_mediums.add(ScatteringMedium::default());
+    commands.insert_resource(AtmosphereHandle(medium.clone()));
+    let camera = commands
+        .spawn((
+            Camera3d::default(),
+            Transform::from_xyz(0.0, 20.0, 24.0).looking_at(Vec3::ZERO, Vec3::Y),
+            Atmosphere::earthlike(medium),
+            AtmosphereSettings::default(),
+            Exposure { ev100: 13.0 },
+            Tonemapping::AcesFitted,
+            Bloom::NATURAL,
+            DistanceFog {
+                color: Color::srgba(0.55, 0.70, 0.85, 1.0),
+                falloff: FogFalloff::ExponentialSquared { density: 0.012 },
+                ..default()
+            },
+            VolumetricFog {
+                ambient_intensity: 0.05,
+                ..default()
+            },
+        ))
+        .id();
+    // SolariLightingPlugin sets DefaultOpaqueRendererMethod::deferred() globally,
+    // so the camera needs the deferred prepass machinery from frame 1, otherwise
+    // the first render produces a gray screen (deferred materials with no
+    // gbuffer). We add them up front when the feature is enabled.
+    #[cfg(feature = "raytracing")]
+    commands.entity(camera).insert((
+        bevy::core_pipeline::prepass::DeferredPrepass,
+        bevy::core_pipeline::prepass::DepthPrepass,
+        bevy::core_pipeline::prepass::MotionVectorPrepass,
     ));
+    let _ = camera;
 
+    spawn_sun(&mut commands);
+
+    // Fog volume that the sun shines through to produce subtle god rays.
     commands.spawn((
-        DirectionalLight {
-            illuminance: 12_000.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 12.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+        FogVolume::default(),
+        Transform::from_scale(Vec3::new(60.0, 6.0, 30.0))
+            .with_translation(Vec3::new(0.0, 3.0, 0.0)),
     ));
 
     commands.spawn((
@@ -170,6 +218,7 @@ pub fn setup_world(
     ));
 
     spawn_sky(&mut commands, &mut meshes, &mut materials);
+    spawn_mountains(&mut commands, &mut meshes, &mut materials);
 
     spawn_castle(&mut commands, &mut meshes, &lib, Side::Left);
     spawn_castle(&mut commands, &mut meshes, &lib, Side::Right);
@@ -177,7 +226,7 @@ pub fn setup_world(
     spawn_rock(&mut commands, &mut meshes, &lib, Side::Right);
 
     spawn_zone_markers(&mut commands, &lib);
-    spawn_scenery(&mut commands, &lib);
+    spawn_scenery(&mut commands, &mut meshes, &lib);
 }
 
 fn spawn_zone_markers(commands: &mut Commands, lib: &MatLibrary) {
@@ -190,25 +239,199 @@ fn spawn_zone_markers(commands: &mut Commands, lib: &MatLibrary) {
     }
 }
 
+fn spawn_sun(commands: &mut Commands) {
+    let cascade = CascadeShadowConfigBuilder {
+        first_cascade_far_bound: 8.0,
+        maximum_distance: 60.0,
+        ..default()
+    }
+    .build();
+    commands.spawn((
+        DirectionalLight {
+            illuminance: lux::RAW_SUNLIGHT,
+            shadows_enabled: true,
+            ..default()
+        },
+        // Initial transform; animate_sun overwrites it every frame.
+        Transform::from_xyz(0.0, SUN_DISTANCE, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
+        cascade,
+        VolumetricLight,
+        Sun,
+    ));
+}
+
+pub fn advance_game_time(time: Res<Time>, state: Res<GameState>, mut gtime: ResMut<GameTime>) {
+    if *state == GameState::Playing {
+        gtime.0 += time.delta_secs();
+    }
+}
+
+pub fn animate_sun(
+    gtime: Res<GameTime>,
+    mut sun: Query<&mut Transform, With<Sun>>,
+    mut tod: ResMut<TimeOfDay>,
+) {
+    // Full day/night arc, camera-facing side (-Z half).
+    let angle = (gtime.0 / SUN_DAY_PERIOD) * std::f32::consts::TAU;
+    let raw_y = angle.sin();
+    let dir = Vec3::new(angle.cos(), raw_y, -0.45).normalize();
+    for mut t in &mut sun {
+        t.translation = dir * SUN_DISTANCE;
+        let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+        t.look_at(Vec3::ZERO, up);
+    }
+    let new_tod = if raw_y > 0.0 {
+        TimeOfDay::Day
+    } else {
+        TimeOfDay::Night
+    };
+    if *tod != new_tod {
+        *tod = new_tod;
+    }
+}
+
+#[cfg(feature = "raytracing")]
+pub fn sync_raytracing_meshes(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    new: Query<(Entity, &Mesh3d), (Added<Mesh3d>, Without<RaytracingMesh3d>)>,
+) {
+    for (entity, mesh3d) in &new {
+        // Solari needs POSITION/NORMAL/UV_0/TANGENT. Bevy primitives don't ship
+        // tangents — generate them once per asset on first sight.
+        if let Some(mesh) = meshes.get_mut(&mesh3d.0) {
+            if mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
+                let _ = mesh.generate_tangents();
+            }
+        }
+        commands
+            .entity(entity)
+            .insert(RaytracingMesh3d(mesh3d.0.clone()));
+    }
+}
+
+#[cfg(not(feature = "raytracing"))]
+pub fn sync_raytracing_meshes() {}
+
+#[cfg(feature = "raytracing")]
+pub fn apply_raytracing_setting(
+    settings: Res<GameSettings>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    enabled: Query<Entity, With<SolariLighting>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    if settings.raytracing {
+        for cam in &cameras {
+            if enabled.get(cam).is_err() {
+                commands.entity(cam).insert((
+                    SolariLighting::default(),
+                    Msaa::Off,
+                    bevy::camera::CameraMainTextureUsages::default()
+                        .with(bevy::render::render_resource::TextureUsages::STORAGE_BINDING),
+                ));
+            }
+        }
+    } else {
+        for e in &enabled {
+            commands
+                .entity(e)
+                .remove::<SolariLighting>()
+                .remove::<bevy::camera::CameraMainTextureUsages>();
+        }
+    }
+}
+
+#[cfg(not(feature = "raytracing"))]
+pub fn apply_raytracing_setting() {}
+
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+pub fn detect_dlss_support(
+    supported: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>,
+    mut avail: ResMut<DlssAvailable>,
+) {
+    let new = supported.is_some();
+    if avail.0 != new {
+        avail.0 = new;
+    }
+}
+
+#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
+pub fn detect_dlss_support(_: ResMut<DlssAvailable>) {}
+
+pub fn update_torches(
+    tod: Res<TimeOfDay>,
+    mut lights: Query<&mut PointLight, With<TorchLight>>,
+    mut flames: Query<&mut Visibility, With<TorchFlame>>,
+    new_light: Query<Entity, Added<TorchLight>>,
+    new_flame: Query<Entity, Added<TorchFlame>>,
+) {
+    // Run on tod change *or* whenever a fresh torch is spawned (e.g. a newly
+    // built tower at night needs to light up right away).
+    if !tod.is_changed() && new_light.is_empty() && new_flame.is_empty() {
+        return;
+    }
+    let on = *tod == TimeOfDay::Night;
+    for mut light in &mut lights {
+        light.intensity = if on { TORCH_INTENSITY } else { 0.0 };
+    }
+    for mut vis in &mut flames {
+        *vis = if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+fn spawn_mountains(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    let rock_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.40, 0.44, 0.50),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    let cone = meshes.add(Cone::new(1.0, 1.0));
+
+    // (x, z, width, height)
+    let peaks: &[(f32, f32, f32, f32)] = &[
+        (-28.0, -34.0, 7.0, 7.0),
+        (-19.0, -37.0, 9.0, 9.5),
+        (-11.0, -33.0, 6.0, 6.5),
+        (-3.0, -38.0, 10.0, 11.0),
+        (5.0, -34.0, 8.0, 8.5),
+        (14.0, -36.0, 9.0, 9.0),
+        (24.0, -33.0, 7.0, 7.5),
+        (-26.0, 35.0, 8.0, 7.5),
+        (-15.0, 37.0, 7.0, 7.0),
+        (-5.0, 34.0, 9.0, 8.5),
+        (6.0, 36.0, 6.0, 6.0),
+        (16.0, 35.0, 9.0, 9.5),
+        (26.0, 37.0, 7.0, 8.0),
+    ];
+    for &(x, z, w, h) in peaks {
+        commands.spawn((
+            Mesh3d(cone.clone()),
+            MeshMaterial3d(rock_mat.clone()),
+            Transform {
+                translation: Vec3::new(x, h * 0.5 - 0.1, z),
+                scale: Vec3::new(w, h, w),
+                ..default()
+            },
+        ));
+    }
+}
+
 fn spawn_sky(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    // Large inverted sphere acts as a sky dome: cull_mode None so the inside faces
-    // render, unlit so it ignores the directional light.
-    let sky_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.52, 0.74, 0.95),
-        unlit: true,
-        cull_mode: None,
-        ..default()
-    });
-    commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(80.0))),
-        MeshMaterial3d(sky_mat),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-    ));
-
     // A few cloud puffs scattered high overhead.
     let cloud_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.98, 0.98, 0.98),
@@ -231,11 +454,13 @@ fn spawn_sky(
                 scale: Vec3::new(sx, sy, sz),
                 ..default()
             },
+            NotShadowCaster,
         ));
     }
 }
 
-fn spawn_scenery(commands: &mut Commands, lib: &MatLibrary) {
+fn spawn_scenery(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary) {
+    spawn_trees(commands, meshes, lib);
     // Grass tufts: cone clusters. Placed outside the central walking strip
     // (|z| > 1.4) and away from base/rock footprints.
     let grass_spots: &[(f32, f32)] = &[
@@ -318,6 +543,72 @@ fn spawn_scenery(commands: &mut Commands, lib: &MatLibrary) {
                     Mesh3d(lib.plant_flower.clone()),
                     MeshMaterial3d(petal_mat),
                     Transform::from_xyz(0.0, 0.30, 0.0),
+                ));
+            });
+    }
+}
+
+fn spawn_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary) {
+    let trunk_mat = lib.wood_mat.clone();
+    let foliage_mat = lib.bush_mat.clone();
+    let trunk_mesh = meshes.add(Cylinder::new(0.10, 1.0));
+    let foliage_low = meshes.add(Cone::new(0.55, 1.0));
+    let foliage_high = meshes.add(Cone::new(0.40, 0.9));
+
+    // (x, z, height_scale)
+    let trees: &[(f32, f32, f32)] = &[
+        (-16.0, -6.5, 1.2),
+        (-13.5, -8.0, 0.9),
+        (-10.0, -7.5, 1.1),
+        (-6.5, -6.0, 1.0),
+        (-4.0, -7.5, 1.3),
+        (2.5, -6.5, 0.95),
+        (5.5, -7.5, 1.15),
+        (9.0, -6.2, 1.05),
+        (12.5, -7.0, 0.9),
+        (16.0, -7.5, 1.2),
+        (-15.0, 6.5, 1.1),
+        (-11.0, 7.5, 0.95),
+        (-7.5, 6.0, 1.25),
+        (-3.5, 7.5, 0.9),
+        (3.5, 6.5, 1.1),
+        (8.0, 7.5, 1.0),
+        (12.0, 6.5, 1.2),
+        (15.5, 7.5, 0.95),
+    ];
+    for &(x, z, h) in trees {
+        let trunk_h = 0.7 * h;
+        let foliage1_h = 1.1 * h;
+        let foliage2_h = 0.9 * h;
+        commands
+            .spawn((Transform::from_xyz(x, 0.0, z), Visibility::default()))
+            .with_children(|t| {
+                t.spawn((
+                    Mesh3d(trunk_mesh.clone()),
+                    MeshMaterial3d(trunk_mat.clone()),
+                    Transform {
+                        translation: Vec3::new(0.0, trunk_h * 0.5, 0.0),
+                        scale: Vec3::new(1.0, trunk_h, 1.0),
+                        ..default()
+                    },
+                ));
+                t.spawn((
+                    Mesh3d(foliage_low.clone()),
+                    MeshMaterial3d(foliage_mat.clone()),
+                    Transform {
+                        translation: Vec3::new(0.0, trunk_h + foliage1_h * 0.5 - 0.05, 0.0),
+                        scale: Vec3::new(1.0, foliage1_h, 1.0),
+                        ..default()
+                    },
+                ));
+                t.spawn((
+                    Mesh3d(foliage_high.clone()),
+                    MeshMaterial3d(foliage_mat.clone()),
+                    Transform {
+                        translation: Vec3::new(0.0, trunk_h + foliage1_h * 0.85 + foliage2_h * 0.5 - 0.1, 0.0),
+                        scale: Vec3::new(1.0, foliage2_h, 1.0),
+                        ..default()
+                    },
                 ));
             });
     }
@@ -429,6 +720,30 @@ fn spawn_castle(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLib
                     Mesh3d(roof_mesh.clone()),
                     MeshMaterial3d(main.clone()),
                     Transform::from_xyz(tx, 2.28, tz),
+                ));
+                // Torch at the corner top, doused by default (intensity set by night system).
+                p.spawn((
+                    Mesh3d(lib.torch_pole_mesh.clone()),
+                    MeshMaterial3d(lib.wood_mat.clone()),
+                    Transform::from_xyz(tx, 1.95, tz),
+                ));
+                p.spawn((
+                    Mesh3d(lib.flame_mesh.clone()),
+                    MeshMaterial3d(lib.flame_mat.clone()),
+                    Transform::from_xyz(tx, 2.18, tz),
+                    Visibility::Hidden,
+                    TorchFlame,
+                ));
+                p.spawn((
+                    PointLight {
+                        color: TORCH_COLOR,
+                        intensity: 0.0,
+                        range: TORCH_RANGE,
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(tx, 2.20, tz),
+                    TorchLight,
                 ));
             }
             // Door at the back (toward this side's miners).

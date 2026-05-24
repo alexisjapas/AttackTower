@@ -54,6 +54,8 @@
           packages = [
             rustToolchain
             pkgs.cargo-watch
+            # Performance overlay: prefix the launch command with `mangohud`.
+            pkgs.mangohud
           ];
 
           # Bevy loads Vulkan and other libs dynamically at runtime; they must be

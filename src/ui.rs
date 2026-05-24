@@ -1,12 +1,18 @@
 use bevy::prelude::*;
 
 use crate::common::*;
+use crate::towers::{is_valid_tower_zone, spawn_tower, spawn_tower_ghost};
 use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
 
 #[derive(Component)]
 pub struct BuyButton {
     pub side: Side,
     pub kind: UnitKind,
+}
+
+#[derive(Component)]
+pub struct TowerBuyButton {
+    pub side: Side,
 }
 
 #[derive(Component)]
@@ -82,6 +88,7 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
             spawn_buy_button(panel, side, UnitKind::Soldier, "Soldier", SOLDIER_COST);
             spawn_buy_button(panel, side, UnitKind::Miner, "Miner", MINER_COST);
             spawn_buy_button(panel, side, UnitKind::Archer, "Archer", ARCHER_COST);
+            spawn_tower_buy_button(panel, side, TOWER_COST);
             panel.spawn((
                 Text::new("Gold: 10"),
                 TextFont::from_font_size(18.0),
@@ -89,6 +96,26 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
                 GoldText(side),
             ));
         });
+}
+
+fn spawn_tower_buy_button(panel: &mut ChildSpawnerCommands, side: Side, cost: u32) {
+    panel
+        .spawn((
+            Button,
+            Node {
+                padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            BorderColor::all(side.color()),
+            TowerBuyButton { side },
+        ))
+        .with_child((
+            Text::new(format!("Tower ({}g)", cost)),
+            TextFont::from_font_size(15.0),
+            TextColor(Color::WHITE),
+        ));
 }
 
 fn spawn_buy_button(
@@ -147,6 +174,120 @@ pub fn buy_button_system(
             Interaction::Hovered => bg.0 = BTN_HOVERED,
             Interaction::None => bg.0 = BTN_NORMAL,
         }
+    }
+}
+
+pub fn tower_buy_button_system(
+    state: Res<GameState>,
+    mut placement: ResMut<PlacementMode>,
+    mut interactions: Query<
+        (&Interaction, &TowerBuyButton, &mut BackgroundColor),
+        Changed<Interaction>,
+    >,
+) {
+    for (interaction, btn, mut bg) in interactions.iter_mut() {
+        match *interaction {
+            Interaction::Pressed => {
+                bg.0 = BTN_PRESSED;
+                if *state != GameState::Playing {
+                    continue;
+                }
+                // Clicking the same side's button while already placing cancels.
+                if placement.side == Some(btn.side) {
+                    placement.side = None;
+                } else {
+                    placement.side = Some(btn.side);
+                    // Skip one frame so the same click that fired the button
+                    // isn't immediately interpreted as a ground placement.
+                    placement.armed = false;
+                }
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVERED,
+            Interaction::None => bg.0 = BTN_NORMAL,
+        }
+    }
+}
+
+pub fn placement_system(
+    mut commands: Commands,
+    state: Res<GameState>,
+    lib: Res<MatLibrary>,
+    mut placement: ResMut<PlacementMode>,
+    mut gold: ResMut<Gold>,
+    windows: Query<&Window>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    ghosts: Query<Entity, With<TowerGhost>>,
+) {
+    // Outside of placement mode (or after game ended), make sure no ghost lingers.
+    if *state != GameState::Playing || placement.side.is_none() {
+        if *state != GameState::Playing {
+            placement.side = None;
+        }
+        for entity in &ghosts {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+    let side = placement.side.unwrap();
+
+    // Swallow the click that activated placement mode.
+    if !placement.armed {
+        placement.armed = true;
+        return;
+    }
+
+    // Cancel placement on Escape or right-click.
+    if keys.just_pressed(KeyCode::Escape) || mouse.just_pressed(MouseButton::Right) {
+        placement.side = None;
+        for entity in &ghosts {
+            commands.entity(entity).despawn();
+        }
+        return;
+    }
+
+    // Raycast cursor → ground plane.
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, cam_transform)) = cameras.single() else {
+        return;
+    };
+    let Ok(ray) = camera.viewport_to_world(cam_transform, cursor) else {
+        return;
+    };
+    let dir = ray.direction.as_vec3();
+    if dir.y.abs() < 1e-6 {
+        return;
+    }
+    let t = -ray.origin.y / dir.y;
+    if t < 0.0 {
+        return;
+    }
+    let world_pos = ray.origin + dir * t;
+
+    let in_zone = is_valid_tower_zone(side, world_pos);
+    let can_afford = gold.get(side) >= TOWER_COST;
+    let valid = in_zone && can_afford;
+
+    // Refresh ghost: despawn previous (cheaper than tracking a single entity), spawn new.
+    for entity in &ghosts {
+        commands.entity(entity).despawn();
+    }
+    spawn_tower_ghost(&mut commands, &lib, world_pos, valid);
+
+    if mouse.just_pressed(MouseButton::Left) && valid && gold.try_spend(side, TOWER_COST) {
+        spawn_tower(
+            &mut commands,
+            &lib,
+            side,
+            Vec3::new(world_pos.x, 0.0, world_pos.z),
+        );
+        placement.side = None;
     }
 }
 
@@ -235,8 +376,11 @@ pub fn restart_button_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
     mut gold: ResMut<Gold>,
+    mut placement: ResMut<PlacementMode>,
     units: Query<Entity, With<Unit>>,
     arrows: Query<Entity, With<Arrow>>,
+    towers: Query<Entity, With<Tower>>,
+    ghosts: Query<Entity, With<TowerGhost>>,
     mut bases: Query<&mut Health, With<Base>>,
 ) {
     for (interaction, mut bg) in interactions.iter_mut() {
@@ -249,10 +393,17 @@ pub fn restart_button_system(
                 for entity in &arrows {
                     commands.entity(entity).despawn();
                 }
+                for entity in &towers {
+                    commands.entity(entity).despawn();
+                }
+                for entity in &ghosts {
+                    commands.entity(entity).despawn();
+                }
                 for mut hp in bases.iter_mut() {
                     hp.current = hp.max;
                 }
                 *gold = Gold::default();
+                *placement = PlacementMode::default();
                 *state = GameState::Playing;
             }
             Interaction::Hovered => bg.0 = BTN_HOVERED,

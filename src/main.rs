@@ -1,6 +1,7 @@
 mod common;
 mod game;
 mod setup;
+mod towers;
 mod ui;
 mod units;
 
@@ -10,6 +11,7 @@ use bevy::prelude::*;
 use crate::common::*;
 use crate::game::*;
 use crate::setup::*;
+use crate::towers::*;
 use crate::ui::*;
 use crate::units::*;
 
@@ -32,16 +34,21 @@ fn main() {
         .init_resource::<Gold>()
         .init_resource::<MatLibrary>()
         .init_resource::<GameState>()
+        .init_resource::<PlacementMode>()
         .add_systems(Startup, (init_mat_library, setup_world, setup_ui).chain())
         .add_systems(
             Update,
             (
                 buy_button_system,
+                tower_buy_button_system,
+                placement_system,
                 combat_tick,
+                tower_attack_tick,
                 arrow_flight_system,
                 process_damage_effects,
                 animate_units,
                 cleanup_dead_units,
+                cleanup_dead_towers,
                 check_winner,
                 update_gold_text,
                 update_base_hp_text,

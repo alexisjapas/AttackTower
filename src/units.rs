@@ -354,6 +354,7 @@ enum CombatantKind {
     Archer,
     Base,
     Rock,
+    Tower,
 }
 
 pub fn combat_tick(
@@ -379,6 +380,7 @@ pub fn combat_tick(
         Query<(Entity, &Side, &Transform), With<Base>>,
         Query<(Entity, &Side, &Transform), With<Rock>>,
         Query<&mut Health>,
+        Query<(Entity, &Side, &Transform), With<Tower>>,
     )>,
 ) {
     if *state != GameState::Playing {
@@ -420,6 +422,14 @@ pub fn combat_tick(
             kind: CombatantKind::Rock,
         });
     }
+    for (entity, side, transform) in sets.p4().iter() {
+        combatants.push(Combatant {
+            entity,
+            side: *side,
+            pos: transform.translation,
+            kind: CombatantKind::Tower,
+        });
+    }
 
     let dt = time.delta_secs();
     let mut damage_events: Vec<(Entity, i32)> = Vec::new();
@@ -447,7 +457,8 @@ pub fn combat_tick(
                             && (c.kind == CombatantKind::Soldier
                                 || c.kind == CombatantKind::Miner
                                 || c.kind == CombatantKind::Archer
-                                || c.kind == CombatantKind::Base)
+                                || c.kind == CombatantKind::Base
+                                || c.kind == CombatantKind::Tower)
                     })
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -526,7 +537,8 @@ pub fn combat_tick(
                             && (c.kind == CombatantKind::Soldier
                                 || c.kind == CombatantKind::Miner
                                 || c.kind == CombatantKind::Archer
-                                || c.kind == CombatantKind::Base)
+                                || c.kind == CombatantKind::Base
+                                || c.kind == CombatantKind::Tower)
                     })
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -765,7 +777,7 @@ fn attack_arm_angle(kind: UnitKind, phase: f32) -> f32 {
     }
 }
 
-fn spawn_arrow(
+pub fn spawn_arrow(
     commands: &mut Commands,
     lib: &MatLibrary,
     side: Side,
@@ -834,7 +846,7 @@ pub fn arrow_flight_system(
     time: Res<Time>,
     state: Res<GameState>,
     mut arrows: Query<(Entity, &mut Arrow, &mut Transform)>,
-    targets: Query<&Transform, (Or<(With<Unit>, With<Base>)>, Without<Arrow>)>,
+    targets: Query<&Transform, (Or<(With<Unit>, With<Base>, With<Tower>)>, Without<Arrow>)>,
     mut healths: Query<&mut Health>,
 ) {
     if *state != GameState::Playing {

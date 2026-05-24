@@ -25,6 +25,15 @@ pub const ARCHER_COOLDOWN: f32 = 1.7;
 pub const ARCHER_RANGE: f32 = 6.5;
 pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
 
+// Tower
+pub const TOWER_HP: i32 = 30;
+pub const TOWER_DAMAGE: i32 = 3;
+pub const TOWER_COST: u32 = 8;
+pub const TOWER_RANGE: f32 = 7.5;
+pub const TOWER_COOLDOWN: f32 = 1.5;
+pub const TOWER_HEIGHT: f32 = 2.6;
+pub const TOWER_ARROW_HEIGHT: f32 = 2.1;
+
 // Arrows
 pub const ARROW_TRAVEL_SPEED: f32 = 7.0;
 pub const ARROW_ARC_FRACTION: f32 = 0.22;
@@ -36,6 +45,10 @@ pub const MINE_RANGE: f32 = 1.4;
 
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;
+// Terrain between bases is split into three equal parts: left zone, neutral, right zone.
+pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
+pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
+pub const TOWER_PLACEMENT_Z_LIMIT: f32 = 4.0;
 
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
@@ -125,6 +138,18 @@ pub struct Unit;
 
 #[derive(Component)]
 pub struct Rock;
+
+#[derive(Component)]
+pub struct Tower;
+
+#[derive(Component)]
+pub struct TowerGhost;
+
+#[derive(Resource, Default)]
+pub struct PlacementMode {
+    pub side: Option<Side>,
+    pub armed: bool,
+}
 
 #[derive(Component)]
 pub struct Arrow {
@@ -277,4 +302,17 @@ pub struct MatLibrary {
     pub flower_red_mat: Handle<StandardMaterial>,
     pub flower_yellow_mat: Handle<StandardMaterial>,
     pub flower_violet_mat: Handle<StandardMaterial>,
+    // Tower meshes
+    pub tower_foundation: Handle<Mesh>,
+    pub tower_shaft: Handle<Mesh>,
+    pub tower_top_slab: Handle<Mesh>,
+    pub tower_crenel: Handle<Mesh>,
+    pub tower_roof: Handle<Mesh>,
+    // Tower ghost (placement preview)
+    pub tower_ghost_mesh: Handle<Mesh>,
+    pub ghost_valid_mat: Handle<StandardMaterial>,
+    pub ghost_invalid_mat: Handle<StandardMaterial>,
+    // Zone boundary marker
+    pub zone_marker_mesh: Handle<Mesh>,
+    pub zone_marker_mat: Handle<StandardMaterial>,
 }

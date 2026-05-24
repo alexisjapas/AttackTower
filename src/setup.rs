@@ -108,6 +108,39 @@ pub fn init_mat_library(
     lib.bush_mesh = meshes.add(Sphere::new(0.22));
     lib.plant_stem = meshes.add(Cylinder::new(0.012, 0.28));
     lib.plant_flower = meshes.add(Sphere::new(0.065));
+
+    // Tower (assembled from stacked stone primitives).
+    lib.tower_foundation = meshes.add(Cuboid::new(1.05, 0.3, 1.05));
+    lib.tower_shaft = meshes.add(Cylinder::new(0.42, 1.6));
+    lib.tower_top_slab = meshes.add(Cuboid::new(1.15, 0.16, 1.15));
+    lib.tower_crenel = meshes.add(Cuboid::new(0.2, 0.22, 0.2));
+    lib.tower_roof = meshes.add(Cone::new(0.55, 0.55));
+
+    // Ghost preview: vertical cylinder shown at the cursor during placement.
+    lib.tower_ghost_mesh = meshes.add(Cylinder::new(0.55, TOWER_HEIGHT));
+    lib.ghost_valid_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.30, 1.0, 0.45, 0.35),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+    lib.ghost_invalid_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.30, 0.30, 0.35),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+
+    // Thin marker strip painted on the ground at each zone boundary.
+    lib.zone_marker_mesh = meshes.add(Cuboid::new(0.12, 0.02, 12.0));
+    lib.zone_marker_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 0.95, 0.95, 0.55),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
 }
 
 pub fn setup_world(
@@ -143,7 +176,18 @@ pub fn setup_world(
     spawn_rock(&mut commands, &mut meshes, &lib, Side::Left);
     spawn_rock(&mut commands, &mut meshes, &lib, Side::Right);
 
+    spawn_zone_markers(&mut commands, &lib);
     spawn_scenery(&mut commands, &lib);
+}
+
+fn spawn_zone_markers(commands: &mut Commands, lib: &MatLibrary) {
+    for x in [-ZONE_BOUNDARY, ZONE_BOUNDARY] {
+        commands.spawn((
+            Mesh3d(lib.zone_marker_mesh.clone()),
+            MeshMaterial3d(lib.zone_marker_mat.clone()),
+            Transform::from_xyz(x, 0.02, 0.0),
+        ));
+    }
 }
 
 fn spawn_sky(

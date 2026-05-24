@@ -35,25 +35,47 @@ fn main() {
         .init_resource::<MatLibrary>()
         .init_resource::<GameState>()
         .init_resource::<PlacementMode>()
+        .init_resource::<PlayerControllers>()
+        .init_resource::<MenuFocus>()
+        .init_resource::<GameSettings>()
+        .init_resource::<SettingsOrigin>()
         .add_systems(Startup, (init_mat_library, setup_world, setup_ui).chain())
         .add_systems(
             Update,
             (
-                buy_button_system,
-                tower_buy_button_system,
-                placement_system,
-                combat_tick,
-                tower_attack_tick,
-                arrow_flight_system,
-                process_damage_effects,
-                animate_units,
-                cleanup_dead_units,
-                cleanup_dead_towers,
-                check_winner,
-                update_gold_text,
-                update_base_hp_text,
-                update_endgame_overlay,
-                restart_button_system,
+                (
+                    menu_input_system,
+                    settings_input_system,
+                    pause_input_system,
+                    sideselect_input_system,
+                    gameplay_input_system,
+                    placement_system,
+                    combat_tick,
+                    tower_attack_tick,
+                    arrow_flight_system,
+                    process_damage_effects,
+                    animate_units,
+                    cleanup_dead_units,
+                    cleanup_dead_towers,
+                )
+                    .chain(),
+                (
+                    check_winner,
+                    manage_input_components,
+                    update_menu_overlay,
+                    update_settings_overlay,
+                    update_pause_overlay,
+                    update_sideselect_overlay,
+                    update_endgame_overlay,
+                    update_sideselect_cards,
+                    update_fullscreen_toggle_text,
+                    apply_menu_focus_visual,
+                    apply_player_focus_visual,
+                    apply_window_settings,
+                    update_gold_text,
+                    update_base_hp_text,
+                )
+                    .chain(),
             )
                 .chain(),
         )

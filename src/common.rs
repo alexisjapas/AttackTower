@@ -50,6 +50,10 @@ pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
 pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
 pub const TOWER_PLACEMENT_Z_LIMIT: f32 = 4.0;
 
+pub const GAMEPAD_STICK_DEADZONE: f32 = 0.25;
+pub const GAMEPAD_CURSOR_SPEED: f32 = 6.0;
+pub const PLAYER_PANEL_SLOTS: usize = 4;
+
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
@@ -145,10 +149,72 @@ pub struct Tower;
 #[derive(Component)]
 pub struct TowerGhost;
 
+#[derive(Default, Clone, Copy)]
+pub struct PlacementSeat {
+    pub world_pos: Vec3,
+    pub armed: bool,
+}
+
 #[derive(Resource, Default)]
 pub struct PlacementMode {
-    pub side: Option<Side>,
-    pub armed: bool,
+    pub left: Option<PlacementSeat>,
+    pub right: Option<PlacementSeat>,
+}
+
+impl PlacementMode {
+    pub fn get(&self, side: Side) -> Option<PlacementSeat> {
+        match side {
+            Side::Left => self.left,
+            Side::Right => self.right,
+        }
+    }
+
+    pub fn get_mut(&mut self, side: Side) -> &mut Option<PlacementSeat> {
+        match side {
+            Side::Left => &mut self.left,
+            Side::Right => &mut self.right,
+        }
+    }
+
+    pub fn set(&mut self, side: Side, seat: PlacementSeat) {
+        *self.get_mut(side) = Some(seat);
+    }
+
+    pub fn clear(&mut self, side: Side) {
+        *self.get_mut(side) = None;
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct PlayerControllers {
+    pub left: Option<Entity>,
+    pub right: Option<Entity>,
+}
+
+impl PlayerControllers {
+    pub fn get(&self, side: Side) -> Option<Entity> {
+        match side {
+            Side::Left => self.left,
+            Side::Right => self.right,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct MenuFocus {
+    pub index: usize,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct SeatSelection {
+    pub hovered: Side,
+    pub confirmed: bool,
+}
+
+#[derive(Component, Clone, Copy)]
+pub struct PlayerFocus {
+    pub side: Side,
+    pub index: usize,
 }
 
 #[derive(Component)]
@@ -215,8 +281,33 @@ pub struct UnitRig {
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
     #[default]
+    Menu,
+    Settings,
+    SideSelect,
     Playing,
+    Paused,
     Ended(Side),
+}
+
+#[derive(Resource, Default)]
+pub struct GameSettings {
+    pub fullscreen: bool,
+}
+
+#[derive(Resource, Default, Clone, Copy)]
+pub enum SettingsOrigin {
+    #[default]
+    Menu,
+    Paused,
+}
+
+impl SettingsOrigin {
+    pub fn to_state(self) -> GameState {
+        match self {
+            SettingsOrigin::Menu => GameState::Menu,
+            SettingsOrigin::Paused => GameState::Paused,
+        }
+    }
 }
 
 #[derive(Resource)]

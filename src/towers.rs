@@ -76,20 +76,6 @@ pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, side: Side, positi
         });
 }
 
-pub fn spawn_tower_ghost(commands: &mut Commands, lib: &MatLibrary, position: Vec3, valid: bool) {
-    let mat = if valid {
-        lib.ghost_valid_mat.clone()
-    } else {
-        lib.ghost_invalid_mat.clone()
-    };
-    commands.spawn((
-        Mesh3d(lib.tower_ghost_mesh.clone()),
-        MeshMaterial3d(mat),
-        Transform::from_xyz(position.x, TOWER_HEIGHT * 0.5, position.z),
-        TowerGhost,
-    ));
-}
-
 pub fn tower_attack_tick(
     mut commands: Commands,
     time: Res<Time>,

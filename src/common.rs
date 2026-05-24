@@ -47,7 +47,6 @@ pub const ARROW_MIN_ARC: f32 = 1.0;
 
 pub const STARTING_GOLD: u32 = 10;
 pub const ENGAGE_RANGE: f32 = 1.4;
-pub const MINE_RANGE: f32 = 1.4;
 
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;

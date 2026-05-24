@@ -1,4 +1,4 @@
-use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::ecs::system::ParamSet;
 use bevy::prelude::*;
@@ -26,9 +26,17 @@ pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side, slot_i
     ));
 }
 
-pub fn miner_slot_offset(slot: usize) -> Vec3 {
-    let angle = (slot as f32 / MAX_MINERS_PER_SIDE as f32) * TAU;
-    Vec3::new(angle.cos() * MINER_RING_RADIUS, 0.0, angle.sin() * MINER_RING_RADIUS)
+pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
+    // Slots spread across a 180° arc on the base-facing side of the rock, so
+    // miners never need to cross the rock to reach their position. Slot 0 is
+    // the leftmost arc position from the base's POV; the formula is
+    // side-mirrored so both players see the same layout.
+    let n = MAX_MINERS_PER_SIDE as f32;
+    let step = std::f32::consts::PI / n;
+    let angle = (slot as f32 - (n - 1.0) / 2.0) * step;
+    let x_local = angle.cos() * MINER_RING_RADIUS;
+    let z_local = angle.sin() * MINER_RING_RADIUS;
+    Vec3::new(x_local * side.forward(), 0.0, z_local)
 }
 
 pub fn spawn_archer(commands: &mut Commands, lib: &MatLibrary, side: Side, lane: usize) {
@@ -564,11 +572,22 @@ pub fn combat_tick(
                             anim.walking = false;
                             continue;
                         };
-                        let target = rock.pos + miner_slot_offset(slot);
+                        let target = rock.pos + miner_slot_offset(slot, *side);
                         let target_xz = Vec3::new(target.x, 0.0, target.z);
                         let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
                         let dist = (target_xz - pos_xz).length();
-                        if dist <= MINE_RANGE * 0.5 {
+                        // Once we're within one frame's worth of the slot, do
+                        // the final step (step_toward clamps to dist, so this
+                        // lands exactly on the target) and transition. No
+                        // snap: the last frame of motion *is* the arrival.
+                        if dist <= speed.0 * dt {
+                            step_toward(&mut transform, target_xz, speed.0 * dt);
+                            // Face the rock so the mining animation looks
+                            // toward what's being hit, not the approach line.
+                            let to_rock_x = rock.pos.x - transform.translation.x;
+                            let to_rock_z = rock.pos.z - transform.translation.z;
+                            let yaw = to_rock_z.atan2(to_rock_x);
+                            transform.rotation = Quat::from_rotation_y(-yaw);
                             if let Some(phase) = phase_opt.as_deref_mut() {
                                 *phase = MinerPhase::Mining;
                             }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-POC of a 3D bilateral tower defense game (see `README.md` for the design spec, in French). Two players share one screen; each buys units that walk straight toward the opposing base. First base destroyed loses.
+POC of a 3D bilateral tower defense game (see `README.md` for the design spec). Two players share one screen; each buys units that walk straight toward the opposing base. First base destroyed loses.
 
 Stack: **Rust + Bevy 0.18 + Avian3d 0.6**. Dev shell is a **Nix flake** (Vulkan, Wayland/X11, mold linker), loaded automatically via `direnv` when entering the directory.
 

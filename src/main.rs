@@ -114,6 +114,7 @@ fn main() {
                         apply_menu_focus_visual,
                         apply_player_focus_visual,
                         apply_graphics_settings,
+                        apply_dlss_setting,
                         persist_settings,
                         sync_music_playback,
                         update_gold_text,

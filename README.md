@@ -1,63 +1,63 @@
 # AttackTower
 
-POC d'un jeu de tower defense bilatéral en 3D, écrit en Rust avec Bevy et Avian3d.
+POC of a bilateral 3D tower defense game, written in Rust with Bevy and Avian3d.
 
-## Stack technique
+## Tech stack
 
-- **Langage** : Rust
-- **Moteur** : Bevy (dernière version, choisie par cargo)
-- **Physique** : Avian3d
-- **Environnement de dev** : Nix flake (Vulkan, Wayland/X11, mold linker)
+- **Language**: Rust
+- **Engine**: Bevy (latest version, picked by cargo)
+- **Physics**: Avian3d
+- **Dev environment**: Nix flake (Vulkan, Wayland/X11, mold linker)
 
 ## Concept
 
-Tower defense bilatéral en temps réel : un joueur à gauche, un joueur à droite. Chaque joueur achète des unités qui marchent en ligne droite vers la base adverse. Le premier à détruire la base adverse gagne.
+Real-time bilateral tower defense: one player on the left, one on the right. Each player buys units that walk straight toward the opposing base. First to destroy the opposing base wins.
 
-Pour ce POC, les deux joueurs sont contrôlés depuis la même souris (test local).
+For this POC, both players are controlled from the same machine (local testing).
 
-## Spécifications
+## Specifications
 
 ### Bases
-- 1 base par joueur (gauche / droite)
-- **20 PV** chacune
-- Représentation : cube coloré
+- 1 base per player (left / right)
+- **20 HP** each
+- Representation: colored cube
 
-### Unités
-- **10 PV**, **3 d'attaque**
-- Coût : **1 or**
-- Se déplacent tout droit vers la base adverse
-- Représentation : cylindre coloré
+### Units
+- **10 HP**, **3 attack**
+- Cost: **1 gold**
+- Walk straight toward the opposing base
+- Representation: colored cylinder
 
 ### Combat
-- **Mêlée entre unités** : deux unités ennemies qui se rencontrent s'arrêtent et s'attaquent jusqu'à la mort de l'une
-- **Attaque de base** : au contact, l'unité inflige ses dégâts en boucle jusqu'à mourir ou détruire la base
+- **Unit melee**: two opposing units that meet stop and attack each other until one dies
+- **Base attack**: on contact, a unit deals its damage in a loop until it dies or destroys the base
 
-### Économie
-- **10 or** au départ pour chaque joueur
-- **Revenu passif régulier** : +1 or toutes les X secondes pour chaque joueur
+### Economy
+- **10 gold** starting per player
+- **Steady passive income**: +1 gold every X seconds per player
 
-### Caméra & carte
-- Carte horizontale, bases alignées sur l'axe gauche/droite
-- Caméra **fixe** au milieu, en vue 3/4 à 45° du dessus
-- Distance suffisante pour voir les deux bases simultanément
-- Jeu prévu pour deux joueurs sur le même écran (pas de split-screen)
+### Camera & map
+- Horizontal map, bases aligned on the left/right axis
+- **Fixed** camera in the middle, 3/4 view from 45° above
+- Far enough to see both bases simultaneously
+- Designed for two players sharing the same screen (no split-screen)
 
 ### UI
-- **Deux boutons d'achat** d'unité (un par joueur) en bas de l'écran
-- Compteur d'or visible à côté de chaque bouton
+- **Two unit purchase buttons** (one per player) at the bottom of the screen
+- Gold counter visible next to each button
 
-### Fin de partie
-- Quand une base atteint 0 PV : texte **« Player X wins »** affiché
-- **Bouton Restart** pour relancer une partie
+### Endgame
+- When a base reaches 0 HP: **"Player X wins"** text displayed
+- **Restart button** to start a new game
 
-### Direction artistique (POC)
-- Formes géométriques primitives (cubes, cylindres)
-- Couleurs unies (sol vert uni, couleurs distinctes par camp)
-- Pas de textures ni de modèles importés
+### Art direction (POC)
+- Primitive geometric shapes (cubes, cylinders)
+- Solid colors (uniform green ground, distinct colors per side)
+- No textures or imported models
 
-## Lancer le projet
+## Running the project
 
 ```sh
-# Dans le dev shell Nix (auto via direnv)
+# Inside the Nix dev shell (auto via direnv)
 cargo run
 ```

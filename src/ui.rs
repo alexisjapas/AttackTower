@@ -82,6 +82,12 @@ pub enum DescField {
     ImpactVram,
 }
 
+/// Marker on the heading + each row Node of the impact section. Their
+/// `Node.display` is toggled together when the focused slot has no impacts
+/// (Preset selector, Back button) so the labels disappear entirely.
+#[derive(Component)]
+pub struct ImpactRowNode;
+
 #[derive(Component)]
 pub struct SideSelectOverlay;
 
@@ -140,26 +146,33 @@ pub fn setup_ui(mut commands: Commands) {
             ));
         });
 
+    spawn_player_corner(&mut commands, Side::Left, hud_bg, hud_border);
+    spawn_player_corner(&mut commands, Side::Right, hud_bg, hud_border);
+}
+
+fn spawn_player_corner(commands: &mut Commands, side: Side, bg: Color, border: Color) {
+    let (left, right) = match side {
+        Side::Left => (Val::Px(12.0), Val::Auto),
+        Side::Right => (Val::Auto, Val::Px(12.0)),
+    };
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(12.0),
-                left: Val::Px(12.0),
-                right: Val::Px(12.0),
-                justify_content: JustifyContent::SpaceBetween,
+                left,
+                right,
                 padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
-            BackgroundColor(hud_bg),
-            BorderColor::all(hud_border),
+            BackgroundColor(bg),
+            BorderColor::all(border),
             Visibility::Hidden,
             GameHud,
         ))
         .with_children(|parent| {
-            spawn_player_panel(parent, Side::Left);
-            spawn_player_panel(parent, Side::Right);
+            spawn_player_panel(parent, side);
         });
 }
 
@@ -183,17 +196,26 @@ pub fn update_game_hud_visibility(
 fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
     parent
         .spawn((Node {
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: Val::Px(10.0),
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: Val::Px(4.0),
+            min_width: Val::Px(170.0),
             ..default()
         },))
         .with_children(|panel| {
-            spawn_slot(panel, side, 0, &format!("Soldier ({}g)", SOLDIER_COST));
-            spawn_slot(panel, side, 1, &format!("Miner ({}g)", MINER_COST));
+            // Order matches navigation order (0 → 3, top to bottom).
+            spawn_category_header(panel, "Buildings");
+            spawn_slot(panel, side, 0, &format!("Tower ({}g)", TOWER_COST));
+            spawn_category_header(panel, "Combat");
+            spawn_slot(panel, side, 1, &format!("Soldier ({}g)", SOLDIER_COST));
             spawn_slot(panel, side, 2, &format!("Archer ({}g)", ARCHER_COST));
-            spawn_slot(panel, side, 3, &format!("Tower ({}g)", TOWER_COST));
+            spawn_category_header(panel, "Resources");
+            spawn_slot(panel, side, 3, &format!("Miner ({}g)", MINER_COST));
             panel.spawn((
+                Node {
+                    margin: UiRect::top(Val::Px(8.0)),
+                    ..default()
+                },
                 Text::new("Gold: 10"),
                 TextFont::from_font_size(18.0),
                 TextColor(side.color()),
@@ -202,12 +224,25 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
         });
 }
 
+fn spawn_category_header(panel: &mut ChildSpawnerCommands, label: &str) {
+    panel.spawn((
+        Node {
+            margin: UiRect::top(Val::Px(4.0)),
+            ..default()
+        },
+        Text::new(label),
+        TextFont::from_font_size(13.0),
+        TextColor(Color::srgba(0.78, 0.80, 0.86, 0.85)),
+    ));
+}
+
 fn spawn_slot(panel: &mut ChildSpawnerCommands, side: Side, index: usize, label: &str) {
     panel
         .spawn((
             Node {
                 padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
                 border: UiRect::all(Val::Px(2.0)),
+                justify_content: JustifyContent::Center,
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
@@ -527,12 +562,14 @@ fn spawn_description_card(
         card.spawn((
             Node {
                 margin: UiRect::top(Val::Px(8.0)),
+                display: if impacts.is_some() { Display::Flex } else { Display::None },
                 ..default()
             },
-            Text::new(if impacts.is_some() { "Performance impact" } else { "" }),
+            Text::new("Performance impact"),
             TextFont::from_font_size(16.0),
             TextColor(Color::srgb(0.95, 0.95, 0.55)),
             DescField::ImpactHeading,
+            ImpactRowNode,
         ));
 
         spawn_impact_row(card, "CPU", DescField::ImpactCpu, impacts.map(|i| i.0));
@@ -548,12 +585,16 @@ fn spawn_impact_row(
     field: DescField,
     impact: Option<Impact>,
 ) {
-    card.spawn((Node {
-        flex_direction: FlexDirection::Row,
-        align_items: AlignItems::Center,
-        column_gap: Val::Px(8.0),
-        ..default()
-    },))
+    card.spawn((
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            display: if impact.is_some() { Display::Flex } else { Display::None },
+            ..default()
+        },
+        ImpactRowNode,
+    ))
     .with_children(|row| {
         row.spawn((
             Text::new(format!("{:<5}: ", label)),
@@ -616,6 +657,7 @@ pub fn update_settings_description(
     tab: Res<SettingsTab>,
     settings: Res<GameSettings>,
     mut q: Query<(&DescField, &mut Text, &mut TextColor)>,
+    mut rows: Query<&mut Node, With<ImpactRowNode>>,
 ) {
     if *state != GameState::Settings {
         return;
@@ -635,17 +677,17 @@ pub fn update_settings_description(
             DescField::Title => text.0 = title.clone(),
             DescField::Functional => text.0 = functional.clone(),
             DescField::Technical => text.0 = technical.clone(),
-            DescField::ImpactHeading => {
-                text.0 = if impacts.is_some() {
-                    "Performance impact".into()
-                } else {
-                    String::new()
-                };
-            }
+            DescField::ImpactHeading => text.0 = "Performance impact".into(),
             DescField::ImpactCpu => apply_impact(&mut text, &mut color, impacts.map(|i| i.0)),
             DescField::ImpactGpu => apply_impact(&mut text, &mut color, impacts.map(|i| i.1)),
             DescField::ImpactRam => apply_impact(&mut text, &mut color, impacts.map(|i| i.2)),
             DescField::ImpactVram => apply_impact(&mut text, &mut color, impacts.map(|i| i.3)),
+        }
+    }
+    let display = if impacts.is_some() { Display::Flex } else { Display::None };
+    for mut node in &mut rows {
+        if node.display != display {
+            node.display = display;
         }
     }
 }
@@ -1059,7 +1101,7 @@ pub fn apply_player_focus_visual(
         .filter(|(s, k)| **s == Side::Right && **k == UnitKind::Miner)
         .count();
     for (slot, mut node, mut bg, mut border) in &mut slots {
-        let hidden = slot.index == 1
+        let hidden = slot.index == 3
             && match slot.side {
                 Side::Left => miners_left >= MAX_MINERS_PER_SIDE,
                 Side::Right => miners_right >= MAX_MINERS_PER_SIDE,
@@ -1414,16 +1456,20 @@ pub fn gameplay_input_system(
             .iter()
             .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
             .count();
-        let slot_hidden = |slot: usize| slot == 1 && miner_count >= MAX_MINERS_PER_SIDE;
+        // Slot indices match the vertical HUD order: 0 Tower, 1 Soldier,
+        // 2 Archer, 3 Miner. Miner slot hides when the cap is reached.
+        let slot_hidden = |slot: usize| slot == 3 && miner_count >= MAX_MINERS_PER_SIDE;
         // If we're currently parked on a hidden slot (cap just reached), nudge
         // off it so visuals and input stay coherent.
         if slot_hidden(focus.index) {
             focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
         }
 
-        if pad.just_pressed(GamepadButton::DPadLeft) {
+        if pad.just_pressed(GamepadButton::DPadUp) || pad.just_pressed(GamepadButton::DPadLeft) {
             focus.index = next_visible_slot(focus.index, -1, &slot_hidden);
-        } else if pad.just_pressed(GamepadButton::DPadRight) {
+        } else if pad.just_pressed(GamepadButton::DPadDown)
+            || pad.just_pressed(GamepadButton::DPadRight)
+        {
             focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
         }
 
@@ -1433,24 +1479,14 @@ pub fn gameplay_input_system(
 
         if pad.just_pressed(GamepadButton::South) {
             match focus.index {
-                0 => {
+                0 => arm_placement(&mut placement, focus.side),
+                1 => {
                     if gold.try_spend(focus.side, SOLDIER_COST) {
                         let count = units
                             .iter()
                             .filter(|(s, k)| **s == focus.side && **k == UnitKind::Soldier)
                             .count();
                         spawn_soldier(&mut commands, &lib, focus.side, count % LANE_COUNT);
-                    }
-                }
-                1 => {
-                    let miner_count = units
-                        .iter()
-                        .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
-                        .count();
-                    if miner_count < MAX_MINERS_PER_SIDE
-                        && gold.try_spend(focus.side, MINER_COST)
-                    {
-                        spawn_miner(&mut commands, &lib, focus.side, miner_count);
                     }
                 }
                 2 => {
@@ -1462,7 +1498,17 @@ pub fn gameplay_input_system(
                         spawn_archer(&mut commands, &lib, focus.side, count % LANE_COUNT);
                     }
                 }
-                3 => arm_placement(&mut placement, focus.side),
+                3 => {
+                    let miner_count = units
+                        .iter()
+                        .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
+                        .count();
+                    if miner_count < MAX_MINERS_PER_SIDE
+                        && gold.try_spend(focus.side, MINER_COST)
+                    {
+                        spawn_miner(&mut commands, &lib, focus.side, miner_count);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1745,7 +1791,7 @@ pub fn apply_graphics_settings(
     }
     // Window mode + vsync.
     let mode = if settings.fullscreen {
-        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
     } else {
         WindowMode::Windowed
     };
@@ -1762,12 +1808,19 @@ pub fn apply_graphics_settings(
             window.present_mode = present;
         }
     }
-    // Per-camera components.
-    let msaa = match settings.msaa {
-        2 => Msaa::Sample2,
-        4 => Msaa::Sample4,
-        8 => Msaa::Sample8,
-        _ => Msaa::Off,
+    // Per-camera components. Both Solari (raytracing) and TAA force the
+    // deferred renderer, which is incompatible with MSAA — Bevy logs a warning
+    // every frame the camera setting changes if we'd insert MSAA anyway. Drop
+    // it silently in both cases.
+    let msaa = if settings.raytracing || settings.taa {
+        Msaa::Off
+    } else {
+        match settings.msaa {
+            2 => Msaa::Sample2,
+            4 => Msaa::Sample4,
+            8 => Msaa::Sample8,
+            _ => Msaa::Off,
+        }
     };
     for cam in &cameras {
         let mut e = commands.entity(cam);

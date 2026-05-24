@@ -278,10 +278,11 @@ pub fn animate_sun(
     mut sun: Query<&mut Transform, With<Sun>>,
     mut tod: ResMut<TimeOfDay>,
 ) {
-    // Full day/night arc, camera-facing side (-Z half).
+    // Full day/night arc, behind the camera (+Z half) so the sun lights the
+    // camera-facing side of buildings and units instead of backlighting them.
     let angle = (gtime.0 / SUN_DAY_PERIOD) * std::f32::consts::TAU;
     let raw_y = angle.sin();
-    let dir = Vec3::new(angle.cos(), raw_y, -0.45).normalize();
+    let dir = Vec3::new(angle.cos(), raw_y, 0.45).normalize();
     for mut t in &mut sun {
         t.translation = dir * SUN_DISTANCE;
         let up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
@@ -356,10 +357,11 @@ pub fn apply_raytracing_setting() {}
 
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub fn detect_dlss_support(
-    supported: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>,
+    // SR is the broad gate — RR is a strict subset (RR-capable cards also support SR).
+    sr_supported: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>,
     mut avail: ResMut<DlssAvailable>,
 ) {
-    let new = supported.is_some();
+    let new = sr_supported.is_some();
     if avail.0 != new {
         avail.0 = new;
     }
@@ -367,6 +369,64 @@ pub fn detect_dlss_support(
 
 #[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
 pub fn detect_dlss_support(_: ResMut<DlssAvailable>) {}
+
+/// Applies the DLSS setting to every camera. Picks Ray Reconstruction when
+/// raytracing is on (and supported) — RR is the denoiser variant designed to
+/// pair with Solari. Falls back to Super Resolution otherwise. Removes TAA
+/// when DLSS is active since the two are mutually exclusive.
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+pub fn apply_dlss_setting(
+    settings: Res<GameSettings>,
+    avail: Res<DlssAvailable>,
+    rr_supported: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+) {
+    use bevy::anti_alias::dlss::{
+        Dlss, DlssPerfQualityMode, DlssRayReconstructionFeature, DlssSuperResolutionFeature,
+    };
+    use bevy::anti_alias::taa::TemporalAntiAliasing;
+
+    if !settings.is_changed() && !avail.is_changed() {
+        return;
+    }
+    let enabled = settings.dlss && avail.0;
+    let use_rr = enabled && settings.raytracing && rr_supported.is_some();
+    let mode = match settings.dlss_quality {
+        0 => DlssPerfQualityMode::Performance,
+        1 => DlssPerfQualityMode::Balanced,
+        2 => DlssPerfQualityMode::Quality,
+        3 => DlssPerfQualityMode::Dlaa,
+        _ => DlssPerfQualityMode::Auto,
+    };
+    for cam in &cameras {
+        let mut e = commands.entity(cam);
+        if enabled {
+            e.remove::<TemporalAntiAliasing>().insert(Msaa::Off);
+            if use_rr {
+                e.remove::<Dlss<DlssSuperResolutionFeature>>()
+                    .insert(Dlss::<DlssRayReconstructionFeature> {
+                        perf_quality_mode: mode,
+                        reset: false,
+                        _phantom_data: core::marker::PhantomData,
+                    });
+            } else {
+                e.remove::<Dlss<DlssRayReconstructionFeature>>()
+                    .insert(Dlss::<DlssSuperResolutionFeature> {
+                        perf_quality_mode: mode,
+                        reset: false,
+                        _phantom_data: core::marker::PhantomData,
+                    });
+            }
+        } else {
+            e.remove::<Dlss<DlssSuperResolutionFeature>>()
+                .remove::<Dlss<DlssRayReconstructionFeature>>();
+        }
+    }
+}
+
+#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
+pub fn apply_dlss_setting() {}
 
 pub fn update_torches(
     tod: Res<TimeOfDay>,

@@ -769,7 +769,7 @@ pub fn dlss_quality_label(idx: u8) -> &'static str {
         0 => "Performance",
         1 => "Balanced",
         2 => "Quality",
-        3 => "UltraQuality",
+        3 => "DLAA",
         _ => "Auto",
     }
 }

@@ -1,5 +1,7 @@
 mod common;
 mod game;
+mod graphics;
+mod music;
 mod setup;
 mod towers;
 mod ui;
@@ -10,6 +12,8 @@ use bevy::prelude::*;
 
 use crate::common::*;
 use crate::game::*;
+use crate::graphics::*;
+use crate::music::*;
 use crate::setup::*;
 use crate::towers::*;
 use crate::ui::*;
@@ -53,12 +57,17 @@ fn main() {
         .init_resource::<PlacementMode>()
         .init_resource::<PlayerControllers>()
         .init_resource::<MenuFocus>()
-        .init_resource::<GameSettings>()
+        .insert_resource(load_settings())
+        .init_resource::<GraphicsPreset>()
+        .init_resource::<SettingsTab>()
         .init_resource::<SettingsOrigin>()
         .init_resource::<TimeOfDay>()
         .init_resource::<DlssAvailable>()
         .init_resource::<GameTime>()
-        .add_systems(Startup, (init_mat_library, setup_world, setup_ui).chain())
+        .add_systems(
+            Startup,
+            (init_mat_library, setup_world, setup_ui, setup_music).chain(),
+        )
         .add_systems(
             Update,
             (
@@ -82,26 +91,36 @@ fn main() {
                 )
                     .chain(),
                 (
-                    check_winner,
-                    manage_input_components,
-                    update_menu_overlay,
-                    update_settings_overlay,
-                    update_pause_overlay,
-                    update_sideselect_overlay,
-                    update_endgame_overlay,
-                    update_game_hud_visibility,
-                    update_torches,
-                    sync_raytracing_meshes,
-                    apply_raytracing_setting,
-                    detect_dlss_support,
-                    update_sideselect_cards,
-                    update_settings_toggle_texts,
-                    apply_menu_focus_visual,
-                    apply_player_focus_visual,
-                    apply_graphics_settings,
-                    update_gold_text,
-                    update_base_hp_text,
-                    update_clock_text,
+                    (
+                        check_winner,
+                        manage_input_components,
+                        update_menu_overlay,
+                        update_graphics_preset,
+                        update_settings_overlay,
+                        update_pause_overlay,
+                        update_sideselect_overlay,
+                        update_endgame_overlay,
+                        update_game_hud_visibility,
+                        update_torches,
+                        sync_raytracing_meshes,
+                    )
+                        .chain(),
+                    (
+                        apply_raytracing_setting,
+                        detect_dlss_support,
+                        update_sideselect_cards,
+                        update_settings_toggle_texts,
+                        update_settings_description,
+                        apply_menu_focus_visual,
+                        apply_player_focus_visual,
+                        apply_graphics_settings,
+                        persist_settings,
+                        sync_music_playback,
+                        update_gold_text,
+                        update_base_hp_text,
+                        update_clock_text,
+                    )
+                        .chain(),
                 )
                     .chain(),
             )

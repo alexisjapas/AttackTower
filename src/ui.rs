@@ -7,6 +7,10 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, WindowMode};
 
 use crate::common::*;
+use crate::graphics::{
+    description_for, param_label, slot_count, tab_slots, DescriptionKind, GraphicsPreset, Impact,
+    MenuSlot, ParamDescription, ParamId,
+};
 use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
 use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
 
@@ -41,7 +45,31 @@ pub struct SettingsOverlay;
 pub struct PauseOverlay;
 
 #[derive(Component, Clone, Copy)]
-pub struct SettingsToggleText(pub u8);
+pub struct SettingsToggleText(pub ParamId);
+
+#[derive(Component)]
+pub struct PresetText;
+
+/// Marker on a tab toggle in the settings overlay. The overlay is rebuilt
+/// when the active tab changes, so the highlight stays implicit (colours are
+/// set at spawn time).
+#[derive(Component, Clone, Copy)]
+pub struct SettingsTabButton;
+
+/// Marker for one of the four impact rows in the description card. Carries
+/// the channel name so the value can be re-colored on focus change without
+/// duplicate components.
+#[derive(Component, Clone, Copy)]
+pub enum DescField {
+    Title,
+    Functional,
+    Technical,
+    ImpactHeading,
+    ImpactCpu,
+    ImpactGpu,
+    ImpactRam,
+    ImpactVram,
+}
 
 #[derive(Component)]
 pub struct SideSelectOverlay;
@@ -254,11 +282,11 @@ pub fn update_menu_overlay(
                 TextFont::from_font_size(72.0),
                 TextColor(Color::WHITE),
             ));
-            spawn_menu_button(parent, 0, "Jouer", Side::Left.color());
-            spawn_menu_button(parent, 1, "Parametres", Color::srgb(0.7, 0.7, 0.75));
-            spawn_menu_button(parent, 2, "Quitter", Side::Right.color());
+            spawn_menu_button(parent, 0, "Play", Side::Left.color());
+            spawn_menu_button(parent, 1, "Settings", Color::srgb(0.7, 0.7, 0.75));
+            spawn_menu_button(parent, 2, "Quit", Side::Right.color());
             parent.spawn((
-                Text::new("D-pad : naviguer   A : selectionner"),
+                Text::new("D-pad: navigate   A: select"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.7, 0.7, 0.75)),
             ));
@@ -270,10 +298,15 @@ pub fn update_settings_overlay(
     state: Res<GameState>,
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    preset: Res<GraphicsPreset>,
+    tab: Res<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<SettingsOverlay>>,
 ) {
-    if !state.is_changed() {
+    // Rebuild on state change OR on tab change (so switching tab refreshes
+    // the listed parameters).
+    let rebuild = state.is_changed() || (tab.is_changed() && *state == GameState::Settings);
+    if !rebuild {
         return;
     }
     for entity in &overlay {
@@ -283,6 +316,8 @@ pub fn update_settings_overlay(
         return;
     }
     menu_focus.index = 0;
+    let preset = *preset;
+    let tab = *tab;
     commands
         .spawn((
             Node {
@@ -294,62 +329,302 @@ pub fn update_settings_overlay(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(24.0),
+                row_gap: Val::Px(20.0),
+                padding: UiRect::axes(Val::Px(24.0), Val::Px(24.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.05, 0.06, 0.10)),
+            // Translucent so the user can see live changes behind the menu.
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.10, 0.65)),
             SettingsOverlay,
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("Parametres"),
-                TextFont::from_font_size(56.0),
+                Text::new("Settings"),
+                TextFont::from_font_size(52.0),
                 TextColor(Color::WHITE),
             ));
-            let labels = settings_labels(&settings, dlss_avail.0);
-            for (i, label) in labels.iter().enumerate() {
-                spawn_toggle_button(parent, i, label.clone(), SettingsToggleText(i as u8));
-            }
-            spawn_menu_button(parent, labels.len(), "Retour", Color::WHITE);
+
+            spawn_tab_selector(parent, tab);
+
+            // Two-column row: menu on the left, description card on the right.
+            parent
+                .spawn((Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::FlexStart,
+                    column_gap: Val::Px(36.0),
+                    ..default()
+                },))
+                .with_children(|row| {
+                    spawn_settings_menu_column(row, tab, &settings, dlss_avail.0, preset);
+                    spawn_description_card(row, tab, preset);
+                });
+
             parent.spawn((
-                Text::new("D-pad : naviguer   A : modifier / valider   B : retour"),
+                Text::new("D-pad: navigate   A: toggle/confirm   B: back   LB/RB: switch tab"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.75, 0.75, 0.8)),
             ));
         });
 }
 
-fn yn(on: bool) -> &'static str {
-    if on {
-        "OUI"
-    } else {
-        "NON"
+fn spawn_tab_selector(parent: &mut ChildSpawnerCommands, active: SettingsTab) {
+    parent
+        .spawn((Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(12.0),
+            ..default()
+        },))
+        .with_children(|row| {
+            for tab in [SettingsTab::Video, SettingsTab::Graphics] {
+                let selected = tab == active;
+                row.spawn((
+                    Node {
+                        padding: UiRect::axes(Val::Px(20.0), Val::Px(8.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        min_width: Val::Px(140.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(if selected { BTN_FOCUSED } else { BTN_NORMAL }),
+                    BorderColor::all(if selected {
+                        Color::WHITE
+                    } else {
+                        Color::srgb(0.45, 0.46, 0.55)
+                    }),
+                    SettingsTabButton,
+                ))
+                .with_child((
+                    Text::new(tab.label()),
+                    TextFont::from_font_size(20.0),
+                    TextColor(if selected {
+                        Color::WHITE
+                    } else {
+                        Color::srgb(0.78, 0.80, 0.86)
+                    }),
+                ));
+            }
+        });
+}
+
+fn spawn_settings_menu_column(
+    row: &mut ChildSpawnerCommands,
+    tab: SettingsTab,
+    settings: &GameSettings,
+    dlss_supported: bool,
+    preset: GraphicsPreset,
+) {
+    row.spawn((Node {
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Stretch,
+        row_gap: Val::Px(8.0),
+        min_width: Val::Px(420.0),
+        ..default()
+    },))
+    .with_children(|col| {
+        for (i, slot) in tab_slots(tab).iter().enumerate() {
+            match slot {
+                MenuSlot::Preset => spawn_preset_button(col, i, preset),
+                MenuSlot::Param(id) => {
+                    let label = param_label(*id, settings, dlss_supported);
+                    spawn_toggle_button(col, i, label, SettingsToggleText(*id));
+                }
+                MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
+            }
+        }
+    });
+}
+
+fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: GraphicsPreset) {
+    parent
+        .spawn((
+            Node {
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(12.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                min_width: Val::Px(360.0),
+                justify_content: JustifyContent::Center,
+                margin: UiRect::bottom(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            BorderColor::all(Color::srgb(0.85, 0.78, 0.30)),
+            MenuButton(index),
+        ))
+        .with_child((
+            Text::new(format!("Preset: {}", preset.label())),
+            TextFont::from_font_size(22.0),
+            TextColor(Color::srgb(0.95, 0.90, 0.55)),
+            PresetText,
+        ));
+}
+
+fn spawn_description_card(row: &mut ChildSpawnerCommands, tab: SettingsTab, preset: GraphicsPreset) {
+    let card_bg = Color::srgba(0.10, 0.11, 0.15, 0.90);
+    let card_border = Color::srgb(0.32, 0.34, 0.42);
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::FlexStart,
+            row_gap: Val::Px(10.0),
+            width: Val::Px(480.0),
+            min_height: Val::Px(420.0),
+            padding: UiRect::all(Val::Px(20.0)),
+            border: UiRect::all(Val::Px(2.0)),
+            ..default()
+        },
+        BackgroundColor(card_bg),
+        BorderColor::all(card_border),
+    ))
+    .with_children(|card| {
+        let (title, functional, technical, impacts) = describe_for_layout(tab, 0, preset);
+
+        card.spawn((
+            Text::new(title),
+            TextFont::from_font_size(24.0),
+            TextColor(Color::srgb(0.95, 0.95, 0.98)),
+            DescField::Title,
+        ));
+        card.spawn((
+            Text::new(functional),
+            TextFont::from_font_size(15.0),
+            TextColor(Color::srgb(0.85, 0.88, 0.92)),
+            DescField::Functional,
+        ));
+        card.spawn((
+            Text::new(technical),
+            TextFont::from_font_size(15.0),
+            TextColor(Color::srgb(0.70, 0.76, 0.85)),
+            DescField::Technical,
+        ));
+
+        card.spawn((
+            Node {
+                margin: UiRect::top(Val::Px(8.0)),
+                ..default()
+            },
+            Text::new(if impacts.is_some() { "Performance impact" } else { "" }),
+            TextFont::from_font_size(16.0),
+            TextColor(Color::srgb(0.95, 0.95, 0.55)),
+            DescField::ImpactHeading,
+        ));
+
+        spawn_impact_row(card, "CPU", DescField::ImpactCpu, impacts.map(|i| i.0));
+        spawn_impact_row(card, "GPU", DescField::ImpactGpu, impacts.map(|i| i.1));
+        spawn_impact_row(card, "RAM", DescField::ImpactRam, impacts.map(|i| i.2));
+        spawn_impact_row(card, "VRAM", DescField::ImpactVram, impacts.map(|i| i.3));
+    });
+}
+
+fn spawn_impact_row(
+    card: &mut ChildSpawnerCommands,
+    label: &str,
+    field: DescField,
+    impact: Option<Impact>,
+) {
+    card.spawn((Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(8.0),
+        ..default()
+    },))
+    .with_children(|row| {
+        row.spawn((
+            Text::new(format!("{:<5}: ", label)),
+            TextFont::from_font_size(16.0),
+            TextColor(Color::srgb(0.80, 0.82, 0.88)),
+        ));
+        let (value_text, color) = match impact {
+            Some(i) => (i.label().to_string(), i.color()),
+            None => (String::new(), Color::WHITE),
+        };
+        row.spawn((
+            Text::new(value_text),
+            TextFont::from_font_size(16.0),
+            TextColor(color),
+            field,
+        ));
+    });
+}
+
+/// Returns (title, functional, technical, optional impacts (cpu, gpu, ram, vram)).
+fn describe_for_layout(
+    tab: SettingsTab,
+    menu_idx: usize,
+    preset: GraphicsPreset,
+) -> (String, String, String, Option<(Impact, Impact, Impact, Impact)>) {
+    match description_for(tab, menu_idx, preset) {
+        DescriptionKind::Param(ParamDescription {
+            title,
+            functional,
+            technical,
+            cpu,
+            gpu,
+            ram,
+            vram,
+        }) => (
+            title.into(),
+            functional.into(),
+            technical.into(),
+            Some((cpu, gpu, ram, vram)),
+        ),
+        DescriptionKind::Preset {
+            title,
+            functional,
+            technical,
+        } => (title.into(), functional.into(), technical.into(), None),
+        DescriptionKind::None => (
+            "Back".into(),
+            "Return to the previous screen without changing the configuration.".into(),
+            String::new(),
+            None,
+        ),
     }
 }
 
-pub const SETTINGS_TOGGLE_COUNT: usize = 10;
+pub fn update_settings_description(
+    state: Res<GameState>,
+    focus: Res<MenuFocus>,
+    preset: Res<GraphicsPreset>,
+    tab: Res<SettingsTab>,
+    mut q: Query<(&DescField, &mut Text, &mut TextColor)>,
+) {
+    if *state != GameState::Settings {
+        return;
+    }
+    if !focus.is_changed() && !preset.is_changed() && !state.is_changed() && !tab.is_changed() {
+        return;
+    }
+    let (title, functional, technical, impacts) = describe_for_layout(*tab, focus.index, *preset);
+    for (field, mut text, mut color) in &mut q {
+        match field {
+            DescField::Title => text.0 = title.clone(),
+            DescField::Functional => text.0 = functional.clone(),
+            DescField::Technical => text.0 = technical.clone(),
+            DescField::ImpactHeading => {
+                text.0 = if impacts.is_some() {
+                    "Performance impact".into()
+                } else {
+                    String::new()
+                };
+            }
+            DescField::ImpactCpu => apply_impact(&mut text, &mut color, impacts.map(|i| i.0)),
+            DescField::ImpactGpu => apply_impact(&mut text, &mut color, impacts.map(|i| i.1)),
+            DescField::ImpactRam => apply_impact(&mut text, &mut color, impacts.map(|i| i.2)),
+            DescField::ImpactVram => apply_impact(&mut text, &mut color, impacts.map(|i| i.3)),
+        }
+    }
+}
 
-fn settings_labels(s: &GameSettings, dlss_supported: bool) -> [String; SETTINGS_TOGGLE_COUNT] {
-    [
-        format!("Plein ecran : {}", yn(s.fullscreen)),
-        format!("VSync : {}", yn(s.vsync)),
-        if cfg!(feature = "raytracing") {
-            format!("Raytracing (Solari) : {}", yn(s.raytracing))
-        } else {
-            "Raytracing (Solari) : INDISPO".to_string()
-        },
-        if cfg!(feature = "dlss") && dlss_supported {
-            format!("DLSS : {}", yn(s.dlss))
-        } else {
-            "DLSS : INDISPO".to_string()
-        },
-        format!("TAA : {}", yn(s.taa)),
-        format!("Bloom : {}", yn(s.bloom)),
-        format!("Atmosphere : {}", yn(s.atmosphere)),
-        format!("Brouillard volumetrique : {}", yn(s.volumetric_fog)),
-        format!("Brouillard distance : {}", yn(s.distance_fog)),
-        format!("Tonemapping : {}", tonemapping_label(s.tonemapping)),
-    ]
+fn apply_impact(text: &mut Text, color: &mut TextColor, impact: Option<Impact>) {
+    match impact {
+        Some(i) => {
+            text.0 = i.label().to_string();
+            color.0 = i.color();
+        }
+        None => {
+            text.0.clear();
+            color.0 = Color::WHITE;
+        }
+    }
 }
 
 fn spawn_toggle_button<M: Component>(
@@ -418,11 +693,11 @@ pub fn update_pause_overlay(
                 TextFont::from_font_size(56.0),
                 TextColor(Color::WHITE),
             ));
-            spawn_menu_button(parent, 0, "Reprendre", Side::Left.color());
-            spawn_menu_button(parent, 1, "Parametres", Color::srgb(0.7, 0.7, 0.75));
-            spawn_menu_button(parent, 2, "Menu principal", Side::Right.color());
+            spawn_menu_button(parent, 0, "Resume", Side::Left.color());
+            spawn_menu_button(parent, 1, "Settings", Color::srgb(0.7, 0.7, 0.75));
+            spawn_menu_button(parent, 2, "Main menu", Side::Right.color());
             parent.spawn((
-                Text::new("D-pad : naviguer   A : selectionner   Start/B : reprendre"),
+                Text::new("D-pad: navigate   A: select   Start/B: resume"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.8, 0.8, 0.85)),
             ));
@@ -523,16 +798,20 @@ pub fn pause_input_system(
 pub fn update_settings_toggle_texts(
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
-    mut q: Query<(&SettingsToggleText, &mut Text)>,
+    preset: Res<GraphicsPreset>,
+    mut toggles: Query<(&SettingsToggleText, &mut Text), Without<PresetText>>,
+    mut preset_texts: Query<&mut Text, With<PresetText>>,
 ) {
-    if !settings.is_changed() && !dlss_avail.is_changed() {
+    let changed = settings.is_changed() || dlss_avail.is_changed() || preset.is_changed();
+    if !changed {
         return;
     }
-    let labels = settings_labels(&settings, dlss_avail.0);
-    for (tag, mut text) in &mut q {
-        if let Some(label) = labels.get(tag.0 as usize) {
-            text.0 = label.clone();
-        }
+    for (tag, mut text) in &mut toggles {
+        text.0 = param_label(tag.0, &settings, dlss_avail.0);
+    }
+    let preset_label = format!("Preset: {}", preset.label());
+    for mut text in &mut preset_texts {
+        text.0 = preset_label.clone();
     }
 }
 
@@ -575,7 +854,7 @@ pub fn update_endgame_overlay(
                 ));
                 spawn_menu_button(parent, 0, "Restart", Color::WHITE);
                 parent.spawn((
-                    Text::new("A : retour menu"),
+                    Text::new("A: back to menu"),
                     TextFont::from_font_size(16.0),
                     TextColor(Color::srgb(0.8, 0.8, 0.85)),
                 ));
@@ -621,7 +900,7 @@ pub fn update_sideselect_overlay(
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("Choisir un cote"),
+                Text::new("Choose a side"),
                 TextFont::from_font_size(48.0),
                 TextColor(Color::WHITE),
             ));
@@ -637,7 +916,7 @@ pub fn update_sideselect_overlay(
                 });
             parent.spawn((
                 Text::new(
-                    "D-pad gauche/droite : choisir   A : confirmer   B : annuler   Start : demarrer",
+                    "D-pad left/right: choose   A: confirm   B: cancel   Start: launch",
                 ),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.75, 0.75, 0.8)),
@@ -665,14 +944,14 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
         .with_children(|card| {
             card.spawn((
                 Text::new(match side {
-                    Side::Left => "Joueur Gauche",
-                    Side::Right => "Joueur Droit",
+                    Side::Left => "Left Player",
+                    Side::Right => "Right Player",
                 }),
                 TextFont::from_font_size(26.0),
                 TextColor(side.color()),
             ));
             card.spawn((
-                Text::new("Libre"),
+                Text::new("Available"),
                 TextFont::from_font_size(20.0),
                 TextColor(Color::srgb(0.85, 0.85, 0.9)),
                 SideCardStatus(side),
@@ -780,13 +1059,13 @@ pub fn update_sideselect_cards(
             .filter(|s| !s.confirmed && s.hovered == slot.0)
             .count();
         if confirmed {
-            text.0 = "Verrouille".to_string();
+            text.0 = "Locked in".to_string();
             color.0 = slot.0.color();
         } else if hovered > 0 {
-            text.0 = format!("Selectionne ({})", hovered);
+            text.0 = format!("Selected ({})", hovered);
             color.0 = Color::WHITE;
         } else {
-            text.0 = "Libre".to_string();
+            text.0 = "Available".to_string();
             color.0 = Color::srgb(0.7, 0.7, 0.75);
         }
     }
@@ -1301,6 +1580,8 @@ pub fn settings_input_system(
     mut state: ResMut<GameState>,
     mut settings: ResMut<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    preset: Res<GraphicsPreset>,
+    mut tab: ResMut<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
     origin: Res<SettingsOrigin>,
     gamepads: Query<&Gamepad>,
@@ -1312,8 +1593,8 @@ pub fn settings_input_system(
         return;
     }
 
-    const SLOTS: usize = SETTINGS_TOGGLE_COUNT + 1; // toggles + Retour
-    if menu_focus.index >= SLOTS {
+    let slots = slot_count(*tab);
+    if menu_focus.index >= slots {
         menu_focus.index = 0;
     }
 
@@ -1321,6 +1602,7 @@ pub fn settings_input_system(
     let mut down = false;
     let mut activate = false;
     let mut back = false;
+    let mut switch_tab = false;
     for pad in &gamepads {
         if pad.just_pressed(GamepadButton::DPadUp) {
             up = true;
@@ -1334,13 +1616,24 @@ pub fn settings_input_system(
         if pad.just_pressed(GamepadButton::East) {
             back = true;
         }
+        if pad.just_pressed(GamepadButton::LeftTrigger)
+            || pad.just_pressed(GamepadButton::RightTrigger)
+        {
+            switch_tab = true;
+        }
+    }
+
+    if switch_tab {
+        *tab = tab.toggle();
+        menu_focus.index = 0;
+        return;
     }
 
     if up {
-        menu_focus.index = (menu_focus.index + SLOTS - 1) % SLOTS;
+        menu_focus.index = (menu_focus.index + slots - 1) % slots;
     }
     if down {
-        menu_focus.index = (menu_focus.index + 1) % SLOTS;
+        menu_focus.index = (menu_focus.index + 1) % slots;
     }
 
     if back {
@@ -1351,27 +1644,34 @@ pub fn settings_input_system(
     if !activate {
         return;
     }
-    match menu_focus.index {
-        0 => settings.fullscreen = !settings.fullscreen,
-        1 => settings.vsync = !settings.vsync,
-        2 => {
-            if cfg!(feature = "raytracing") {
-                settings.raytracing = !settings.raytracing;
-            }
+    let slot = tab_slots(*tab).get(menu_focus.index).copied();
+    match slot {
+        Some(MenuSlot::Preset) => {
+            let next = preset.cycle();
+            next.apply(&mut settings, dlss_avail.0);
         }
-        3 => {
-            if cfg!(feature = "dlss") && dlss_avail.0 {
-                settings.dlss = !settings.dlss;
+        Some(MenuSlot::Param(id)) => match id {
+            ParamId::Fullscreen => settings.fullscreen = !settings.fullscreen,
+            ParamId::VSync => settings.vsync = !settings.vsync,
+            ParamId::Hdr => settings.hdr = !settings.hdr,
+            ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
+            ParamId::Raytracing => {
+                if cfg!(feature = "raytracing") {
+                    settings.raytracing = !settings.raytracing;
+                }
             }
-        }
-        4 => settings.taa = !settings.taa,
-        5 => settings.bloom = !settings.bloom,
-        6 => settings.atmosphere = !settings.atmosphere,
-        7 => settings.volumetric_fog = !settings.volumetric_fog,
-        8 => settings.distance_fog = !settings.distance_fog,
-        9 => settings.tonemapping = (settings.tonemapping + 1) % 4,
-        n if n == SETTINGS_TOGGLE_COUNT => *state = origin.to_state(),
-        _ => {}
+            ParamId::Dlss => {
+                if cfg!(feature = "dlss") && dlss_avail.0 {
+                    settings.dlss = !settings.dlss;
+                }
+            }
+            ParamId::Taa => settings.taa = !settings.taa,
+            ParamId::Bloom => settings.bloom = !settings.bloom,
+            ParamId::Atmosphere => settings.atmosphere = !settings.atmosphere,
+            ParamId::VolumetricFog => settings.volumetric_fog = !settings.volumetric_fog,
+            ParamId::DistanceFog => settings.distance_fog = !settings.distance_fog,
+        },
+        Some(MenuSlot::Back) | None => *state = origin.to_state(),
     }
 }
 
@@ -1408,6 +1708,12 @@ pub fn apply_graphics_settings(
     // Per-camera components.
     for cam in &cameras {
         let mut e = commands.entity(cam);
+        // HDR is a marker component on the camera in Bevy 0.18.
+        if settings.hdr {
+            e.insert(bevy::render::view::Hdr);
+        } else {
+            e.remove::<bevy::render::view::Hdr>();
+        }
         if settings.bloom {
             e.insert(Bloom::NATURAL);
         } else {
@@ -1452,14 +1758,5 @@ pub fn apply_graphics_settings(
             2 => Tonemapping::Reinhard,
             _ => Tonemapping::None,
         };
-    }
-}
-
-pub fn tonemapping_label(idx: u8) -> &'static str {
-    match idx {
-        0 => "ACES Fitted",
-        1 => "Tony McMapface",
-        2 => "Reinhard",
-        _ => "None",
     }
 }

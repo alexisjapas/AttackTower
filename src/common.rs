@@ -344,10 +344,11 @@ pub enum GameState {
     Ended(Side),
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone, Copy, PartialEq, Eq)]
 pub struct GameSettings {
     pub fullscreen: bool,
     pub vsync: bool,
+    pub hdr: bool,
     pub raytracing: bool,
     pub dlss: bool,
     pub taa: bool,
@@ -363,6 +364,7 @@ impl Default for GameSettings {
         Self {
             fullscreen: true,
             vsync: true,
+            hdr: true,
             raytracing: false,
             dlss: false,
             taa: false,
@@ -371,6 +373,31 @@ impl Default for GameSettings {
             volumetric_fog: true,
             distance_fog: true,
             tonemapping: 0,
+        }
+    }
+}
+
+/// Which page of the settings menu is active. The selector lives at the top
+/// of the overlay and is switched with the shoulder buttons.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    #[default]
+    Video,
+    Graphics,
+}
+
+impl SettingsTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Video => "Video",
+            SettingsTab::Graphics => "Graphics",
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            SettingsTab::Video => SettingsTab::Graphics,
+            SettingsTab::Graphics => SettingsTab::Video,
         }
     }
 }

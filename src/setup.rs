@@ -176,6 +176,10 @@ pub fn setup_world(
     let camera = commands
         .spawn((
             Camera3d::default(),
+            // `apply_graphics_settings` keeps `Hdr` in sync with the saved
+            // setting; starting with HDR on avoids a one-frame SDR fallback
+            // when the persisted config has it enabled.
+            bevy::render::view::Hdr,
             Transform::from_xyz(0.0, 20.0, 24.0).looking_at(Vec3::ZERO, Vec3::Y),
             Atmosphere::earthlike(medium),
             AtmosphereSettings::default(),

@@ -100,11 +100,14 @@ pub fn init_mat_library(
     });
     lib.flame_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.65, 0.25),
-        emissive: LinearRgba::rgb(8.0, 4.0, 1.0),
+        // Strong emissive so the mesh acts as a light source under Solari
+        // (raytraced lighting ignores PointLight, only DirectionalLight +
+        // emissive meshes contribute).
+        emissive: LinearRgba::rgb(60.0, 28.0, 8.0),
         unlit: true,
         ..default()
     });
-    lib.flame_mesh = meshes.add(Cone::new(0.09, 0.20));
+    lib.flame_mesh = meshes.add(Cone::new(0.14, 0.32));
     lib.torch_pole_mesh = meshes.add(Cylinder::new(0.025, 0.30));
 
     lib.body_mesh = meshes.add(Capsule3d::new(0.20, 0.28));

@@ -532,7 +532,15 @@ pub fn combat_tick(
                     anim.walking = false;
                     continue;
                 }
-                transform.translation.x += walk_sign * speed.0 * dt;
+                let enemy_base = combatants
+                    .iter()
+                    .find(|c| c.kind == CombatantKind::Base && c.side != *side);
+                if let Some(base) = enemy_base {
+                    let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
+                    step_toward(&mut transform, target, speed.0 * dt);
+                } else {
+                    transform.translation.x += walk_sign * speed.0 * dt;
+                }
                 transform.translation.z +=
                     allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
                 anim.walking = true;
@@ -674,7 +682,15 @@ pub fn combat_tick(
                     anim.walking = false;
                     continue;
                 }
-                transform.translation.x += walk_sign * speed.0 * dt;
+                let enemy_base = combatants
+                    .iter()
+                    .find(|c| c.kind == CombatantKind::Base && c.side != *side);
+                if let Some(base) = enemy_base {
+                    let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
+                    step_toward(&mut transform, target, speed.0 * dt);
+                } else {
+                    transform.translation.x += walk_sign * speed.0 * dt;
+                }
                 transform.translation.z +=
                     allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
                 anim.walking = true;

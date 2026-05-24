@@ -1031,6 +1031,18 @@ pub fn sideselect_input_system(
     }
 }
 
+fn next_visible_slot(start: usize, dir: i32, hidden: &impl Fn(usize) -> bool) -> usize {
+    let n = PLAYER_PANEL_SLOTS;
+    let mut idx = start;
+    for _ in 0..n {
+        idx = (idx as i32 + dir).rem_euclid(n as i32) as usize;
+        if !hidden(idx) {
+            return idx;
+        }
+    }
+    start // all hidden — fall back
+}
+
 pub fn spawn_initial_miners(
     state: Res<GameState>,
     mut commands: Commands,
@@ -1083,10 +1095,21 @@ pub fn gameplay_input_system(
             continue;
         }
 
+        let miner_count = units
+            .iter()
+            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
+            .count();
+        let slot_hidden = |slot: usize| slot == 1 && miner_count >= MAX_MINERS_PER_SIDE;
+        // If we're currently parked on a hidden slot (cap just reached), nudge
+        // off it so visuals and input stay coherent.
+        if slot_hidden(focus.index) {
+            focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
+        }
+
         if pad.just_pressed(GamepadButton::DPadLeft) {
-            focus.index = (focus.index + PLAYER_PANEL_SLOTS - 1) % PLAYER_PANEL_SLOTS;
+            focus.index = next_visible_slot(focus.index, -1, &slot_hidden);
         } else if pad.just_pressed(GamepadButton::DPadRight) {
-            focus.index = (focus.index + 1) % PLAYER_PANEL_SLOTS;
+            focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
         }
 
         if pad.just_pressed(GamepadButton::West) {

@@ -30,9 +30,11 @@ jobs:
             target: macos-arm64
             artifact: attack_tower
             archive_ext: tar.gz
-            # bevy_solari (the `raytracing` feature) needs Vulkan hardware RT
-            # extensions which MoltenVK does not expose on macOS — drop it.
-            features: "--no-default-features --features dlss,force_disable_dlss"
+            # macOS uses Metal; wgpu does not build its Vulkan HAL there.
+            # Both bevy_solari (raytracing) and the dlss feature pull
+            # vulkan-only code paths through bevy_render, so we strip
+            # everything optional.
+            features: "--no-default-features"
 
     steps:
       - uses: actions/checkout@v4
@@ -71,9 +73,13 @@ jobs:
       - name: Stage artifact
         shell: bash
         run: |
-          mkdir -p dist/attack_tower
+          mkdir -p dist/attack_tower/assets
           cp "target/release/${{ matrix.artifact }}" "dist/attack_tower/"
-          cp -r assets "dist/attack_tower/"
+          # Assets are optional (the music file is not committed yet) — copy
+          # whatever is present without failing if the tree is empty.
+          if [ -d assets ] && [ -n "$(ls -A assets 2>/dev/null)" ]; then
+            cp -r assets/. "dist/attack_tower/assets/"
+          fi
 
       - name: Archive (Unix)
         if: matrix.os != 'windows-latest'

@@ -341,6 +341,7 @@ pub fn update_settings_overlay(
     state: Res<GameState>,
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    rt_avail: Res<RaytracingAvailable>,
     preset: Res<GraphicsPreset>,
     tab: Res<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
@@ -409,7 +410,14 @@ pub fn update_settings_overlay(
                     ..default()
                 },))
                 .with_children(|row| {
-                    spawn_settings_menu_column(row, tab, &settings, dlss_avail.0, preset);
+                    spawn_settings_menu_column(
+                        row,
+                        tab,
+                        &settings,
+                        dlss_avail.0,
+                        rt_avail.0,
+                        preset,
+                    );
                     spawn_description_card(row, tab, preset, &settings);
                 });
 
@@ -465,6 +473,7 @@ fn spawn_settings_menu_column(
     tab: SettingsTab,
     settings: &GameSettings,
     dlss_supported: bool,
+    rt_supported: bool,
     preset: GraphicsPreset,
 ) {
     row.spawn((Node {
@@ -479,7 +488,7 @@ fn spawn_settings_menu_column(
                 match slot {
                     MenuSlot::Preset => spawn_preset_button(col, i, preset),
                     MenuSlot::Param(id) => {
-                        let label = param_label(*id, settings, dlss_supported);
+                        let label = param_label(*id, settings, dlss_supported, rt_supported);
                         spawn_toggle_button(col, i, label, SettingsToggleText(*id));
                     }
                     MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
@@ -916,16 +925,20 @@ fn reset_match(
 pub fn update_settings_toggle_texts(
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    rt_avail: Res<RaytracingAvailable>,
     preset: Res<GraphicsPreset>,
     mut toggles: Query<(&SettingsToggleText, &mut Text), Without<PresetText>>,
     mut preset_texts: Query<&mut Text, With<PresetText>>,
 ) {
-    let changed = settings.is_changed() || dlss_avail.is_changed() || preset.is_changed();
+    let changed = settings.is_changed()
+        || dlss_avail.is_changed()
+        || rt_avail.is_changed()
+        || preset.is_changed();
     if !changed {
         return;
     }
     for (tag, mut text) in &mut toggles {
-        text.0 = param_label(tag.0, &settings, dlss_avail.0);
+        text.0 = param_label(tag.0, &settings, dlss_avail.0, rt_avail.0);
     }
     let preset_label = format!("Preset: {}", preset.label());
     for mut text in &mut preset_texts {
@@ -1672,6 +1685,7 @@ pub fn settings_input_system(
     mut state: ResMut<GameState>,
     mut settings: ResMut<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    rt_avail: Res<RaytracingAvailable>,
     preset: Res<GraphicsPreset>,
     mut tab: ResMut<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
@@ -1740,7 +1754,7 @@ pub fn settings_input_system(
     match slot {
         Some(MenuSlot::Preset) => {
             let next = preset.cycle();
-            next.apply(&mut settings, dlss_avail.0);
+            next.apply(&mut settings, dlss_avail.0, rt_avail.0);
         }
         Some(MenuSlot::Param(id)) => match id {
             ParamId::Fullscreen => settings.fullscreen = !settings.fullscreen,
@@ -1757,7 +1771,7 @@ pub fn settings_input_system(
             ParamId::Exposure => settings.exposure = (settings.exposure + 1) % 3,
             ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
             ParamId::Raytracing => {
-                if cfg!(feature = "raytracing") {
+                if cfg!(feature = "raytracing") && rt_avail.0 {
                     settings.raytracing = !settings.raytracing;
                 }
             }

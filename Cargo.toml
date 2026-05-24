@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["raytracing", "dlss", "force_disable_dlss"]
-raytracing = ["bevy/bevy_solari"]
+raytracing = ["bevy/bevy_solari", "dep:wgpu"]
 # DLSS is included by default but mocked (no NVIDIA NGX SDK required to build).
 # At runtime, `DlssRayReconstructionSupported` will be absent so the menu
 # entry stays disabled. To enable real DLSS, drop `force_disable_dlss`:
@@ -16,3 +16,8 @@ force_disable_dlss = ["bevy/force_disable_dlss"]
 [dependencies]
 avian3d = "0.6.1"
 bevy = "0.18.1"
+# Used at startup to probe whether the adapter actually supports the BLAS/TLAS
+# limits Solari needs — without this, GPUs that advertise the raytracing
+# feature flag but report `max_blas_geometry_count = 0` (e.g. AMD Vega) crash
+# the renderer on the first frame.
+wgpu = { version = "27.0.1", optional = true }

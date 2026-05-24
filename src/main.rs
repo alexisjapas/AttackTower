@@ -25,6 +25,15 @@ fn main() {
     app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(
         bevy::asset::uuid::uuid!("a4c91e02-d6fe-4b30-9277-91e8c6f4a9d3"),
     ));
+    // Decided once, before the renderer is built: if the adapter can't actually
+    // service Solari, we skip both the plugin and its feature request so the
+    // renderer never tries to allocate BLAS/TLAS on hardware that reports
+    // limits of 0.
+    let raytracing_supported = probe_raytracing_support();
+    let mut settings = load_settings();
+    if !raytracing_supported {
+        settings.raytracing = false;
+    }
     let default_plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "AttackTower".into(),
@@ -33,19 +42,26 @@ fn main() {
         ..default()
     });
     #[cfg(feature = "raytracing")]
-    let default_plugins = default_plugins.set(bevy::render::RenderPlugin {
-        render_creation: bevy::render::settings::WgpuSettings {
-            features: bevy::solari::prelude::SolariPlugins::required_wgpu_features(),
+    let default_plugins = if raytracing_supported {
+        default_plugins.set(bevy::render::RenderPlugin {
+            render_creation: bevy::render::settings::WgpuSettings {
+                features: bevy::solari::prelude::SolariPlugins::required_wgpu_features(),
+                ..default()
+            }
+            .into(),
             ..default()
-        }
-        .into(),
-        ..default()
-    });
+        })
+    } else {
+        default_plugins
+    };
     app.add_plugins(default_plugins)
         .add_plugins(PhysicsPlugins::default());
     #[cfg(feature = "raytracing")]
-    app.add_plugins(bevy::solari::prelude::SolariPlugins);
-    app.insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.10)))
+    if raytracing_supported {
+        app.add_plugins(bevy::solari::prelude::SolariPlugins);
+    }
+    app.insert_resource(RaytracingAvailable(raytracing_supported))
+        .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.10)))
         .insert_resource(GlobalAmbientLight {
             color: Color::WHITE,
             brightness: 60.0,
@@ -57,7 +73,7 @@ fn main() {
         .init_resource::<PlacementMode>()
         .init_resource::<PlayerControllers>()
         .init_resource::<MenuFocus>()
-        .insert_resource(load_settings())
+        .insert_resource(settings)
         .init_resource::<GraphicsPreset>()
         .init_resource::<SettingsTab>()
         .init_resource::<SettingsOrigin>()

@@ -324,6 +324,7 @@ pub fn sync_raytracing_meshes() {}
 #[cfg(feature = "raytracing")]
 pub fn apply_raytracing_setting(
     settings: Res<GameSettings>,
+    avail: Res<RaytracingAvailable>,
     mut commands: Commands,
     cameras: Query<Entity, With<Camera3d>>,
     enabled: Query<Entity, With<SolariLighting>>,
@@ -331,7 +332,9 @@ pub fn apply_raytracing_setting(
     if !settings.is_changed() {
         return;
     }
-    if settings.raytracing {
+    // SolariPlugins isn't loaded when the adapter can't support it, so
+    // inserting SolariLighting would be a no-op at best and a crash at worst.
+    if settings.raytracing && avail.0 {
         for cam in &cameras {
             if enabled.get(cam).is_err() {
                 commands.entity(cam).insert((
@@ -354,6 +357,36 @@ pub fn apply_raytracing_setting(
 
 #[cfg(not(feature = "raytracing"))]
 pub fn apply_raytracing_setting() {}
+
+/// Probes the default adapter for the wgpu features AND limits Solari needs.
+/// Run once before `App::new()` so we can skip loading `SolariPlugins` (and
+/// stop requesting its features) on machines that would crash at first frame.
+/// Some adapters (e.g. AMD Vega) advertise the raytracing feature flag but
+/// report `max_blas_geometry_count = 0`, so checking features alone isn't
+/// enough — both must be present.
+#[cfg(feature = "raytracing")]
+pub fn probe_raytracing_support() -> bool {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let Ok(adapter) =
+        bevy::tasks::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+    else {
+        return false;
+    };
+    let needs = bevy::solari::prelude::SolariPlugins::required_wgpu_features();
+    let limits = adapter.limits();
+    adapter.features().contains(needs)
+        && limits.max_blas_geometry_count > 0
+        && limits.max_tlas_instance_count > 0
+}
+
+#[cfg(not(feature = "raytracing"))]
+pub fn probe_raytracing_support() -> bool {
+    false
+}
 
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub fn detect_dlss_support(

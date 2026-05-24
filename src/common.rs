@@ -180,6 +180,9 @@ pub enum TimeOfDay {
 pub struct DlssAvailable(pub bool);
 
 #[derive(Resource, Default, Clone, Copy)]
+pub struct RaytracingAvailable(pub bool);
+
+#[derive(Resource, Default, Clone, Copy)]
 pub struct GameTime(pub f32);
 
 #[derive(Resource)]

@@ -137,7 +137,7 @@ impl GraphicsPreset {
     /// (fullscreen, vsync, hdr, msaa, tonemapping) and sub-parameters
     /// (exposure, bloom intensity, dlss quality, ...) are left untouched —
     /// they are managed independently from the preset.
-    pub fn apply(self, s: &mut GameSettings, dlss_supported: bool) {
+    pub fn apply(self, s: &mut GameSettings, dlss_supported: bool, rt_supported: bool) {
         match self {
             GraphicsPreset::Low => {
                 s.raytracing = false;
@@ -179,7 +179,7 @@ impl GraphicsPreset {
                 s.motion_blur = false;
             }
             GraphicsPreset::Ultra => {
-                s.raytracing = cfg!(feature = "raytracing");
+                s.raytracing = cfg!(feature = "raytracing") && rt_supported;
                 s.dlss = cfg!(feature = "dlss") && dlss_supported;
                 s.taa = true;
                 s.fxaa = false;
@@ -195,10 +195,10 @@ impl GraphicsPreset {
         }
     }
 
-    pub fn detect(s: &GameSettings, dlss_supported: bool) -> Self {
+    pub fn detect(s: &GameSettings, dlss_supported: bool, rt_supported: bool) -> Self {
         for preset in [Self::Low, Self::Medium, Self::High, Self::Ultra] {
             let mut probe = *s;
-            preset.apply(&mut probe, dlss_supported);
+            preset.apply(&mut probe, dlss_supported, rt_supported);
             if quality_matches(s, &probe) {
                 return preset;
             }
@@ -224,12 +224,13 @@ fn quality_matches(a: &GameSettings, b: &GameSettings) -> bool {
 pub fn update_graphics_preset(
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
+    rt_avail: Res<RaytracingAvailable>,
     mut preset: ResMut<GraphicsPreset>,
 ) {
-    if !settings.is_changed() && !dlss_avail.is_changed() {
+    if !settings.is_changed() && !dlss_avail.is_changed() && !rt_avail.is_changed() {
         return;
     }
-    let new = GraphicsPreset::detect(&settings, dlss_avail.0);
+    let new = GraphicsPreset::detect(&settings, dlss_avail.0, rt_avail.0);
     if *preset != new {
         *preset = new;
     }
@@ -651,7 +652,12 @@ pub fn param_description(id: ParamId) -> ParamDescription {
 /// Resolve a short human-readable label for a single parameter, suitable as
 /// the button text. Sub-parameters use a `   - ` indent prefix so the
 /// hierarchy reads at a glance.
-pub fn param_label(id: ParamId, s: &GameSettings, dlss_supported: bool) -> String {
+pub fn param_label(
+    id: ParamId,
+    s: &GameSettings,
+    dlss_supported: bool,
+    rt_supported: bool,
+) -> String {
     match id {
         ParamId::Fullscreen => format!("Fullscreen: {}", on_off(s.fullscreen)),
         ParamId::VSync => format!("VSync: {}", on_off(s.vsync)),
@@ -660,7 +666,7 @@ pub fn param_label(id: ParamId, s: &GameSettings, dlss_supported: bool) -> Strin
         ParamId::Exposure => format!("  - Exposure: {}", exposure_label(s.exposure)),
         ParamId::Tonemapping => format!("Tonemapping: {}", tonemapping_label(s.tonemapping)),
         ParamId::Raytracing => {
-            if cfg!(feature = "raytracing") {
+            if cfg!(feature = "raytracing") && rt_supported {
                 format!("Raytracing (Solari): {}", on_off(s.raytracing))
             } else {
                 "Raytracing (Solari): N/A".into()

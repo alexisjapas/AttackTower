@@ -4,62 +4,85 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-POC of a 3D bilateral tower defense game (see `README.md` for the full design spec, in French). Two players share one screen; each buys units that walk straight toward the opposite base. First base destroyed loses.
+POC of a 3D bilateral tower defense game (see `README.md` for the design spec, in French). Two players share one screen; each buys units that walk straight toward the opposing base. First base destroyed loses.
 
-Stack: **Rust + Bevy 0.18 + Avian3d 0.6**. Dev shell is a **Nix flake** (Vulkan, Wayland/X11, mold linker) and is loaded automatically via `direnv` when entering the directory.
+Stack: **Rust + Bevy 0.18 + Avian3d 0.6**. Dev shell is a **Nix flake** (Vulkan, Wayland/X11, mold linker), loaded automatically via `direnv` when entering the directory.
+
+Input is **gamepad-only**: two pads connect during the SideSelect screen, each player claims a side, and from then on every action (menu nav, unit purchase, tower placement) flows through that pad's bindings.
 
 ## Commands
 
 ```sh
-cargo run        # build + run the game (uses mold via flake RUSTFLAGS)
-cargo check      # fast type-check
-cargo build      # debug build
-cargo build --release
+cargo run                 # debug build + run
+cargo run --release       # release build + run (use this for perf-sensitive testing)
+cargo check               # fast type-check
 cargo fmt
 cargo clippy
 ```
 
-There are no tests yet.
+No tests in this repository.
 
 The Nix dev shell exports `LD_LIBRARY_PATH` for Vulkan/Wayland/X11. Running outside the shell will fail to find dynamic libraries — always run from within `nix develop` (or with direnv active).
 
+### Cargo features (declared in `Cargo.toml`)
+
+- `raytracing` (default) — pulls in `bevy_solari` for raytraced GI/shadows. Guarded everywhere with `#[cfg(feature = "raytracing")]`.
+- `dlss` + `force_disable_dlss` (both default) — DLSS is *compiled in but mocked* by default so the build never needs the NVIDIA NGX SDK; at runtime `DlssRayReconstructionSupported` is absent and the menu entry stays "N/A". To run with real DLSS:
+  ```sh
+  cargo run --release --no-default-features --features raytracing,dlss
+  ```
+
+### Runtime resources
+
+- Music: `setup_music` loads `assets/music/main_theme.ogg` at startup. The file is intentionally optional — Bevy logs a "Path not found" error and the game runs silently if it is missing.
+- Persisted settings: `~/.config/attack_tower/settings.cfg` (or `$XDG_CONFIG_HOME/attack_tower/settings.cfg`). Written by `persist_settings` whenever `GameSettings` changes; loaded once at startup by `load_settings` in place of `init_resource::<GameSettings>()`.
+
 ## Architecture
 
-The game is a single Bevy `App` in `src/main.rs` that registers `DefaultPlugins`, `PhysicsPlugins::default()` (from Avian), and chains all gameplay systems in `Update`. The current chain order in `main.rs` matters: state changes propagate to UI within one frame because systems are explicitly `.chain()`ed.
+The whole game is a single Bevy `App` in `src/main.rs` that registers `DefaultPlugins`, `PhysicsPlugins::default()` (Avian, no colliders used yet — it is loaded so physics can be layered in later without re-architecting), and chains all gameplay systems in `Update`. **System order in `main.rs` matters** — both the "world tick" chunk and the "UI/state reaction" chunk are explicitly `.chain()`ed, and they themselves are chained together so state changes propagate to overlays within the same frame.
 
-Code is split into small focused modules:
+The Update tuple was split into two nested `.chain()` groups because the flat tuple exceeded Bevy's 20-element trait-impl ceiling. Adding a new system requires placing it inside one of the sub-tuples, not flattening them back.
 
-- **`common.rs`** — shared types touched by every other module. Defines:
-  - `Side` enum (`Left`/`Right`) with helpers (`forward()`, `color()`, `opposite()`, `label()`). Used both as a marker component and inside resources.
-  - Components: `Base`, `Unit`, `Health { current, max }`, `Damage`, `MoveSpeed`, `AttackCooldown`.
-  - Resources: `Gold { left, right }`, `IncomeTimer`, `MatLibrary` (cached mesh + material handles), `GameState` (`Playing` | `Ended(Side)`).
-  - **All tunable constants live here** (HP, damage, gold cost, income interval, speeds, ranges, geometry). Change game balance from one place.
+Modules:
 
-- **`setup.rs`** — `Startup` systems. `init_mat_library` populates `MatLibrary` (must run before anything spawns meshes — enforced via `.chain()` in `main.rs`). `setup_world` spawns the camera (fixed 3/4 view), directional light, ground plane, and both bases.
+- **`common.rs`** — shared types touched by every other module.
+  - `Side` (`Left`/`Right`) — both a marker `Component` (on each unit/base/tower) and an enum used as a map key for `Gold`. When querying entities filter on the side component; when reading resources, pass the side enum.
+  - Components: `Base`, `Unit`, `Tower`, `Rock`, `Health`, `Damage`, `MoveSpeed`, `AttackCooldown`, plus animation helpers (`UnitAnim`, `UnitRig`), miner state (`MinerCarry`, `MinerPhase`, `MinerSlot`), `Arrow`, `Sun`, `TorchLight`/`TorchFlame`.
+  - Resources: `Gold`, `GameState`, `GameSettings`, `SettingsTab`, `SettingsOrigin`, `MatLibrary`, `PlacementMode`, `PlayerControllers`, `MenuFocus`, `TimeOfDay`, `GameTime`, `DlssAvailable`, `AtmosphereHandle`.
+  - **All tunable constants live here** (HP, damage, gold cost, speeds, ranges, geometry, animation amplitudes, day/night period). Change game balance from one place.
 
-- **`units.rs`** — unit lifecycle and combat:
-  - `spawn_unit(commands, lib, side)` is the single spawn entry point, called by the buy button system in `ui.rs` and (indirectly) used in tests of game balance. It applies a small Z jitter so stacked spawns don't perfectly overlap.
-  - `combat_tick` is the heart of the game. It uses a `ParamSet` over three conflicting queries (units' `Transform`, bases' `Transform`, anyone's `Health`) and runs in three passes per frame:
-    1. snapshot every combatant's position into a `Vec<Combatant>`,
-    2. for each unit decide move-vs-attack (nearest enemy within `ENGAGE_RANGE` ⇒ attack on cooldown, else step forward; an ally directly ahead within roughly one diameter blocks movement to form a queue),
-    3. apply queued damage events to targets.
-  - `cleanup_dead_units` despawns units (not bases) when `Health.current <= 0`.
+- **`setup.rs`** — `Startup` systems and most static scene authoring. `init_mat_library` populates `MatLibrary` (must run before anything spawns meshes — enforced via `.chain()` in `main.rs`). `setup_world` spawns the camera (fixed 3/4 view with `Hdr`, atmosphere, bloom, fog), the sun, the ground, mountains, sky, both castles, rocks, zone markers, scenery (trees, bushes, grass, flowers, torches). Also hosts the Solari/DLSS sync systems (gated on cargo features) and `update_torches` / `animate_sun`.
 
-- **`economy.rs`** — `tick_income` advances `IncomeTimer` and grants both players +1 gold per tick. Skips when `GameState != Playing`.
+- **`units.rs`** — unit lifecycle, AI and rendering rigs.
+  - Three unit kinds spawned by `spawn_soldier`, `spawn_miner`, `spawn_archer`. All units share a body+head+limbs rig (`UnitRig`) so `animate_units` can drive walking/attack/hurt/death animations from a single component (`UnitAnim`).
+  - `combat_tick` is the heart of the game. It uses a `ParamSet` over three conflicting queries (units' `Transform`, bases' `Transform`, anyone's `Health`) and runs in three passes per frame: snapshot, decide (move vs. attack with `ENGAGE_RANGE`; allies directly ahead within ~one diameter form a queue), apply damage. Miners have their own multi-phase loop (`ToRock` → `Mining` → `Returning`) and feed `Gold` on deposit — there is no passive income.
+  - Archers shoot via `spawn_arrow` + `arrow_flight_system` (parabolic trajectory; arrow despawns on impact and applies queued damage).
+  - `process_damage_effects` and `cleanup_dead_units` close the loop.
 
-- **`game.rs`** — `check_winner` flips `GameState` to `Ended(side.opposite())` as soon as a base hits 0 HP.
+- **`towers.rs`** — tower entity construction and aiming (`tower_attack_tick`, `cleanup_dead_towers`, validity helpers `is_valid_tower_zone` and `collides_with_existing_tower`). Each side may only build inside its own zone, defined by `ZONE_BOUNDARY` in `common.rs`.
 
-- **`ui.rs`** — all Bevy UI lives here:
-  - `setup_ui` builds the persistent HUD (top: base HP texts, bottom: per-side Buy button + gold counter).
-  - `buy_button_system` reads `Interaction` on `BuyButton(Side)`, spends gold, calls `spawn_unit`.
-  - `update_gold_text` / `update_base_hp_text` refresh HUD text from the corresponding resource/query.
-  - `update_endgame_overlay` reacts to `GameState` changes: on `Ended`, it spawns a full-screen overlay with the winner text and a Restart button; on `Playing`, it despawns any existing overlay. Despawn is implicitly recursive (Bevy 0.18 relationships), so removing the overlay also removes the Restart button.
-  - `restart_button_system` despawns all units, resets each base's HP to its `max`, resets `Gold` and `IncomeTimer`, and sets `GameState::Playing`.
+- **`game.rs`** — `check_winner` flips `GameState::Ended(winner)` as soon as a base hits 0 HP.
+
+- **`graphics.rs`** — settings UX backend (no UI nodes here).
+  - `GraphicsPreset` (Low/Medium/High/Ultra/Custom) — `apply` only touches quality fields (raytracing, dlss, taa, bloom, atmosphere, volumetric_fog, distance_fog), display fields (fullscreen, vsync, hdr, tonemapping) are preserved as user prefs. `Custom` is **derived**, never selected: `update_graphics_preset` runs `detect` whenever settings or DLSS availability change.
+  - `ParamId` + `MenuSlot` + `tab_slots(tab)` — single source of truth for "which slots live on which tab and in what order". `ui.rs` builds buttons by iterating this; `settings_input_system` matches on the slot at the focused index. Adding a parameter means editing both `ParamId` and the tab arrays.
+  - `param_description` returns functional + technical text + per-resource `Impact` (None/Low/Medium/High). Use `Impact::None` (renders as "none") for parameters with no measurable cost.
+  - `load_settings` / `save_settings` / `persist_settings` — flat `key = value` text file, sanitised against missing build features on load.
+
+- **`music.rs`** — `setup_music` spawns a paused looping `AudioPlayer<AudioSource>` tagged `GameMusic`. `sync_music_playback` calls `sink.play()` only while `GameState::Playing` (Paused, Menu, Settings, SideSelect, Ended all keep it silent). Also reacts to `Added<AudioSink>` so playback starts the moment the file finishes loading.
+
+- **`ui.rs`** — every Bevy UI node lives here, plus the per-state input systems.
+  - `setup_ui` builds the persistent HUD (top: base HP + clock, bottom: per-side panel with unit buttons and gold).
+  - State overlays: `update_menu_overlay`, `update_settings_overlay`, `update_pause_overlay`, `update_sideselect_overlay`, `update_endgame_overlay` — each rebuilds when `GameState` changes (the settings overlay also rebuilds on `SettingsTab` change). Despawn is implicitly recursive (Bevy 0.18 relationships) so removing the root removes the children.
+  - Settings overlay is the most involved: a two-column layout (menu column + description card) with a tab strip (Video/Graphics) at the top, switched with LB/RB. Background is translucent so live setting changes are visible behind the menu. Description text is populated at spawn and refreshed by `update_settings_description` on `MenuFocus`/`SettingsTab`/`GraphicsPreset` change.
+  - Input systems: `menu_input_system`, `sideselect_input_system`, `pause_input_system`, `settings_input_system`, `gameplay_input_system`, `placement_system` — all guard with `*state == GameState::X` and `!state.is_changed()` so the system that just transitioned the state does not also process the activation press.
+  - `apply_graphics_settings` is the bridge from `GameSettings` back to the camera / window. It inserts or removes per-camera components (`Hdr`, `Bloom`, `Atmosphere`, `VolumetricFog`, `DistanceFog`, `TemporalAntiAliasing`) and mutates `Window.mode` / `Window.present_mode` / `Tonemapping`. Raytracing/DLSS toggling lives in `setup.rs` (feature-gated).
 
 ### Conventions and Bevy 0.18 specifics
 
-- `Side` is intentionally both a `Component` (on each unit/base) **and** an enum used as a map key for `Gold`. When querying, filter on the side component; when reading resources, pass the side enum.
-- All gameplay systems early-return when `GameState != Playing`, so pause/end-game freezes movement, income, and combat without touching the schedule.
-- Bevy 0.18 uses the `Camera3d` / `Mesh3d` / `MeshMaterial3d` component pattern (not bundles). Ambient light is configured via the `GlobalAmbientLight` resource (the per-camera `AmbientLight` component overrides it).
+- All gameplay systems early-return when `GameState != Playing`, so pause/end-game freezes movement, income, combat and music without touching the schedule.
+- Camera setup pattern: `Camera3d::default()` + `Hdr` marker (`bevy::render::view::Hdr`) — HDR is no longer a field on `Camera`.
+- Use `Camera3d` / `Mesh3d` / `MeshMaterial3d` component pattern (no bundles). Ambient light is configured via the `GlobalAmbientLight` resource (the per-camera `AmbientLight` component overrides it).
 - `Time::delta_secs()` (not `delta_seconds`) for f32 delta time in this Bevy version.
-- Avian's `PhysicsPlugins` is loaded but no colliders or rigid bodies are used yet — movement is direct `Transform` mutation and combat is distance-based. The plugin is in place so physics can be layered on later without re-architecting.
+- `Msaa::Off` is required wherever the deferred renderer is active (Solari forces deferred globally; TAA also forces MSAA off).
+- Audio: `AudioPlayer<AudioSource>` is the spawnable component; the `AudioSink` component is added **asynchronously** by the audio backend once the source decodes — systems that pause/resume must tolerate the sink being absent for the first few frames.

@@ -346,17 +346,32 @@ pub enum GameState {
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq)]
 pub struct GameSettings {
+    // Video / display
     pub fullscreen: bool,
     pub vsync: bool,
     pub hdr: bool,
+    pub msaa: u8, // 0=Off 2=2x 4=4x 8=8x
+    pub tonemapping: u8, // 0=AcesFitted 1=TonyMcMapface 2=Reinhard 3=None
+
+    // Graphics / quality on-off toggles
     pub raytracing: bool,
     pub dlss: bool,
     pub taa: bool,
+    pub fxaa: bool,
     pub bloom: bool,
     pub atmosphere: bool,
     pub volumetric_fog: bool,
     pub distance_fog: bool,
-    pub tonemapping: u8, // 0=AcesFitted 1=TonyMcMapface 2=Reinhard 3=None
+    pub ssao: bool,
+    pub shadows: bool,
+    pub motion_blur: bool,
+
+    // Sub-parameters (only meaningful when their parent is on; persist regardless)
+    pub exposure: u8,        // 0=Low 1=Default 2=High (EV100 11 / 13 / 15)
+    pub bloom_intensity: u8, // 0=Low 1=Default 2=High
+    pub dlss_quality: u8,    // 0=Performance 1=Balanced 2=Quality 3=UltraQuality 4=Auto
+    pub ssao_quality: u8,    // 0=Low 1=Medium 2=High 3=Ultra
+    pub fog_density: u8,     // 0=Low 1=Default 2=High
 }
 
 impl Default for GameSettings {
@@ -365,14 +380,24 @@ impl Default for GameSettings {
             fullscreen: true,
             vsync: true,
             hdr: true,
+            msaa: 0,
+            tonemapping: 0,
             raytracing: false,
             dlss: false,
             taa: false,
+            fxaa: false,
             bloom: true,
             atmosphere: true,
             volumetric_fog: true,
             distance_fog: true,
-            tonemapping: 0,
+            ssao: false,
+            shadows: true,
+            motion_blur: false,
+            exposure: 1,
+            bloom_intensity: 1,
+            dlss_quality: 2,
+            ssao_quality: 2,
+            fog_density: 1,
         }
     }
 }

@@ -1,10 +1,21 @@
+use bevy::anti_alias::fxaa::Fxaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
+use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::VolumetricFog;
-use bevy::pbr::{Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff};
+use bevy::pbr::{
+    Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
+    ScreenSpaceAmbientOcclusionQualityLevel,
+};
 use bevy::post_process::bloom::Bloom;
+use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
+use bevy::render::view::Msaa;
 use bevy::window::{PresentMode, WindowMode};
+
+use crate::graphics::{
+    bloom_intensity_value, exposure_ev100, fog_density_value,
+};
 
 use crate::common::*;
 use crate::graphics::{
@@ -273,7 +284,7 @@ pub fn update_menu_overlay(
                 row_gap: Val::Px(24.0),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.05, 0.06, 0.10)),
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.10, 0.65)),
             MenuOverlay,
         ))
         .with_children(|parent| {
@@ -303,19 +314,30 @@ pub fn update_settings_overlay(
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<SettingsOverlay>>,
 ) {
-    // Rebuild on state change OR on tab change (so switching tab refreshes
-    // the listed parameters).
-    let rebuild = state.is_changed() || (tab.is_changed() && *state == GameState::Settings);
+    // Rebuild on state change, on tab change, OR on settings change (so
+    // sub-parameter rows appear/disappear immediately when their parent
+    // toggle flips).
+    let in_settings = *state == GameState::Settings;
+    let rebuild = state.is_changed()
+        || (in_settings && (tab.is_changed() || settings.is_changed()));
     if !rebuild {
         return;
     }
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
-    if *state != GameState::Settings {
+    if !in_settings {
         return;
     }
-    menu_focus.index = 0;
+    // Reset focus only when entering Settings or switching tab. Settings-only
+    // rebuilds (parameter toggles) keep focus where the user just acted.
+    if state.is_changed() || tab.is_changed() {
+        menu_focus.index = 0;
+    }
+    let slots_after = slot_count(*tab, &settings);
+    if menu_focus.index >= slots_after {
+        menu_focus.index = slots_after.saturating_sub(1);
+    }
     let preset = *preset;
     let tab = *tab;
     commands
@@ -356,7 +378,7 @@ pub fn update_settings_overlay(
                 },))
                 .with_children(|row| {
                     spawn_settings_menu_column(row, tab, &settings, dlss_avail.0, preset);
-                    spawn_description_card(row, tab, preset);
+                    spawn_description_card(row, tab, preset, &settings);
                 });
 
             parent.spawn((
@@ -421,7 +443,7 @@ fn spawn_settings_menu_column(
         ..default()
     },))
     .with_children(|col| {
-        for (i, slot) in tab_slots(tab).iter().enumerate() {
+        for (i, slot) in tab_slots(tab, settings).iter().enumerate() {
             match slot {
                 MenuSlot::Preset => spawn_preset_button(col, i, preset),
                 MenuSlot::Param(id) => {
@@ -457,7 +479,12 @@ fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: 
         ));
 }
 
-fn spawn_description_card(row: &mut ChildSpawnerCommands, tab: SettingsTab, preset: GraphicsPreset) {
+fn spawn_description_card(
+    row: &mut ChildSpawnerCommands,
+    tab: SettingsTab,
+    preset: GraphicsPreset,
+    settings: &GameSettings,
+) {
     let card_bg = Color::srgba(0.10, 0.11, 0.15, 0.90);
     let card_border = Color::srgb(0.32, 0.34, 0.42);
     row.spawn((
@@ -475,7 +502,8 @@ fn spawn_description_card(row: &mut ChildSpawnerCommands, tab: SettingsTab, pres
         BorderColor::all(card_border),
     ))
     .with_children(|card| {
-        let (title, functional, technical, impacts) = describe_for_layout(tab, 0, preset);
+        let (title, functional, technical, impacts) =
+            describe_for_layout(tab, 0, preset, settings);
 
         card.spawn((
             Text::new(title),
@@ -550,8 +578,9 @@ fn describe_for_layout(
     tab: SettingsTab,
     menu_idx: usize,
     preset: GraphicsPreset,
+    settings: &GameSettings,
 ) -> (String, String, String, Option<(Impact, Impact, Impact, Impact)>) {
-    match description_for(tab, menu_idx, preset) {
+    match description_for(tab, menu_idx, preset, settings) {
         DescriptionKind::Param(ParamDescription {
             title,
             functional,
@@ -585,15 +614,22 @@ pub fn update_settings_description(
     focus: Res<MenuFocus>,
     preset: Res<GraphicsPreset>,
     tab: Res<SettingsTab>,
+    settings: Res<GameSettings>,
     mut q: Query<(&DescField, &mut Text, &mut TextColor)>,
 ) {
     if *state != GameState::Settings {
         return;
     }
-    if !focus.is_changed() && !preset.is_changed() && !state.is_changed() && !tab.is_changed() {
+    if !focus.is_changed()
+        && !preset.is_changed()
+        && !state.is_changed()
+        && !tab.is_changed()
+        && !settings.is_changed()
+    {
         return;
     }
-    let (title, functional, technical, impacts) = describe_for_layout(*tab, focus.index, *preset);
+    let (title, functional, technical, impacts) =
+        describe_for_layout(*tab, focus.index, *preset, &settings);
     for (field, mut text, mut color) in &mut q {
         match field {
             DescField::Title => text.0 = title.clone(),
@@ -895,7 +931,7 @@ pub fn update_sideselect_overlay(
                 row_gap: Val::Px(28.0),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.05, 0.06, 0.10)),
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.10, 0.65)),
             SideSelectOverlay,
         ))
         .with_children(|parent| {
@@ -1593,7 +1629,7 @@ pub fn settings_input_system(
         return;
     }
 
-    let slots = slot_count(*tab);
+    let slots = slot_count(*tab, &settings);
     if menu_focus.index >= slots {
         menu_focus.index = 0;
     }
@@ -1644,7 +1680,7 @@ pub fn settings_input_system(
     if !activate {
         return;
     }
-    let slot = tab_slots(*tab).get(menu_focus.index).copied();
+    let slot = tab_slots(*tab, &settings).get(menu_focus.index).copied();
     match slot {
         Some(MenuSlot::Preset) => {
             let next = preset.cycle();
@@ -1653,7 +1689,16 @@ pub fn settings_input_system(
         Some(MenuSlot::Param(id)) => match id {
             ParamId::Fullscreen => settings.fullscreen = !settings.fullscreen,
             ParamId::VSync => settings.vsync = !settings.vsync,
+            ParamId::Msaa => {
+                settings.msaa = match settings.msaa {
+                    0 => 2,
+                    2 => 4,
+                    4 => 8,
+                    _ => 0,
+                };
+            }
             ParamId::Hdr => settings.hdr = !settings.hdr,
+            ParamId::Exposure => settings.exposure = (settings.exposure + 1) % 3,
             ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
             ParamId::Raytracing => {
                 if cfg!(feature = "raytracing") {
@@ -1665,11 +1710,21 @@ pub fn settings_input_system(
                     settings.dlss = !settings.dlss;
                 }
             }
+            ParamId::DlssQuality => settings.dlss_quality = (settings.dlss_quality + 1) % 5,
             ParamId::Taa => settings.taa = !settings.taa,
+            ParamId::Fxaa => settings.fxaa = !settings.fxaa,
             ParamId::Bloom => settings.bloom = !settings.bloom,
+            ParamId::BloomIntensity => {
+                settings.bloom_intensity = (settings.bloom_intensity + 1) % 3;
+            }
             ParamId::Atmosphere => settings.atmosphere = !settings.atmosphere,
             ParamId::VolumetricFog => settings.volumetric_fog = !settings.volumetric_fog,
+            ParamId::FogDensity => settings.fog_density = (settings.fog_density + 1) % 3,
             ParamId::DistanceFog => settings.distance_fog = !settings.distance_fog,
+            ParamId::Ssao => settings.ssao = !settings.ssao,
+            ParamId::SsaoQuality => settings.ssao_quality = (settings.ssao_quality + 1) % 4,
+            ParamId::Shadows => settings.shadows = !settings.shadows,
+            ParamId::MotionBlur => settings.motion_blur = !settings.motion_blur,
         },
         Some(MenuSlot::Back) | None => *state = origin.to_state(),
     }
@@ -1681,6 +1736,8 @@ pub fn apply_graphics_settings(
     mut commands: Commands,
     cameras: Query<Entity, With<Camera3d>>,
     mut tonemap: Query<&mut Tonemapping>,
+    mut exposures: Query<&mut Exposure, With<Camera3d>>,
+    mut sun: Query<&mut DirectionalLight, With<Sun>>,
     mut windows: Query<&mut Window>,
 ) {
     if !settings.is_changed() {
@@ -1706,8 +1763,16 @@ pub fn apply_graphics_settings(
         }
     }
     // Per-camera components.
+    let msaa = match settings.msaa {
+        2 => Msaa::Sample2,
+        4 => Msaa::Sample4,
+        8 => Msaa::Sample8,
+        _ => Msaa::Off,
+    };
     for cam in &cameras {
         let mut e = commands.entity(cam);
+        // MSAA is a per-camera component in Bevy 0.18.
+        e.insert(msaa);
         // HDR is a marker component on the camera in Bevy 0.18.
         if settings.hdr {
             e.insert(bevy::render::view::Hdr);
@@ -1715,7 +1780,10 @@ pub fn apply_graphics_settings(
             e.remove::<bevy::render::view::Hdr>();
         }
         if settings.bloom {
-            e.insert(Bloom::NATURAL);
+            e.insert(Bloom {
+                intensity: bloom_intensity_value(settings.bloom_intensity),
+                ..Bloom::NATURAL
+            });
         } else {
             e.remove::<Bloom>();
         }
@@ -1729,7 +1797,7 @@ pub fn apply_graphics_settings(
         }
         if settings.volumetric_fog {
             e.insert(VolumetricFog {
-                ambient_intensity: 0.05,
+                ambient_intensity: fog_density_value(settings.fog_density),
                 ..default()
             });
         } else {
@@ -1749,6 +1817,29 @@ pub fn apply_graphics_settings(
         } else {
             e.remove::<TemporalAntiAliasing>();
         }
+        if settings.fxaa {
+            e.insert(Fxaa::default());
+        } else {
+            e.remove::<Fxaa>();
+        }
+        if settings.ssao {
+            e.insert(ScreenSpaceAmbientOcclusion {
+                quality_level: match settings.ssao_quality {
+                    0 => ScreenSpaceAmbientOcclusionQualityLevel::Low,
+                    1 => ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                    3 => ScreenSpaceAmbientOcclusionQualityLevel::Ultra,
+                    _ => ScreenSpaceAmbientOcclusionQualityLevel::High,
+                },
+                ..default()
+            });
+        } else {
+            e.remove::<ScreenSpaceAmbientOcclusion>();
+        }
+        if settings.motion_blur {
+            e.insert(MotionBlur::default());
+        } else {
+            e.remove::<MotionBlur>();
+        }
     }
     // Tonemapping (mutates existing component on the camera).
     for mut t in &mut tonemap {
@@ -1758,5 +1849,19 @@ pub fn apply_graphics_settings(
             2 => Tonemapping::Reinhard,
             _ => Tonemapping::None,
         };
+    }
+    // Exposure (HDR sub-parameter; meaningful only when HDR is on but applying
+    // is harmless either way).
+    let target_ev100 = exposure_ev100(settings.exposure);
+    for mut exp in &mut exposures {
+        if (exp.ev100 - target_ev100).abs() > f32::EPSILON {
+            exp.ev100 = target_ev100;
+        }
+    }
+    // Sun shadows on/off.
+    for mut light in &mut sun {
+        if light.shadows_enabled != settings.shadows {
+            light.shadows_enabled = settings.shadows;
+        }
     }
 }

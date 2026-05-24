@@ -12,17 +12,29 @@ use crate::common::*;
 /// tab) decoupled from label/description lookup.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ParamId {
+    // Video / display
     Fullscreen,
     VSync,
+    Msaa,
     Hdr,
+    Exposure, // sub-param of Hdr
     Tonemapping,
+    // Graphics / quality
     Raytracing,
     Dlss,
+    DlssQuality, // sub-param of Dlss
     Taa,
+    Fxaa,
     Bloom,
+    BloomIntensity, // sub-param of Bloom
     Atmosphere,
     VolumetricFog,
+    FogDensity, // sub-param of VolumetricFog
     DistanceFog,
+    Ssao,
+    SsaoQuality, // sub-param of Ssao
+    Shadows,
+    MotionBlur,
 }
 
 /// A row in the settings menu. The `Preset` slot only exists on the Graphics
@@ -34,31 +46,55 @@ pub enum MenuSlot {
     Back,
 }
 
-pub fn tab_slots(tab: SettingsTab) -> &'static [MenuSlot] {
+/// Build the menu rows for `tab` given the current settings. Sub-parameters
+/// only appear when their parent toggle is on, so the slot list shrinks /
+/// grows as the user enables features.
+pub fn tab_slots(tab: SettingsTab, s: &GameSettings) -> Vec<MenuSlot> {
+    let mut v = Vec::with_capacity(16);
     match tab {
-        SettingsTab::Video => &[
-            MenuSlot::Param(ParamId::Fullscreen),
-            MenuSlot::Param(ParamId::VSync),
-            MenuSlot::Param(ParamId::Hdr),
-            MenuSlot::Param(ParamId::Tonemapping),
-            MenuSlot::Back,
-        ],
-        SettingsTab::Graphics => &[
-            MenuSlot::Preset,
-            MenuSlot::Param(ParamId::Raytracing),
-            MenuSlot::Param(ParamId::Dlss),
-            MenuSlot::Param(ParamId::Taa),
-            MenuSlot::Param(ParamId::Bloom),
-            MenuSlot::Param(ParamId::Atmosphere),
-            MenuSlot::Param(ParamId::VolumetricFog),
-            MenuSlot::Param(ParamId::DistanceFog),
-            MenuSlot::Back,
-        ],
+        SettingsTab::Video => {
+            v.push(MenuSlot::Param(ParamId::Fullscreen));
+            v.push(MenuSlot::Param(ParamId::VSync));
+            v.push(MenuSlot::Param(ParamId::Msaa));
+            v.push(MenuSlot::Param(ParamId::Hdr));
+            if s.hdr {
+                v.push(MenuSlot::Param(ParamId::Exposure));
+            }
+            v.push(MenuSlot::Param(ParamId::Tonemapping));
+        }
+        SettingsTab::Graphics => {
+            v.push(MenuSlot::Preset);
+            v.push(MenuSlot::Param(ParamId::Raytracing));
+            v.push(MenuSlot::Param(ParamId::Dlss));
+            if s.dlss {
+                v.push(MenuSlot::Param(ParamId::DlssQuality));
+            }
+            v.push(MenuSlot::Param(ParamId::Taa));
+            v.push(MenuSlot::Param(ParamId::Fxaa));
+            v.push(MenuSlot::Param(ParamId::Bloom));
+            if s.bloom {
+                v.push(MenuSlot::Param(ParamId::BloomIntensity));
+            }
+            v.push(MenuSlot::Param(ParamId::Atmosphere));
+            v.push(MenuSlot::Param(ParamId::VolumetricFog));
+            if s.volumetric_fog {
+                v.push(MenuSlot::Param(ParamId::FogDensity));
+            }
+            v.push(MenuSlot::Param(ParamId::DistanceFog));
+            v.push(MenuSlot::Param(ParamId::Ssao));
+            if s.ssao {
+                v.push(MenuSlot::Param(ParamId::SsaoQuality));
+            }
+            v.push(MenuSlot::Param(ParamId::Shadows));
+            v.push(MenuSlot::Param(ParamId::MotionBlur));
+        }
     }
+    v.push(MenuSlot::Back);
+    v
 }
 
-pub fn slot_count(tab: SettingsTab) -> usize {
-    tab_slots(tab).len()
+pub fn slot_count(tab: SettingsTab, s: &GameSettings) -> usize {
+    tab_slots(tab, s).len()
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -98,45 +134,62 @@ impl GraphicsPreset {
     }
 
     /// Apply this preset's quality settings to `s`. Display/video fields
-    /// (fullscreen, vsync, hdr, tonemapping) are left untouched — they belong
-    /// to the Video tab and are managed independently.
+    /// (fullscreen, vsync, hdr, msaa, tonemapping) and sub-parameters
+    /// (exposure, bloom intensity, dlss quality, ...) are left untouched —
+    /// they are managed independently from the preset.
     pub fn apply(self, s: &mut GameSettings, dlss_supported: bool) {
         match self {
             GraphicsPreset::Low => {
                 s.raytracing = false;
                 s.dlss = false;
                 s.taa = false;
+                s.fxaa = true; // cheap fallback AA
                 s.bloom = false;
                 s.atmosphere = false;
                 s.volumetric_fog = false;
                 s.distance_fog = false;
+                s.ssao = false;
+                s.shadows = false;
+                s.motion_blur = false;
             }
             GraphicsPreset::Medium => {
                 s.raytracing = false;
                 s.dlss = false;
                 s.taa = false;
+                s.fxaa = true;
                 s.bloom = true;
                 s.atmosphere = false;
                 s.volumetric_fog = false;
                 s.distance_fog = true;
+                s.ssao = false;
+                s.shadows = true;
+                s.motion_blur = false;
             }
             GraphicsPreset::High => {
                 s.raytracing = false;
                 s.dlss = false;
                 s.taa = true;
+                s.fxaa = false;
                 s.bloom = true;
                 s.atmosphere = true;
                 s.volumetric_fog = false;
                 s.distance_fog = true;
+                s.ssao = true;
+                s.shadows = true;
+                s.motion_blur = false;
             }
             GraphicsPreset::Ultra => {
                 s.raytracing = cfg!(feature = "raytracing");
                 s.dlss = cfg!(feature = "dlss") && dlss_supported;
                 s.taa = true;
+                s.fxaa = false;
                 s.bloom = true;
                 s.atmosphere = true;
                 s.volumetric_fog = true;
                 s.distance_fog = true;
+                s.ssao = true;
+                s.shadows = true;
+                s.motion_blur = true;
             }
             GraphicsPreset::Custom => {}
         }
@@ -158,10 +211,14 @@ fn quality_matches(a: &GameSettings, b: &GameSettings) -> bool {
     a.raytracing == b.raytracing
         && a.dlss == b.dlss
         && a.taa == b.taa
+        && a.fxaa == b.fxaa
         && a.bloom == b.bloom
         && a.atmosphere == b.atmosphere
         && a.volumetric_fog == b.volumetric_fog
         && a.distance_fog == b.distance_fog
+        && a.ssao == b.ssao
+        && a.shadows == b.shadows
+        && a.motion_blur == b.motion_blur
 }
 
 pub fn update_graphics_preset(
@@ -236,8 +293,9 @@ pub fn description_for(
     tab: SettingsTab,
     menu_index: usize,
     preset: GraphicsPreset,
+    settings: &GameSettings,
 ) -> DescriptionKind {
-    let slots = tab_slots(tab);
+    let slots = tab_slots(tab, settings);
     let Some(slot) = slots.get(menu_index) else {
         return DescriptionKind::None;
     };
@@ -440,16 +498,170 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             ram: Impact::None,
             vram: Impact::None,
         },
+        ParamId::Msaa => ParamDescription {
+            title: "MSAA",
+            functional: concat!(
+                "Multi-sample anti-aliasing: super-samples geometry edges\n",
+                "using 2/4/8 hardware samples per pixel.",
+                "\nIgnored when Raytracing or TAA force the deferred pipeline."
+            ),
+            technical: concat!(
+                "GPU-resolved multisampled render target.\n",
+                "Bandwidth + memory scale linearly with the sample count."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Medium,
+            ram: Impact::None,
+            vram: Impact::Medium,
+        },
+        ParamId::Fxaa => ParamDescription {
+            title: "FXAA",
+            functional: concat!(
+                "Fast approximate anti-aliasing: a cheap post-process pass\n",
+                "that softens jagged edges from luma contrast."
+            ),
+            technical: concat!(
+                "Single fullscreen pass over the LDR/HDR colour buffer.\n",
+                "Trades some sharpness for an O(1) screen-space cost."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Low,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
+        ParamId::Ssao => ParamDescription {
+            title: "SSAO",
+            functional: concat!(
+                "Screen-space ambient occlusion: darkens crevices and contact\n",
+                "points where indirect light would be blocked."
+            ),
+            technical: concat!(
+                "GTAO-style sampling in screen space. Requires depth +\n",
+                "normal prepasses; cost scales with the quality preset."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Medium,
+            ram: Impact::None,
+            vram: Impact::Low,
+        },
+        ParamId::Shadows => ParamDescription {
+            title: "Shadows",
+            functional: concat!(
+                "Cascaded shadow maps cast by the sun.\n",
+                "Off means flat lighting with no occlusion from the sun."
+            ),
+            technical: concat!(
+                "Multiple shadow cascades rendered each frame and sampled\n",
+                "in the PBR shader. Cost scales with cascade resolution + count."
+            ),
+            cpu: Impact::Low,
+            gpu: Impact::Medium,
+            ram: Impact::None,
+            vram: Impact::Medium,
+        },
+        ParamId::MotionBlur => ParamDescription {
+            title: "Motion blur",
+            functional: concat!(
+                "Smears moving objects in the direction of their motion,\n",
+                "selling speed and reducing judder at low frame rates."
+            ),
+            technical: concat!(
+                "Per-pixel directional blur driven by motion vectors.\n",
+                "Requires Depth + MotionVector prepasses."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Low,
+            ram: Impact::None,
+            vram: Impact::Low,
+        },
+        ParamId::Exposure => ParamDescription {
+            title: "Exposure",
+            functional: concat!(
+                "Selects how bright the HDR scene appears after tonemapping.\n",
+                "Cycles Low / Default / High (EV100 11 / 13 / 15)."
+            ),
+            technical: concat!(
+                "Updates the Exposure component (ev100) on the camera.\n",
+                "Acts as a multiplier on linear light before tonemapping."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
+        ParamId::BloomIntensity => ParamDescription {
+            title: "Bloom intensity",
+            functional: concat!(
+                "Controls the visible amount of bloom glow.\n",
+                "Cycles Low / Default / High."
+            ),
+            technical: concat!(
+                "Scales the `intensity` field of the Bloom post-process.\n",
+                "Same shader cost regardless of intensity."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
+        ParamId::DlssQuality => ParamDescription {
+            title: "DLSS quality",
+            functional: concat!(
+                "DLSS render preset: trades internal resolution for FPS.\n",
+                "Performance < Balanced < Quality < UltraQuality < Auto (driver-picked)."
+            ),
+            technical: concat!(
+                "Maps to DlssPerfQualityMode. Lower quality renders the scene\n",
+                "at a smaller internal resolution then upscales with the NN."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Low,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
+        ParamId::SsaoQuality => ParamDescription {
+            title: "SSAO quality",
+            functional: concat!(
+                "Number of samples used by SSAO per pixel.\n",
+                "Cycles Low / Medium / High / Ultra (4 / 8 / 18 / 54 samples)."
+            ),
+            technical: concat!(
+                "Maps to ScreenSpaceAmbientOcclusionQualityLevel.\n",
+                "Cost grows roughly linearly with sample count."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::Medium,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
+        ParamId::FogDensity => ParamDescription {
+            title: "Fog density",
+            functional: concat!(
+                "Thickness of the volumetric fog volume.\n",
+                "Higher density = more visible god rays, more atmospheric depth."
+            ),
+            technical: concat!(
+                "Scales the ambient intensity / scattering density inside the\n",
+                "VolumetricFog component. Cost stays the same."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
     }
 }
 
 /// Resolve a short human-readable label for a single parameter, suitable as
-/// the button text.
+/// the button text. Sub-parameters use a `   - ` indent prefix so the
+/// hierarchy reads at a glance.
 pub fn param_label(id: ParamId, s: &GameSettings, dlss_supported: bool) -> String {
     match id {
         ParamId::Fullscreen => format!("Fullscreen: {}", on_off(s.fullscreen)),
         ParamId::VSync => format!("VSync: {}", on_off(s.vsync)),
+        ParamId::Msaa => format!("MSAA: {}", msaa_label(s.msaa)),
         ParamId::Hdr => format!("HDR: {}", on_off(s.hdr)),
+        ParamId::Exposure => format!("  - Exposure: {}", exposure_label(s.exposure)),
         ParamId::Tonemapping => format!("Tonemapping: {}", tonemapping_label(s.tonemapping)),
         ParamId::Raytracing => {
             if cfg!(feature = "raytracing") {
@@ -465,16 +677,30 @@ pub fn param_label(id: ParamId, s: &GameSettings, dlss_supported: bool) -> Strin
                 "DLSS: N/A".into()
             }
         }
+        ParamId::DlssQuality => format!("  - DLSS quality: {}", dlss_quality_label(s.dlss_quality)),
         ParamId::Taa => format!("TAA: {}", on_off(s.taa)),
+        ParamId::Fxaa => format!("FXAA: {}", on_off(s.fxaa)),
         ParamId::Bloom => format!("Bloom: {}", on_off(s.bloom)),
+        ParamId::BloomIntensity => {
+            format!("  - Bloom intensity: {}", level_label(s.bloom_intensity))
+        }
         ParamId::Atmosphere => format!("Atmosphere: {}", on_off(s.atmosphere)),
         ParamId::VolumetricFog => format!("Volumetric fog: {}", on_off(s.volumetric_fog)),
+        ParamId::FogDensity => format!("  - Fog density: {}", level_label(s.fog_density)),
         ParamId::DistanceFog => format!("Distance fog: {}", on_off(s.distance_fog)),
+        ParamId::Ssao => format!("SSAO: {}", on_off(s.ssao)),
+        ParamId::SsaoQuality => format!("  - SSAO quality: {}", ssao_quality_label(s.ssao_quality)),
+        ParamId::Shadows => format!("Shadows: {}", on_off(s.shadows)),
+        ParamId::MotionBlur => format!("Motion blur: {}", on_off(s.motion_blur)),
     }
 }
 
 fn on_off(on: bool) -> &'static str {
-    if on { "ON" } else { "OFF" }
+    if on {
+        "ON"
+    } else {
+        "OFF"
+    }
 }
 
 pub fn tonemapping_label(idx: u8) -> &'static str {
@@ -483,6 +709,77 @@ pub fn tonemapping_label(idx: u8) -> &'static str {
         1 => "Tony McMapface",
         2 => "Reinhard",
         _ => "None",
+    }
+}
+
+pub fn msaa_label(idx: u8) -> &'static str {
+    match idx {
+        2 => "2x",
+        4 => "4x",
+        8 => "8x",
+        _ => "OFF",
+    }
+}
+
+pub fn exposure_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "Low",
+        2 => "High",
+        _ => "Default",
+    }
+}
+
+/// EV100 value matching `exposure_label`.
+pub fn exposure_ev100(idx: u8) -> f32 {
+    match idx {
+        0 => 11.0,
+        2 => 15.0,
+        _ => 13.0,
+    }
+}
+
+pub fn level_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "Low",
+        2 => "High",
+        _ => "Default",
+    }
+}
+
+/// Bloom intensity multiplier matching `level_label`.
+pub fn bloom_intensity_value(idx: u8) -> f32 {
+    match idx {
+        0 => 0.06,
+        2 => 0.30,
+        _ => 0.15, // Bloom::NATURAL default
+    }
+}
+
+/// Volumetric-fog ambient intensity matching `level_label`.
+pub fn fog_density_value(idx: u8) -> f32 {
+    match idx {
+        0 => 0.02,
+        2 => 0.12,
+        _ => 0.05,
+    }
+}
+
+pub fn dlss_quality_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "Performance",
+        1 => "Balanced",
+        2 => "Quality",
+        3 => "UltraQuality",
+        _ => "Auto",
+    }
+}
+
+pub fn ssao_quality_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "Low",
+        1 => "Medium",
+        3 => "Ultra",
+        _ => "High",
     }
 }
 
@@ -523,14 +820,24 @@ pub fn load_settings() -> GameSettings {
             "fullscreen" => s.fullscreen = parse_bool(v).unwrap_or(s.fullscreen),
             "vsync" => s.vsync = parse_bool(v).unwrap_or(s.vsync),
             "hdr" => s.hdr = parse_bool(v).unwrap_or(s.hdr),
+            "msaa" => s.msaa = v.parse().unwrap_or(s.msaa),
+            "tonemapping" => s.tonemapping = v.parse().unwrap_or(s.tonemapping),
             "raytracing" => s.raytracing = parse_bool(v).unwrap_or(s.raytracing),
             "dlss" => s.dlss = parse_bool(v).unwrap_or(s.dlss),
             "taa" => s.taa = parse_bool(v).unwrap_or(s.taa),
+            "fxaa" => s.fxaa = parse_bool(v).unwrap_or(s.fxaa),
             "bloom" => s.bloom = parse_bool(v).unwrap_or(s.bloom),
             "atmosphere" => s.atmosphere = parse_bool(v).unwrap_or(s.atmosphere),
             "volumetric_fog" => s.volumetric_fog = parse_bool(v).unwrap_or(s.volumetric_fog),
             "distance_fog" => s.distance_fog = parse_bool(v).unwrap_or(s.distance_fog),
-            "tonemapping" => s.tonemapping = v.parse().unwrap_or(s.tonemapping),
+            "ssao" => s.ssao = parse_bool(v).unwrap_or(s.ssao),
+            "shadows" => s.shadows = parse_bool(v).unwrap_or(s.shadows),
+            "motion_blur" => s.motion_blur = parse_bool(v).unwrap_or(s.motion_blur),
+            "exposure" => s.exposure = v.parse().unwrap_or(s.exposure),
+            "bloom_intensity" => s.bloom_intensity = v.parse().unwrap_or(s.bloom_intensity),
+            "dlss_quality" => s.dlss_quality = v.parse().unwrap_or(s.dlss_quality),
+            "ssao_quality" => s.ssao_quality = v.parse().unwrap_or(s.ssao_quality),
+            "fog_density" => s.fog_density = v.parse().unwrap_or(s.fog_density),
             _ => {}
         }
     }
@@ -543,6 +850,24 @@ pub fn load_settings() -> GameSettings {
     if s.tonemapping > 3 {
         s.tonemapping = 0;
     }
+    if !matches!(s.msaa, 0 | 2 | 4 | 8) {
+        s.msaa = 0;
+    }
+    if s.exposure > 2 {
+        s.exposure = 1;
+    }
+    if s.bloom_intensity > 2 {
+        s.bloom_intensity = 1;
+    }
+    if s.dlss_quality > 4 {
+        s.dlss_quality = 4;
+    }
+    if s.ssao_quality > 3 {
+        s.ssao_quality = 2;
+    }
+    if s.fog_density > 2 {
+        s.fog_density = 1;
+    }
     s
 }
 
@@ -554,18 +879,32 @@ pub fn save_settings(s: &GameSettings) {
         let _ = std::fs::create_dir_all(parent);
     }
     let text = format!(
-        "fullscreen = {}\nvsync = {}\nhdr = {}\nraytracing = {}\ndlss = {}\ntaa = {}\nbloom = {}\natmosphere = {}\nvolumetric_fog = {}\ndistance_fog = {}\ntonemapping = {}\n",
+        "fullscreen = {}\nvsync = {}\nhdr = {}\nmsaa = {}\ntonemapping = {}\n\
+         raytracing = {}\ndlss = {}\ntaa = {}\nfxaa = {}\nbloom = {}\n\
+         atmosphere = {}\nvolumetric_fog = {}\ndistance_fog = {}\nssao = {}\n\
+         shadows = {}\nmotion_blur = {}\n\
+         exposure = {}\nbloom_intensity = {}\ndlss_quality = {}\nssao_quality = {}\nfog_density = {}\n",
         s.fullscreen,
         s.vsync,
         s.hdr,
+        s.msaa,
+        s.tonemapping,
         s.raytracing,
         s.dlss,
         s.taa,
+        s.fxaa,
         s.bloom,
         s.atmosphere,
         s.volumetric_fog,
         s.distance_fog,
-        s.tonemapping,
+        s.ssao,
+        s.shadows,
+        s.motion_blur,
+        s.exposure,
+        s.bloom_intensity,
+        s.dlss_quality,
+        s.ssao_quality,
+        s.fog_density,
     );
     let _ = std::fs::write(&path, text);
 }

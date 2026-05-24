@@ -34,7 +34,7 @@ For this POC, both players are controlled from the same machine (local testing).
 
 ### Economy
 - **10 gold** starting per player
-- **Steady passive income**: +1 gold every X seconds per player
+- **Miners**: each side starts with one. Miners walk to their side's rock, mine for a few seconds, then return to the base to deposit gold. Buy more miners to scale income.
 
 ### Camera & map
 - Horizontal map, bases aligned on the left/right axis
@@ -43,8 +43,9 @@ For this POC, both players are controlled from the same machine (local testing).
 - Designed for two players sharing the same screen (no split-screen)
 
 ### UI
-- **Two unit purchase buttons** (one per player) at the bottom of the screen
-- Gold counter visible next to each button
+- One **vertical panel per player** in the bottom corners of the screen, organised by category: **Buildings** (Tower), **Combat** (Soldier, Archer), **Resources** (Miner).
+- Gold counter under each panel.
+- Gamepad-only input: D-pad navigates slots, A confirms (spawn / arm tower placement), X arms tower placement directly.
 
 ### Endgame
 - When a base reaches 0 HP: **"Player X wins"** text displayed

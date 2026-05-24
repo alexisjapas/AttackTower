@@ -13,14 +13,11 @@ use bevy::prelude::*;
 use bevy::render::view::Msaa;
 use bevy::window::{PresentMode, WindowMode};
 
-use crate::graphics::{
-    bloom_intensity_value, exposure_ev100, fog_density_value,
-};
-
 use crate::common::*;
 use crate::graphics::{
-    description_for, param_label, slot_count, tab_slots, DescriptionKind, GraphicsPreset, Impact,
-    MenuSlot, ParamDescription, ParamId,
+    DescriptionKind, GraphicsPreset, Impact, MenuSlot, ParamDescription, ParamId,
+    bloom_intensity_value, description_for, exposure_ev100, fog_density_value, param_label,
+    slot_count, tab_slots,
 };
 use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
 use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
@@ -353,8 +350,8 @@ pub fn update_settings_overlay(
     // sub-parameter rows appear/disappear immediately when their parent
     // toggle flips).
     let in_settings = *state == GameState::Settings;
-    let rebuild = state.is_changed()
-        || (in_settings && (tab.is_changed() || settings.is_changed()));
+    let rebuild =
+        state.is_changed() || (in_settings && (tab.is_changed() || settings.is_changed()));
     if !rebuild {
         return;
     }
@@ -477,18 +474,18 @@ fn spawn_settings_menu_column(
         min_width: Val::Px(420.0),
         ..default()
     },))
-    .with_children(|col| {
-        for (i, slot) in tab_slots(tab, settings).iter().enumerate() {
-            match slot {
-                MenuSlot::Preset => spawn_preset_button(col, i, preset),
-                MenuSlot::Param(id) => {
-                    let label = param_label(*id, settings, dlss_supported);
-                    spawn_toggle_button(col, i, label, SettingsToggleText(*id));
+        .with_children(|col| {
+            for (i, slot) in tab_slots(tab, settings).iter().enumerate() {
+                match slot {
+                    MenuSlot::Preset => spawn_preset_button(col, i, preset),
+                    MenuSlot::Param(id) => {
+                        let label = param_label(*id, settings, dlss_supported);
+                        spawn_toggle_button(col, i, label, SettingsToggleText(*id));
+                    }
+                    MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
                 }
-                MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
             }
-        }
-    });
+        });
 }
 
 fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: GraphicsPreset) {
@@ -537,8 +534,7 @@ fn spawn_description_card(
         BorderColor::all(card_border),
     ))
     .with_children(|card| {
-        let (title, functional, technical, impacts) =
-            describe_for_layout(tab, 0, preset, settings);
+        let (title, functional, technical, impacts) = describe_for_layout(tab, 0, preset, settings);
 
         card.spawn((
             Text::new(title),
@@ -562,7 +558,11 @@ fn spawn_description_card(
         card.spawn((
             Node {
                 margin: UiRect::top(Val::Px(8.0)),
-                display: if impacts.is_some() { Display::Flex } else { Display::None },
+                display: if impacts.is_some() {
+                    Display::Flex
+                } else {
+                    Display::None
+                },
                 ..default()
             },
             Text::new("Performance impact"),
@@ -590,7 +590,11 @@ fn spawn_impact_row(
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
             column_gap: Val::Px(8.0),
-            display: if impact.is_some() { Display::Flex } else { Display::None },
+            display: if impact.is_some() {
+                Display::Flex
+            } else {
+                Display::None
+            },
             ..default()
         },
         ImpactRowNode,
@@ -620,7 +624,12 @@ fn describe_for_layout(
     menu_idx: usize,
     preset: GraphicsPreset,
     settings: &GameSettings,
-) -> (String, String, String, Option<(Impact, Impact, Impact, Impact)>) {
+) -> (
+    String,
+    String,
+    String,
+    Option<(Impact, Impact, Impact, Impact)>,
+) {
     match description_for(tab, menu_idx, preset, settings) {
         DescriptionKind::Param(ParamDescription {
             title,
@@ -684,7 +693,11 @@ pub fn update_settings_description(
             DescField::ImpactVram => apply_impact(&mut text, &mut color, impacts.map(|i| i.3)),
         }
     }
-    let display = if impacts.is_some() { Display::Flex } else { Display::None };
+    let display = if impacts.is_some() {
+        Display::Flex
+    } else {
+        Display::None
+    };
     for mut node in &mut rows {
         if node.display != display {
             node.display = display;
@@ -848,29 +861,56 @@ pub fn pause_input_system(
                 *state = GameState::Settings;
             }
             2 => {
-                for e in &units {
-                    commands.entity(e).despawn();
-                }
-                for e in &arrows {
-                    commands.entity(e).despawn();
-                }
-                for e in &towers {
-                    commands.entity(e).despawn();
-                }
-                for e in &ghosts {
-                    commands.entity(e).despawn();
-                }
-                for mut hp in bases.iter_mut() {
-                    hp.current = hp.max;
-                }
-                *gold = Gold::default();
-                *placement = PlacementMode::default();
-                *players = PlayerControllers::default();
+                reset_match(
+                    &mut commands,
+                    &mut bases,
+                    &units,
+                    &arrows,
+                    &towers,
+                    &ghosts,
+                    &mut gold,
+                    &mut placement,
+                    &mut players,
+                );
                 *state = GameState::Menu;
             }
             _ => {}
         }
     }
+}
+
+/// Wipe a finished/abandoned match: despawn every battlefield entity, restore
+/// bases to full HP and reset gold, placement and player→pad mapping. Used by
+/// both the pause "Main menu" action and the endgame "Main menu" action.
+fn reset_match(
+    commands: &mut Commands,
+    bases: &mut Query<&mut Health, With<Base>>,
+    units: &Query<Entity, With<Unit>>,
+    arrows: &Query<Entity, With<Arrow>>,
+    towers: &Query<Entity, With<Tower>>,
+    ghosts: &Query<Entity, With<TowerGhost>>,
+    gold: &mut Gold,
+    placement: &mut PlacementMode,
+    players: &mut PlayerControllers,
+) {
+    for e in units {
+        commands.entity(e).despawn();
+    }
+    for e in arrows {
+        commands.entity(e).despawn();
+    }
+    for e in towers {
+        commands.entity(e).despawn();
+    }
+    for e in ghosts {
+        commands.entity(e).despawn();
+    }
+    for mut hp in bases.iter_mut() {
+        hp.current = hp.max;
+    }
+    *gold = Gold::default();
+    *placement = PlacementMode::default();
+    *players = PlayerControllers::default();
 }
 
 pub fn update_settings_toggle_texts(
@@ -930,7 +970,7 @@ pub fn update_endgame_overlay(
                     TextFont::from_font_size(54.0),
                     TextColor(winner.color()),
                 ));
-                spawn_menu_button(parent, 0, "Restart", Color::WHITE);
+                spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
                 parent.spawn((
                     Text::new("A: back to menu"),
                     TextFont::from_font_size(16.0),
@@ -993,9 +1033,7 @@ pub fn update_sideselect_overlay(
                     spawn_side_card(row, Side::Right);
                 });
             parent.spawn((
-                Text::new(
-                    "D-pad left/right: choose   A: confirm   B: cancel   Start: launch",
-                ),
+                Text::new("D-pad left/right: choose   A: confirm   B: cancel   Start: launch"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.75, 0.75, 0.8)),
             ));
@@ -1037,12 +1075,7 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
         });
 }
 
-fn spawn_menu_button(
-    parent: &mut ChildSpawnerCommands,
-    index: usize,
-    label: &str,
-    border: Color,
-) {
+fn spawn_menu_button(parent: &mut ChildSpawnerCommands, index: usize, label: &str, border: Color) {
     parent
         .spawn((
             Node {
@@ -1089,7 +1122,12 @@ pub fn apply_player_focus_visual(
     state: Res<GameState>,
     focuses: Query<&PlayerFocus>,
     units: Query<(&Side, &UnitKind), With<Unit>>,
-    mut slots: Query<(&PanelSlot, &mut Node, &mut BackgroundColor, &mut BorderColor)>,
+    mut slots: Query<(
+        &PanelSlot,
+        &mut Node,
+        &mut BackgroundColor,
+        &mut BorderColor,
+    )>,
 ) {
     let active = matches!(*state, GameState::Playing | GameState::Paused);
     let miners_left = units
@@ -1113,9 +1151,16 @@ pub fn apply_player_focus_visual(
         if hidden {
             continue;
         }
-        let focused = active && focuses.iter().any(|f| f.side == slot.side && f.index == slot.index);
+        let focused = active
+            && focuses
+                .iter()
+                .any(|f| f.side == slot.side && f.index == slot.index);
         bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
-        *border = BorderColor::all(if focused { Color::WHITE } else { slot.side.color() });
+        *border = BorderColor::all(if focused {
+            Color::WHITE
+        } else {
+            slot.side.color()
+        });
     }
 }
 
@@ -1129,9 +1174,7 @@ pub fn update_sideselect_cards(
         return;
     }
     for (slot, mut text, mut color) in &mut texts {
-        let confirmed = seats
-            .iter()
-            .any(|s| s.confirmed && s.hovered == slot.0);
+        let confirmed = seats.iter().any(|s| s.confirmed && s.hovered == slot.0);
         let hovered = seats
             .iter()
             .filter(|s| !s.confirmed && s.hovered == slot.0)
@@ -1192,9 +1235,7 @@ pub fn manage_input_components(
     for (side, opt) in [(Side::Left, players.left), (Side::Right, players.right)] {
         if let Some(pad) = opt {
             if gamepads.get(pad).is_ok() {
-                commands
-                    .entity(pad)
-                    .insert(PlayerFocus { side, index: 0 });
+                commands.entity(pad).insert(PlayerFocus { side, index: 0 });
             }
         }
     }
@@ -1278,24 +1319,17 @@ pub fn menu_input_system(
             _ => {}
         }
     } else if in_endgame {
-        for e in &units {
-            commands.entity(e).despawn();
-        }
-        for e in &arrows {
-            commands.entity(e).despawn();
-        }
-        for e in &towers {
-            commands.entity(e).despawn();
-        }
-        for e in &ghosts {
-            commands.entity(e).despawn();
-        }
-        for mut hp in bases.iter_mut() {
-            hp.current = hp.max;
-        }
-        *gold = Gold::default();
-        *placement = PlacementMode::default();
-        *players = PlayerControllers::default();
+        reset_match(
+            &mut commands,
+            &mut bases,
+            &units,
+            &arrows,
+            &towers,
+            &ghosts,
+            &mut gold,
+            &mut placement,
+            &mut players,
+        );
         *state = GameState::Menu;
     }
 }
@@ -1400,23 +1434,6 @@ fn next_visible_slot(start: usize, dir: i32, hidden: &impl Fn(usize) -> bool) ->
     start // all hidden — fall back
 }
 
-pub fn spawn_initial_miners(
-    state: Res<GameState>,
-    mut commands: Commands,
-    lib: Res<MatLibrary>,
-    units: Query<Entity, With<Unit>>,
-) {
-    if !state.is_changed() || *state != GameState::Playing {
-        return;
-    }
-    // Skip if units already exist (e.g. resuming from Paused).
-    if units.iter().next().is_some() {
-        return;
-    }
-    spawn_miner(&mut commands, &lib, Side::Left, 0);
-    spawn_miner(&mut commands, &lib, Side::Right, 0);
-}
-
 pub fn gameplay_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
@@ -1503,9 +1520,7 @@ pub fn gameplay_input_system(
                         .iter()
                         .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
                         .count();
-                    if miner_count < MAX_MINERS_PER_SIDE
-                        && gold.try_spend(focus.side, MINER_COST)
-                    {
+                    if miner_count < MAX_MINERS_PER_SIDE && gold.try_spend(focus.side, MINER_COST) {
                         spawn_miner(&mut commands, &lib, focus.side, miner_count);
                     }
                 }
@@ -1607,12 +1622,7 @@ pub fn placement_system(
 
         // Place on A.
         if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(side, TOWER_COST) {
-            spawn_tower(
-                &mut commands,
-                &lib,
-                side,
-                Vec3::new(pos.x, 0.0, pos.z),
-            );
+            spawn_tower(&mut commands, &lib, side, Vec3::new(pos.x, 0.0, pos.z));
             placement.clear(side);
             continue;
         }

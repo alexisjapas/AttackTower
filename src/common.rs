@@ -349,7 +349,7 @@ pub struct GameSettings {
     pub fullscreen: bool,
     pub vsync: bool,
     pub hdr: bool,
-    pub msaa: u8, // 0=Off 2=2x 4=4x 8=8x
+    pub msaa: u8,        // 0=Off 2=2x 4=4x 8=8x
     pub tonemapping: u8, // 0=AcesFitted 1=TonyMcMapface 2=Reinhard 3=None
 
     // Graphics / quality on-off toggles
@@ -368,7 +368,7 @@ pub struct GameSettings {
     // Sub-parameters (only meaningful when their parent is on; persist regardless)
     pub exposure: u8,        // 0=Low 1=Default 2=High (EV100 11 / 13 / 15)
     pub bloom_intensity: u8, // 0=Low 1=Default 2=High
-    pub dlss_quality: u8,    // 0=Performance 1=Balanced 2=Quality 3=UltraQuality 4=Auto
+    pub dlss_quality: u8,    // 0=Performance 1=Balanced 2=Quality 3=DLAA 4=Auto
     pub ssao_quality: u8,    // 0=Low 1=Medium 2=High 3=Ultra
     pub fog_density: u8,     // 0=Low 1=Default 2=High
 }

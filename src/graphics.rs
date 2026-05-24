@@ -310,12 +310,8 @@ pub fn description_for(
             ),
             technical: match preset {
                 GraphicsPreset::Low => "Active: Low. No optional effect, cheapest render path.",
-                GraphicsPreset::Medium => {
-                    "Active: Medium. Bloom + distance fog enabled."
-                }
-                GraphicsPreset::High => {
-                    "Active: High. TAA + atmosphere + bloom + distance fog."
-                }
+                GraphicsPreset::Medium => "Active: Medium. Bloom + distance fog enabled.",
+                GraphicsPreset::High => "Active: High. TAA + atmosphere + bloom + distance fog.",
                 GraphicsPreset::Ultra => {
                     "Active: Ultra. Raytracing + DLSS (if supported), volumetric fog and full post-process."
                 }
@@ -608,7 +604,7 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             title: "DLSS quality",
             functional: concat!(
                 "DLSS render preset: trades internal resolution for FPS.\n",
-                "Performance < Balanced < Quality < UltraQuality < Auto (driver-picked)."
+                "Performance < Balanced < Quality < DLAA < Auto (driver-picked)."
             ),
             technical: concat!(
                 "Maps to DlssPerfQualityMode. Lower quality renders the scene\n",
@@ -696,11 +692,7 @@ pub fn param_label(id: ParamId, s: &GameSettings, dlss_supported: bool) -> Strin
 }
 
 fn on_off(on: bool) -> &'static str {
-    if on {
-        "ON"
-    } else {
-        "OFF"
-    }
+    if on { "ON" } else { "OFF" }
 }
 
 pub fn tonemapping_label(idx: u8) -> &'static str {

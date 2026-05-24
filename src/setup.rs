@@ -1,5 +1,3 @@
-#[cfg(feature = "raytracing")]
-use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::light_consts::lux;
@@ -9,6 +7,8 @@ use bevy::light::{
 use bevy::pbr::{Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScatteringMedium};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+#[cfg(feature = "raytracing")]
+use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 
 use crate::common::*;
 
@@ -672,7 +672,11 @@ fn spawn_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibr
                     Mesh3d(foliage_high.clone()),
                     MeshMaterial3d(foliage_mat.clone()),
                     Transform {
-                        translation: Vec3::new(0.0, trunk_h + foliage1_h * 0.85 + foliage2_h * 0.5 - 0.1, 0.0),
+                        translation: Vec3::new(
+                            0.0,
+                            trunk_h + foliage1_h * 0.85 + foliage2_h * 0.5 - 0.1,
+                            0.0,
+                        ),
                         scale: Vec3::new(1.0, foliage2_h, 1.0),
                         ..default()
                     },

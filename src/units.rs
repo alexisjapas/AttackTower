@@ -26,6 +26,25 @@ pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side, slot_i
     ));
 }
 
+/// Each side starts with one miner so the economy works without the player
+/// having to spend gold first. Runs on the Menu→Playing transition; skips
+/// when units already exist (Paused→Playing resume).
+pub fn spawn_initial_miners(
+    state: Res<GameState>,
+    mut commands: Commands,
+    lib: Res<MatLibrary>,
+    units: Query<Entity, With<Unit>>,
+) {
+    if !state.is_changed() || *state != GameState::Playing {
+        return;
+    }
+    if units.iter().next().is_some() {
+        return;
+    }
+    spawn_miner(&mut commands, &lib, Side::Left, 0);
+    spawn_miner(&mut commands, &lib, Side::Right, 0);
+}
+
 pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
     // Slots spread across a 180° arc on the base-facing side of the rock, so
     // miners never need to cross the rock to reach their position. Slot 0 is
@@ -554,7 +573,6 @@ pub fn combat_tick(
                 anim.walking = true;
             }
             UnitKind::Miner => {
-                let _ = entity;
                 let own_rock = combatants
                     .iter()
                     .find(|c| c.side == *side && c.kind == CombatantKind::Rock);
@@ -851,7 +869,7 @@ pub fn animate_units(
             anim.attacking = false;
             // Collapse limbs to neutral as the unit falls.
             anim.walk_amp = (anim.walk_amp - amp_lerp).max(0.0);
-            apply_pose(&mut transforms, rig, 0.0, 0.0, 0.0, 0.0, 0.0);
+            reset_pose(&mut transforms, rig);
             continue;
         }
 
@@ -902,30 +920,15 @@ pub fn animate_units(
     }
 }
 
-fn apply_pose(
-    transforms: &mut Query<&mut Transform, Without<Unit>>,
-    rig: &UnitRig,
-    bob_y: f32,
-    leg_angle: f32,
-    arm_angle: f32,
-    right_arm_angle: f32,
-    hurt_tilt: f32,
-) {
+fn reset_pose(transforms: &mut Query<&mut Transform, Without<Unit>>, rig: &UnitRig) {
     if let Ok(mut t) = transforms.get_mut(rig.bob) {
-        t.translation.y = BOB_BASE_Y + bob_y;
-        t.rotation = Quat::from_rotation_z(hurt_tilt);
+        t.translation.y = BOB_BASE_Y;
+        t.rotation = Quat::IDENTITY;
     }
-    if let Ok(mut t) = transforms.get_mut(rig.leg_left) {
-        t.rotation = Quat::from_rotation_z(leg_angle);
-    }
-    if let Ok(mut t) = transforms.get_mut(rig.leg_right) {
-        t.rotation = Quat::from_rotation_z(-leg_angle);
-    }
-    if let Ok(mut t) = transforms.get_mut(rig.arm_left) {
-        t.rotation = Quat::from_rotation_z(-arm_angle);
-    }
-    if let Ok(mut t) = transforms.get_mut(rig.arm_right) {
-        t.rotation = Quat::from_rotation_z(right_arm_angle);
+    for limb in [rig.leg_left, rig.leg_right, rig.arm_left, rig.arm_right] {
+        if let Ok(mut t) = transforms.get_mut(limb) {
+            t.rotation = Quat::IDENTITY;
+        }
     }
 }
 

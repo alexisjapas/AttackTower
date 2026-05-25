@@ -15,7 +15,7 @@ pub const MINER_COST: u32 = 5;
 pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
-pub const MAX_MINERS_PER_SIDE: usize = 5;
+pub const MAX_MINERS_PER_PLAYER: usize = 5;
 pub const MINER_CAPACITY: u32 = 3;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
@@ -50,6 +50,8 @@ pub const ENGAGE_RANGE: f32 = 1.4;
 
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;
+// Z offset between the two bases of a same side in 2v2 mode.
+pub const BASE_Z_OFFSET: f32 = 3.0;
 // Terrain between bases is split into three equal parts: left zone, neutral, right zone.
 pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
 pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
@@ -84,20 +86,88 @@ pub const HURT_DURATION: f32 = 0.18;
 pub const HURT_TILT: f32 = 0.28;
 pub const DEATH_DURATION: f32 = 0.6;
 
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Side {
     Left,
     Right,
 }
 
-impl Side {
-    pub fn opposite(self) -> Self {
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlayerSlot {
+    LeftBottom,
+    LeftTop,
+    RightBottom,
+    RightTop,
+}
+
+impl PlayerSlot {
+    pub const ALL: [PlayerSlot; 4] = [
+        PlayerSlot::LeftBottom,
+        PlayerSlot::LeftTop,
+        PlayerSlot::RightBottom,
+        PlayerSlot::RightTop,
+    ];
+
+    pub fn side(self) -> Side {
         match self {
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
+            PlayerSlot::LeftBottom | PlayerSlot::LeftTop => Side::Left,
+            PlayerSlot::RightBottom | PlayerSlot::RightTop => Side::Right,
         }
     }
 
+    pub fn is_top(self) -> bool {
+        matches!(self, PlayerSlot::LeftTop | PlayerSlot::RightTop)
+    }
+
+    pub fn base_z(self, mode: GameMode) -> f32 {
+        match mode {
+            GameMode::OneVsOne => 0.0,
+            GameMode::TwoVsTwo => {
+                if self.is_top() {
+                    -BASE_Z_OFFSET
+                } else {
+                    BASE_Z_OFFSET
+                }
+            }
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PlayerSlot::LeftBottom => "Left",
+            PlayerSlot::LeftTop => "Left Top",
+            PlayerSlot::RightBottom => "Right",
+            PlayerSlot::RightTop => "Right Top",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    #[default]
+    OneVsOne,
+    TwoVsTwo,
+}
+
+impl GameMode {
+    pub fn active_slots(self) -> &'static [PlayerSlot] {
+        match self {
+            GameMode::OneVsOne => &[PlayerSlot::LeftBottom, PlayerSlot::RightBottom],
+            GameMode::TwoVsTwo => &[
+                PlayerSlot::LeftBottom,
+                PlayerSlot::LeftTop,
+                PlayerSlot::RightBottom,
+                PlayerSlot::RightTop,
+            ],
+        }
+    }
+}
+
+impl Side {
     pub fn forward(self) -> f32 {
         match self {
             Side::Left => 1.0,
@@ -143,6 +213,12 @@ pub enum UnitKind {
 
 #[derive(Component)]
 pub struct Base;
+
+/// Marker added to a `Base` whose HP hit 0. Targeting filters (`combat_tick`,
+/// `tower_attack_tick`) exclude these so allied units retarget the surviving
+/// enemy base, and the HUD greys out the owning player's panel.
+#[derive(Component)]
+pub struct BaseDestroyed;
 
 #[derive(Component)]
 pub struct Unit;
@@ -214,46 +290,35 @@ pub struct PlacementSeat {
 
 #[derive(Resource, Default)]
 pub struct PlacementMode {
-    pub left: Option<PlacementSeat>,
-    pub right: Option<PlacementSeat>,
+    seats: [Option<PlacementSeat>; 4],
 }
 
 impl PlacementMode {
-    pub fn get(&self, side: Side) -> Option<PlacementSeat> {
-        match side {
-            Side::Left => self.left,
-            Side::Right => self.right,
-        }
+    pub fn get(&self, slot: PlayerSlot) -> Option<PlacementSeat> {
+        self.seats[slot.index()]
     }
 
-    pub fn get_mut(&mut self, side: Side) -> &mut Option<PlacementSeat> {
-        match side {
-            Side::Left => &mut self.left,
-            Side::Right => &mut self.right,
-        }
+    pub fn set(&mut self, slot: PlayerSlot, seat: PlacementSeat) {
+        self.seats[slot.index()] = Some(seat);
     }
 
-    pub fn set(&mut self, side: Side, seat: PlacementSeat) {
-        *self.get_mut(side) = Some(seat);
-    }
-
-    pub fn clear(&mut self, side: Side) {
-        *self.get_mut(side) = None;
+    pub fn clear(&mut self, slot: PlayerSlot) {
+        self.seats[slot.index()] = None;
     }
 }
 
 #[derive(Resource, Default)]
 pub struct PlayerControllers {
-    pub left: Option<Entity>,
-    pub right: Option<Entity>,
+    entities: [Option<Entity>; 4],
 }
 
 impl PlayerControllers {
-    pub fn get(&self, side: Side) -> Option<Entity> {
-        match side {
-            Side::Left => self.left,
-            Side::Right => self.right,
-        }
+    pub fn get(&self, slot: PlayerSlot) -> Option<Entity> {
+        self.entities[slot.index()]
+    }
+
+    pub fn set(&mut self, slot: PlayerSlot, entity: Option<Entity>) {
+        self.entities[slot.index()] = entity;
     }
 }
 
@@ -264,13 +329,13 @@ pub struct MenuFocus {
 
 #[derive(Component, Clone, Copy)]
 pub struct SeatSelection {
-    pub hovered: Side,
+    pub hovered: PlayerSlot,
     pub confirmed: bool,
 }
 
 #[derive(Component, Clone, Copy)]
 pub struct PlayerFocus {
-    pub side: Side,
+    pub slot: PlayerSlot,
     pub index: usize,
 }
 
@@ -368,6 +433,9 @@ pub struct GameSettings {
     pub shadows: bool,
     pub motion_blur: bool,
 
+    // FPS cap (0=Unlimited 1=30 2=60 3=120 4=144 5=240)
+    pub fps_cap: u8,
+
     // Sub-parameters (only meaningful when their parent is on; persist regardless)
     pub exposure: u8,        // 0=Low 1=Default 2=High (EV100 11 / 13 / 15)
     pub bloom_intensity: u8, // 0=Low 1=Default 2=High
@@ -395,6 +463,7 @@ impl Default for GameSettings {
             ssao: false,
             shadows: true,
             motion_blur: false,
+            fps_cap: 0,
             exposure: 1,
             bloom_intensity: 1,
             dlss_quality: 2,
@@ -447,40 +516,31 @@ impl SettingsOrigin {
 
 #[derive(Resource)]
 pub struct Gold {
-    pub left: u32,
-    pub right: u32,
+    pools: [u32; 4],
 }
 
 impl Default for Gold {
     fn default() -> Self {
         Self {
-            left: STARTING_GOLD,
-            right: STARTING_GOLD,
+            pools: [STARTING_GOLD; 4],
         }
     }
 }
 
 impl Gold {
-    pub fn get(&self, side: Side) -> u32 {
-        match side {
-            Side::Left => self.left,
-            Side::Right => self.right,
-        }
+    pub fn get(&self, slot: PlayerSlot) -> u32 {
+        self.pools[slot.index()]
     }
 
-    pub fn add(&mut self, side: Side, amount: u32) {
-        match side {
-            Side::Left => self.left = self.left.saturating_add(amount),
-            Side::Right => self.right = self.right.saturating_add(amount),
-        }
+    pub fn add(&mut self, slot: PlayerSlot, amount: u32) {
+        let p = &mut self.pools[slot.index()];
+        *p = p.saturating_add(amount);
     }
 
-    pub fn try_spend(&mut self, side: Side, amount: u32) -> bool {
-        if self.get(side) >= amount {
-            match side {
-                Side::Left => self.left -= amount,
-                Side::Right => self.right -= amount,
-            }
+    pub fn try_spend(&mut self, slot: PlayerSlot, amount: u32) -> bool {
+        let p = &mut self.pools[slot.index()];
+        if *p >= amount {
+            *p -= amount;
             true
         } else {
             false

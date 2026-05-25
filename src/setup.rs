@@ -227,13 +227,32 @@ pub fn setup_world(
     spawn_sky(&mut commands, &mut meshes, &mut materials);
     spawn_mountains(&mut commands, &mut meshes, &mut materials);
 
-    spawn_castle(&mut commands, &mut meshes, &lib, Side::Left);
-    spawn_castle(&mut commands, &mut meshes, &lib, Side::Right);
-    spawn_rock(&mut commands, &mut meshes, &lib, Side::Left);
-    spawn_rock(&mut commands, &mut meshes, &lib, Side::Right);
-
     spawn_zone_markers(&mut commands, &lib);
     spawn_scenery(&mut commands, &mut meshes, &lib);
+}
+
+/// Build bases + rocks for the active GameMode when entering Playing with an
+/// empty arena. Despawned on return-to-menu paths so the next match can be
+/// rebuilt cleanly for either 1v1 or 2v2.
+pub fn spawn_arena(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    lib: Res<MatLibrary>,
+    state: Res<GameState>,
+    mode: Res<GameMode>,
+    bases: Query<Entity, With<Base>>,
+) {
+    if *state != GameState::Playing {
+        return;
+    }
+    if bases.iter().next().is_some() {
+        return;
+    }
+    for &slot in mode.active_slots() {
+        let z = slot.base_z(*mode);
+        spawn_castle(&mut commands, &mut meshes, &lib, slot, z);
+        spawn_rock(&mut commands, &mut meshes, &lib, slot, z);
+    }
 }
 
 fn spawn_zone_markers(commands: &mut Commands, lib: &MatLibrary) {
@@ -302,7 +321,17 @@ pub fn animate_sun(
 pub fn sync_raytracing_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    new: Query<(Entity, &Mesh3d), (Added<Mesh3d>, Without<RaytracingMesh3d>)>,
+    // Skip entities flagged as not-shadow-casters (e.g. health bars): Solari
+    // ignores NotShadowCaster on the rasterized path but still picks up any
+    // mesh registered in the BVH for raytraced shadows.
+    new: Query<
+        (Entity, &Mesh3d),
+        (
+            Added<Mesh3d>,
+            Without<RaytracingMesh3d>,
+            Without<NotShadowCaster>,
+        ),
+    >,
 ) {
     for (entity, mesh3d) in &new {
         // Solari needs POSITION/NORMAL/UV_0/TANGENT. Bevy primitives don't ship
@@ -744,7 +773,14 @@ fn spawn_grass_tuft(commands: &mut Commands, lib: &MatLibrary, x: f32, z: f32) {
         });
 }
 
-fn spawn_castle(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary, side: Side) {
+fn spawn_castle(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    lib: &MatLibrary,
+    slot: PlayerSlot,
+    z: f32,
+) {
+    let side = slot.side();
     let x = match side {
         Side::Left => LEFT_BASE_X,
         Side::Right => RIGHT_BASE_X,
@@ -764,16 +800,17 @@ fn spawn_castle(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLib
     let pole_mesh = meshes.add(Cylinder::new(0.03, 0.9));
     let flag_mesh = meshes.add(Cuboid::new(0.34, 0.22, 0.02));
 
-    commands
+    let base_entity = commands
         .spawn((
             Transform {
-                translation: Vec3::new(x, 0.0, 0.0),
+                translation: Vec3::new(x, 0.0, z),
                 rotation: side.base_rotation(),
                 scale: Vec3::ONE,
             },
             Visibility::default(),
             Base,
             side,
+            slot,
             Health::new(BASE_HP),
         ))
         .with_children(|p| {
@@ -867,10 +904,19 @@ fn spawn_castle(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLib
                 MeshMaterial3d(main.clone()),
                 Transform::from_xyz(0.18, 2.65, 0.0),
             ));
-        });
+        })
+        .id();
+    crate::healthbar::spawn_health_bar_for_base(commands, base_entity);
 }
 
-fn spawn_rock(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary, side: Side) {
+fn spawn_rock(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    lib: &MatLibrary,
+    slot: PlayerSlot,
+    z: f32,
+) {
+    let side = slot.side();
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
         Side::Right => RIGHT_BASE_X,
@@ -880,10 +926,11 @@ fn spawn_rock(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibra
 
     commands
         .spawn((
-            Transform::from_xyz(x, 0.0, 0.0),
+            Transform::from_xyz(x, 0.0, z),
             Visibility::default(),
             Rock,
             side,
+            slot,
         ))
         .with_children(|p| {
             p.spawn((

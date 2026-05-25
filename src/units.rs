@@ -5,8 +5,21 @@ use bevy::prelude::*;
 
 use crate::common::*;
 
-pub fn spawn_soldier(commands: &mut Commands, lib: &MatLibrary, side: Side, lane: usize) {
-    let _ = spawn_unit(commands, lib, side, UnitKind::Soldier, Some(lane_z(lane)));
+pub fn spawn_soldier(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    slot: PlayerSlot,
+    mode: GameMode,
+    lane: usize,
+) {
+    let _ = spawn_unit(
+        commands,
+        lib,
+        slot,
+        mode,
+        UnitKind::Soldier,
+        Some(lane_z(lane)),
+    );
 }
 
 pub fn lane_z(lane: usize) -> f32 {
@@ -17,20 +30,27 @@ pub fn lane_z(lane: usize) -> f32 {
     -LANE_HALF_WIDTH + (lane.min(LANE_COUNT - 1) as f32) * step
 }
 
-pub fn spawn_miner(commands: &mut Commands, lib: &MatLibrary, side: Side, slot_index: usize) {
-    let entity = spawn_unit(commands, lib, side, UnitKind::Miner, None);
+pub fn spawn_miner(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    slot: PlayerSlot,
+    mode: GameMode,
+    ring_slot: usize,
+) {
+    let entity = spawn_unit(commands, lib, slot, mode, UnitKind::Miner, None);
     commands.entity(entity).insert((
         MinerCarry::default(),
         MinerPhase::ToRock,
-        MinerSlot(slot_index),
+        MinerSlot(ring_slot),
     ));
 }
 
-/// Each side starts with one miner so the economy works without the player
-/// having to spend gold first. Runs on the Menu→Playing transition; skips
-/// when units already exist (Paused→Playing resume).
+/// Each active player slot starts with one miner so the economy works without
+/// the player having to spend gold first. Runs on the Menu→Playing transition;
+/// skips when units already exist (Paused→Playing resume).
 pub fn spawn_initial_miners(
     state: Res<GameState>,
+    mode: Res<GameMode>,
     mut commands: Commands,
     lib: Res<MatLibrary>,
     units: Query<Entity, With<Unit>>,
@@ -41,8 +61,9 @@ pub fn spawn_initial_miners(
     if units.iter().next().is_some() {
         return;
     }
-    spawn_miner(&mut commands, &lib, Side::Left, 0);
-    spawn_miner(&mut commands, &lib, Side::Right, 0);
+    for &slot in mode.active_slots() {
+        spawn_miner(&mut commands, &lib, slot, *mode, 0);
+    }
 }
 
 pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
@@ -50,7 +71,7 @@ pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
     // miners never need to cross the rock to reach their position. Slot 0 is
     // the leftmost arc position from the base's POV; the formula is
     // side-mirrored so both players see the same layout.
-    let n = MAX_MINERS_PER_SIDE as f32;
+    let n = MAX_MINERS_PER_PLAYER as f32;
     let step = std::f32::consts::PI / n;
     let angle = (slot as f32 - (n - 1.0) / 2.0) * step;
     let x_local = angle.cos() * MINER_RING_RADIUS;
@@ -58,21 +79,37 @@ pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
     Vec3::new(x_local * side.forward(), 0.0, z_local)
 }
 
-pub fn spawn_archer(commands: &mut Commands, lib: &MatLibrary, side: Side, lane: usize) {
-    let _ = spawn_unit(commands, lib, side, UnitKind::Archer, Some(lane_z(lane)));
+pub fn spawn_archer(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    slot: PlayerSlot,
+    mode: GameMode,
+    lane: usize,
+) {
+    let _ = spawn_unit(
+        commands,
+        lib,
+        slot,
+        mode,
+        UnitKind::Archer,
+        Some(lane_z(lane)),
+    );
 }
 
 fn spawn_unit(
     commands: &mut Commands,
     lib: &MatLibrary,
-    side: Side,
+    slot: PlayerSlot,
+    mode: GameMode,
     kind: UnitKind,
     fixed_z: Option<f32>,
 ) -> Entity {
+    let side = slot.side();
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
         Side::Right => RIGHT_BASE_X,
     };
+    let base_z = slot.base_z(mode);
     let (spawn_x, hp, dmg, speed, cooldown) = match kind {
         UnitKind::Soldier => (
             base_x + side.forward() * SOLDIER_SPAWN_OFFSET,
@@ -96,10 +133,11 @@ fn spawn_unit(
             ARCHER_COOLDOWN,
         ),
     };
-    let z = match fixed_z {
-        Some(z) => z + (rand_jitter() - 0.5) * 0.25,
-        None => (rand_jitter() - 0.5) * SPAWN_Z_JITTER * 2.0,
-    };
+    let z = base_z
+        + match fixed_z {
+            Some(z) => z + (rand_jitter() - 0.5) * 0.25,
+            None => (rand_jitter() - 0.5) * SPAWN_Z_JITTER * 2.0,
+        };
     let main_mat = match side {
         Side::Left => lib.left.clone(),
         Side::Right => lib.right.clone(),
@@ -181,7 +219,7 @@ fn spawn_unit(
         UnitKind::Archer => attach_bow_and_arrow(commands, arm_left, arm_right, lib),
     }
 
-    commands
+    let entity = commands
         .spawn((
             Transform {
                 translation: Vec3::new(spawn_x, 0.0, z),
@@ -192,6 +230,7 @@ fn spawn_unit(
             Unit,
             kind,
             side,
+            slot,
             Health::new(hp),
             Damage(dmg),
             MoveSpeed(speed),
@@ -206,7 +245,9 @@ fn spawn_unit(
             },
         ))
         .add_children(&[bob, leg_left, leg_right])
-        .id()
+        .id();
+    crate::healthbar::spawn_health_bar_for_unit(commands, entity);
+    entity
 }
 
 fn unit_base_rotation(side: Side, kind: UnitKind) -> Quat {
@@ -398,6 +439,7 @@ fn rand_jitter() -> f32 {
 struct Combatant {
     entity: Entity,
     side: Side,
+    slot: Option<PlayerSlot>,
     pos: Vec3,
     kind: CombatantKind,
 }
@@ -423,6 +465,7 @@ pub fn combat_tick(
             (
                 Entity,
                 &Side,
+                &PlayerSlot,
                 &UnitKind,
                 &mut Transform,
                 &Damage,
@@ -435,14 +478,14 @@ pub fn combat_tick(
             ),
             With<Unit>,
         >,
-        Query<(Entity, &Side, &Transform), With<Base>>,
-        Query<(Entity, &Side, &Transform), With<Rock>>,
+        Query<(Entity, &Side, &PlayerSlot, &Transform), (With<Base>, Without<BaseDestroyed>)>,
+        Query<(Entity, &Side, &PlayerSlot, &Transform), With<Rock>>,
         Query<&mut Health>,
         Query<(Entity, &Side, &Transform), With<Tower>>,
     )>,
 ) {
     if *state != GameState::Playing {
-        for (_, _, _, _, _, _, _, mut anim, _, _, _) in sets.p0().iter_mut() {
+        for (_, _, _, _, _, _, _, _, mut anim, _, _, _) in sets.p0().iter_mut() {
             anim.walking = false;
             anim.attacking = false;
         }
@@ -451,7 +494,7 @@ pub fn combat_tick(
 
     // 1. Snapshot every combatant's position.
     let mut combatants: Vec<Combatant> = Vec::new();
-    for (entity, side, kind, transform, _, _, _, _, _, _, _) in sets.p0().iter() {
+    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _) in sets.p0().iter() {
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
@@ -460,22 +503,25 @@ pub fn combat_tick(
         combatants.push(Combatant {
             entity,
             side: *side,
+            slot: Some(*slot),
             pos: transform.translation,
             kind: ckind,
         });
     }
-    for (entity, side, transform) in sets.p1().iter() {
+    for (entity, side, slot, transform) in sets.p1().iter() {
         combatants.push(Combatant {
             entity,
             side: *side,
+            slot: Some(*slot),
             pos: transform.translation,
             kind: CombatantKind::Base,
         });
     }
-    for (entity, side, transform) in sets.p2().iter() {
+    for (entity, side, slot, transform) in sets.p2().iter() {
         combatants.push(Combatant {
             entity,
             side: *side,
+            slot: Some(*slot),
             pos: transform.translation,
             kind: CombatantKind::Rock,
         });
@@ -484,6 +530,7 @@ pub fn combat_tick(
         combatants.push(Combatant {
             entity,
             side: *side,
+            slot: None,
             pos: transform.translation,
             kind: CombatantKind::Tower,
         });
@@ -491,12 +538,13 @@ pub fn combat_tick(
 
     let dt = time.delta_secs();
     let mut damage_events: Vec<(Entity, i32)> = Vec::new();
-    let mut gold_events: Vec<(Side, u32)> = Vec::new();
+    let mut gold_events: Vec<(PlayerSlot, u32)> = Vec::new();
 
     // 2. Per-unit decision.
     for (
         entity,
         side,
+        slot,
         kind,
         mut transform,
         damage,
@@ -561,7 +609,10 @@ pub fn combat_tick(
                 }
                 let enemy_base = combatants
                     .iter()
-                    .find(|c| c.kind == CombatantKind::Base && c.side != *side);
+                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
+                    .map(|c| (c, xz_distance(c.pos, pos)))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(c, _)| c);
                 if let Some(base) = enemy_base {
                     let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
                     step_toward(&mut transform, target, speed.0 * dt);
@@ -573,13 +624,15 @@ pub fn combat_tick(
                 anim.walking = true;
             }
             UnitKind::Miner => {
+                // Filter by PlayerSlot, not Side: in 2v2 the two allied miners
+                // must each return to their OWN rock and base.
                 let own_rock = combatants
                     .iter()
-                    .find(|c| c.side == *side && c.kind == CombatantKind::Rock);
+                    .find(|c| c.slot == Some(*slot) && c.kind == CombatantKind::Rock);
                 let own_base = combatants
                     .iter()
-                    .find(|c| c.side == *side && c.kind == CombatantKind::Base);
-                let slot = slot_opt.map(|s| s.0).unwrap_or(0);
+                    .find(|c| c.slot == Some(*slot) && c.kind == CombatantKind::Base);
+                let ring_slot = slot_opt.map(|s| s.0).unwrap_or(0);
 
                 let phase = phase_opt.as_deref().copied().unwrap_or(MinerPhase::ToRock);
 
@@ -590,7 +643,7 @@ pub fn combat_tick(
                             anim.walking = false;
                             continue;
                         };
-                        let target = rock.pos + miner_slot_offset(slot, *side);
+                        let target = rock.pos + miner_slot_offset(ring_slot, *side);
                         let target_xz = Vec3::new(target.x, 0.0, target.z);
                         let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
                         let dist = (target_xz - pos_xz).length();
@@ -643,7 +696,7 @@ pub fn combat_tick(
                         if dist <= MINER_DEPOSIT_RANGE {
                             if let Some(carry) = carry_opt.as_deref_mut() {
                                 if carry.current > 0 {
-                                    gold_events.push((*side, carry.current));
+                                    gold_events.push((*slot, carry.current));
                                     carry.current = 0;
                                 }
                             }
@@ -721,7 +774,10 @@ pub fn combat_tick(
                 }
                 let enemy_base = combatants
                     .iter()
-                    .find(|c| c.kind == CombatantKind::Base && c.side != *side);
+                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
+                    .map(|c| (c, xz_distance(c.pos, pos)))
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(c, _)| c);
                 if let Some(base) = enemy_base {
                     let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
                     step_toward(&mut transform, target, speed.0 * dt);
@@ -742,8 +798,8 @@ pub fn combat_tick(
             hp.current -= dmg;
         }
     }
-    for (side, amount) in gold_events {
-        gold.add(side, amount);
+    for (slot, amount) in gold_events {
+        gold.add(slot, amount);
     }
 }
 

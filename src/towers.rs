@@ -3,19 +3,21 @@ use bevy::prelude::*;
 use crate::common::*;
 use crate::units::spawn_arrow;
 
-pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, side: Side, position: Vec3) {
+pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, position: Vec3) {
+    let side = slot.side();
     let main_mat = match side {
         Side::Left => lib.left.clone(),
         Side::Right => lib.right.clone(),
     };
     let flag_mesh_size = 0.30;
 
-    commands
+    let tower_entity = commands
         .spawn((
             Transform::from_xyz(position.x, 0.0, position.z),
             Visibility::default(),
             Tower,
             side,
+            slot,
             Health::new(TOWER_HP),
             Damage(TOWER_DAMAGE),
             AttackCooldown::ready(TOWER_COOLDOWN),
@@ -97,7 +99,9 @@ pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, side: Side, positi
                 Transform::from_xyz(0.0, 2.65, 0.42),
                 TorchLight,
             ));
-        });
+        })
+        .id();
+    crate::healthbar::spawn_health_bar_for_tower(commands, tower_entity);
 }
 
 pub fn tower_attack_tick(
@@ -107,7 +111,7 @@ pub fn tower_attack_tick(
     lib: Res<MatLibrary>,
     mut towers: Query<(&Side, &Transform, &Damage, &mut AttackCooldown), With<Tower>>,
     units: Query<(Entity, &Side, &Transform), (With<Unit>, Without<Tower>)>,
-    bases: Query<(Entity, &Side, &Transform), (With<Base>, Without<Tower>)>,
+    bases: Query<(Entity, &Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
 ) {
     if *state != GameState::Playing {
         return;

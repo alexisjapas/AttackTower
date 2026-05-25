@@ -1,6 +1,7 @@
 mod common;
 mod game;
 mod graphics;
+mod healthbar;
 mod music;
 mod setup;
 mod towers;
@@ -13,6 +14,7 @@ use bevy::prelude::*;
 use crate::common::*;
 use crate::game::*;
 use crate::graphics::*;
+use crate::healthbar::*;
 use crate::music::*;
 use crate::setup::*;
 use crate::towers::*;
@@ -31,9 +33,11 @@ fn main() {
     // limits of 0.
     let raytracing_supported = probe_raytracing_support();
     let mut settings = load_settings();
-    if !raytracing_supported {
-        settings.raytracing = false;
-    }
+    // Fix any invariant violation that may have been persisted (e.g. RT on
+    // while HDR off → wgpu storage-binding panic on launch). DLSS support
+    // isn't probed yet at this point, so pass `true` and let the runtime
+    // system reconcile once DlssAvailable is detected.
+    sanitize_settings(&mut settings, true, raytracing_supported);
     let default_plugins = DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "AttackTower".into(),
@@ -80,6 +84,7 @@ fn main() {
         .init_resource::<TimeOfDay>()
         .init_resource::<DlssAvailable>()
         .init_resource::<GameTime>()
+        .init_resource::<GameMode>()
         .add_systems(
             Startup,
             (init_mat_library, setup_world, setup_ui, setup_music).chain(),
@@ -96,6 +101,7 @@ fn main() {
                     placement_system,
                     advance_game_time,
                     animate_sun,
+                    spawn_arena,
                     spawn_initial_miners,
                     combat_tick,
                     tower_attack_tick,
@@ -122,6 +128,7 @@ fn main() {
                     )
                         .chain(),
                     (
+                        enforce_settings_invariants,
                         apply_raytracing_setting,
                         detect_dlss_support,
                         update_sideselect_cards,
@@ -136,7 +143,10 @@ fn main() {
                         sync_music_playback,
                         update_gold_text,
                         update_base_hp_text,
+                        update_focus_stats_text,
                         update_clock_text,
+                        update_health_bars,
+                        limit_fps,
                     )
                         .chain(),
                 )

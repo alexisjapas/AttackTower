@@ -10,7 +10,7 @@ pub struct GameMusic;
 /// Music asset path inside the `assets/` directory. The user is expected to
 /// drop their file here under the matching name. If the file is missing the
 /// loader logs a warning and the game continues to run silently.
-pub const MUSIC_PATH: &str = "music/main_theme.ogg";
+pub const MUSIC_PATH: &str = "music/battleTheme.mp3";
 
 pub fn setup_music(mut commands: Commands, asset_server: Res<AssetServer>) {
     let source: Handle<AudioSource> = asset_server.load(MUSIC_PATH);

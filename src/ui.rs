@@ -24,15 +24,31 @@ use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
 
 #[derive(Component, Clone, Copy)]
 pub struct PanelSlot {
-    pub side: Side,
+    pub slot: PlayerSlot,
     pub index: usize,
 }
 
 #[derive(Component)]
-pub struct GoldText(pub Side);
+pub struct GoldText(pub PlayerSlot);
+
+/// Stats card text in a player's HUD: refreshes whenever that player's
+/// focus index changes (showing Tower/Soldier/Archer/Miner specs).
+#[derive(Component)]
+pub struct FocusStatsText(pub PlayerSlot);
 
 #[derive(Component)]
-pub struct BaseHpText(pub Side);
+pub struct BaseHpText(pub PlayerSlot);
+
+/// Marker for the top player HUD corners (LeftTop / RightTop). They are hidden
+/// in 1v1 by [`update_game_hud_visibility`].
+#[derive(Component)]
+pub struct TopPlayerHud;
+
+/// Marker on the root Node of each player corner; used by
+/// [`apply_player_focus_visual`] to grey the whole corner when that slot's
+/// base is destroyed.
+#[derive(Component, Clone, Copy)]
+pub struct PlayerCorner(pub PlayerSlot);
 
 #[derive(Component)]
 pub struct ClockText;
@@ -95,22 +111,27 @@ pub struct ImpactRowNode;
 pub struct SideSelectOverlay;
 
 #[derive(Component, Clone, Copy)]
-pub struct SideCard(pub Side);
+pub struct SideCard(pub PlayerSlot);
 
 #[derive(Component, Clone, Copy)]
-pub struct SideCardStatus(pub Side);
+pub struct SideCardStatus(pub PlayerSlot);
 
 #[derive(Component, Clone, Copy)]
 pub struct MenuButton(pub usize);
 
 const BTN_NORMAL: Color = Color::srgb(0.16, 0.16, 0.20);
 const BTN_FOCUSED: Color = Color::srgb(0.32, 0.32, 0.40);
+const BTN_DISABLED: Color = Color::srgb(0.10, 0.10, 0.12);
+const BORDER_DISABLED: Color = Color::srgb(0.30, 0.30, 0.34);
+const HUD_BG_DISABLED: Color = Color::srgba(0.0, 0.0, 0.0, 0.40);
+const HUD_BORDER_DISABLED: Color = Color::srgb(0.40, 0.40, 0.44);
 const CARD_NORMAL: Color = Color::srgb(0.12, 0.13, 0.18);
 const CARD_HOVERED: Color = Color::srgb(0.22, 0.23, 0.30);
 
 pub fn setup_ui(mut commands: Commands) {
     let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
     let hud_border = Color::srgb(0.85, 0.85, 0.9);
+    // Top global bar: clock only (base HP lives inside each player corner).
     commands
         .spawn((
             Node {
@@ -118,7 +139,8 @@ pub fn setup_ui(mut commands: Commands) {
                 top: Val::Px(12.0),
                 left: Val::Px(12.0),
                 right: Val::Px(12.0),
-                justify_content: JustifyContent::SpaceBetween,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
@@ -130,65 +152,69 @@ pub fn setup_ui(mut commands: Commands) {
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("Left Base: 20/20"),
-                TextFont::from_font_size(22.0),
-                TextColor(Side::Left.color()),
-                BaseHpText(Side::Left),
-            ));
-            parent.spawn((
                 Text::new("06:00"),
                 TextFont::from_font_size(24.0),
                 TextColor(Color::srgb(0.95, 0.93, 0.78)),
                 ClockText,
             ));
-            parent.spawn((
-                Text::new("Right Base: 20/20"),
-                TextFont::from_font_size(22.0),
-                TextColor(Side::Right.color()),
-                BaseHpText(Side::Right),
-            ));
         });
 
-    spawn_player_corner(&mut commands, Side::Left, hud_bg, hud_border);
-    spawn_player_corner(&mut commands, Side::Right, hud_bg, hud_border);
+    spawn_player_corner(&mut commands, PlayerSlot::LeftBottom, hud_bg, hud_border);
+    spawn_player_corner(&mut commands, PlayerSlot::RightBottom, hud_bg, hud_border);
+    spawn_player_corner(&mut commands, PlayerSlot::LeftTop, hud_bg, hud_border);
+    spawn_player_corner(&mut commands, PlayerSlot::RightTop, hud_bg, hud_border);
 }
 
-fn spawn_player_corner(commands: &mut Commands, side: Side, bg: Color, border: Color) {
-    let (left, right) = match side {
+fn spawn_player_corner(commands: &mut Commands, slot: PlayerSlot, bg: Color, border: Color) {
+    let (left, right) = match slot.side() {
         Side::Left => (Val::Px(12.0), Val::Auto),
         Side::Right => (Val::Auto, Val::Px(12.0)),
     };
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(12.0),
-                left,
-                right,
-                padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                ..default()
-            },
-            BackgroundColor(bg),
-            BorderColor::all(border),
-            Visibility::Hidden,
-            GameHud,
-        ))
-        .with_children(|parent| {
-            spawn_player_panel(parent, side);
-        });
+    // Bottom corners hug the bottom edge; top corners sit just below the
+    // global HP/clock bar (which lives at top: 12 and is ~60px tall).
+    let (top_val, bottom_val) = if slot.is_top() {
+        (Val::Px(80.0), Val::Auto)
+    } else {
+        (Val::Auto, Val::Px(12.0))
+    };
+    let mut entity = commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: top_val,
+            bottom: bottom_val,
+            left,
+            right,
+            padding: UiRect::axes(Val::Px(20.0), Val::Px(10.0)),
+            border: UiRect::all(Val::Px(2.0)),
+            ..default()
+        },
+        BackgroundColor(bg),
+        BorderColor::all(border),
+        Visibility::Hidden,
+        GameHud,
+        PlayerCorner(slot),
+    ));
+    if slot.is_top() {
+        entity.insert(TopPlayerHud);
+    }
+    entity.with_children(|parent| {
+        spawn_player_panel(parent, slot);
+    });
 }
 
 pub fn update_game_hud_visibility(
     state: Res<GameState>,
-    mut hud: Query<&mut Visibility, With<GameHud>>,
+    mode: Res<GameMode>,
+    mut hud: Query<(&mut Visibility, Option<&TopPlayerHud>), With<GameHud>>,
 ) {
-    if !state.is_changed() {
+    if !state.is_changed() && !mode.is_changed() {
         return;
     }
-    let visible = matches!(*state, GameState::Playing | GameState::Paused);
-    for mut vis in &mut hud {
-        *vis = if visible {
+    let active = matches!(*state, GameState::Playing | GameState::Paused);
+    let two_v_two = *mode == GameMode::TwoVsTwo;
+    for (mut vis, top) in &mut hud {
+        let show = active && (top.is_none() || two_v_two);
+        *vis = if show {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -196,7 +222,7 @@ pub fn update_game_hud_visibility(
     }
 }
 
-fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
+fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
     parent
         .spawn((Node {
             flex_direction: FlexDirection::Column,
@@ -206,14 +232,25 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
             ..default()
         },))
         .with_children(|panel| {
+            // Base HP header (specific to this player slot).
+            panel.spawn((
+                Node {
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+                Text::new(format!("{}: {}/{}", slot.label(), BASE_HP, BASE_HP)),
+                TextFont::from_font_size(18.0),
+                TextColor(slot.side().color()),
+                BaseHpText(slot),
+            ));
             // Order matches navigation order (0 → 3, top to bottom).
             spawn_category_header(panel, "Buildings");
-            spawn_slot(panel, side, 0, &format!("Tower ({}g)", TOWER_COST));
+            spawn_slot(panel, slot, 0, &format!("Tower ({}g)", TOWER_COST));
             spawn_category_header(panel, "Combat");
-            spawn_slot(panel, side, 1, &format!("Soldier ({}g)", SOLDIER_COST));
-            spawn_slot(panel, side, 2, &format!("Archer ({}g)", ARCHER_COST));
+            spawn_slot(panel, slot, 1, &format!("Soldier ({}g)", SOLDIER_COST));
+            spawn_slot(panel, slot, 2, &format!("Archer ({}g)", ARCHER_COST));
             spawn_category_header(panel, "Resources");
-            spawn_slot(panel, side, 3, &format!("Miner ({}g)", MINER_COST));
+            spawn_slot(panel, slot, 3, &format!("Miner ({}g)", MINER_COST));
             panel.spawn((
                 Node {
                     margin: UiRect::top(Val::Px(8.0)),
@@ -221,10 +258,66 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, side: Side) {
                 },
                 Text::new("Gold: 10"),
                 TextFont::from_font_size(18.0),
-                TextColor(side.color()),
-                GoldText(side),
+                TextColor(slot.side().color()),
+                GoldText(slot),
+            ));
+            // Hover stats card: lit by update_focus_stats_text.
+            panel.spawn((
+                Node {
+                    margin: UiRect::top(Val::Px(6.0)),
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.08, 0.08, 0.10, 0.85)),
+                BorderColor::all(Color::srgba(0.5, 0.5, 0.55, 0.7)),
+            ))
+            .with_child((
+                Text::new(focus_stats_string(0)),
+                TextFont::from_font_size(12.0),
+                TextColor(Color::srgb(0.92, 0.92, 0.96)),
+                FocusStatsText(slot),
             ));
         });
+}
+
+/// Stats text for one of the four slot indices, matching the panel button
+/// order (0 Tower, 1 Soldier, 2 Archer, 3 Miner).
+fn focus_stats_string(index: usize) -> String {
+    match index {
+        0 => format!(
+            "Tower\nHP {}  DMG {}  RNG {:.1}  CD {:.1}s",
+            TOWER_HP, TOWER_DAMAGE, TOWER_RANGE, TOWER_COOLDOWN
+        ),
+        1 => format!(
+            "Soldier\nHP {}  DMG {}  SPD {:.1}  CD {:.1}s",
+            SOLDIER_HP, SOLDIER_DAMAGE, SOLDIER_SPEED, SOLDIER_COOLDOWN
+        ),
+        2 => format!(
+            "Archer\nHP {}  DMG {}  RNG {:.1}  CD {:.1}s",
+            ARCHER_HP, ARCHER_DAMAGE, ARCHER_RANGE, ARCHER_COOLDOWN
+        ),
+        3 => format!(
+            "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
+            MINER_HP, MINER_CAPACITY, MINER_SPEED, MINER_COOLDOWN
+        ),
+        _ => String::new(),
+    }
+}
+
+pub fn update_focus_stats_text(
+    focuses: Query<&PlayerFocus>,
+    mut texts: Query<(&FocusStatsText, &mut Text)>,
+) {
+    let mut focus_per_slot: [Option<usize>; 4] = [None; 4];
+    for f in &focuses {
+        focus_per_slot[f.slot.index()] = Some(f.index);
+    }
+    for (tag, mut text) in &mut texts {
+        let idx = focus_per_slot[tag.0.index()].unwrap_or(0);
+        text.0 = focus_stats_string(idx);
+    }
 }
 
 fn spawn_category_header(panel: &mut ChildSpawnerCommands, label: &str) {
@@ -239,7 +332,7 @@ fn spawn_category_header(panel: &mut ChildSpawnerCommands, label: &str) {
     ));
 }
 
-fn spawn_slot(panel: &mut ChildSpawnerCommands, side: Side, index: usize, label: &str) {
+fn spawn_slot(panel: &mut ChildSpawnerCommands, slot: PlayerSlot, index: usize, label: &str) {
     panel
         .spawn((
             Node {
@@ -249,8 +342,8 @@ fn spawn_slot(panel: &mut ChildSpawnerCommands, side: Side, index: usize, label:
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
-            BorderColor::all(side.color()),
-            PanelSlot { side, index },
+            BorderColor::all(slot.side().color()),
+            PanelSlot { slot, index },
         ))
         .with_child((
             Text::new(label),
@@ -263,8 +356,8 @@ pub fn update_gold_text(gold: Res<Gold>, mut texts: Query<(&GoldText, &mut Text)
     if !gold.is_changed() {
         return;
     }
-    for (slot, mut text) in &mut texts {
-        text.0 = format!("Gold: {}", gold.get(slot.0));
+    for (tag, mut text) in &mut texts {
+        text.0 = format!("Gold: {}", gold.get(tag.0));
     }
 }
 
@@ -278,12 +371,12 @@ pub fn update_clock_text(gtime: Res<GameTime>, mut q: Query<&mut Text, With<Cloc
 }
 
 pub fn update_base_hp_text(
-    bases: Query<(&Side, &Health), With<Base>>,
+    bases: Query<(&PlayerSlot, &Health), With<Base>>,
     mut texts: Query<(&BaseHpText, &mut Text)>,
 ) {
-    for (slot, mut text) in &mut texts {
-        if let Some((_, hp)) = bases.iter().find(|(s, _)| **s == slot.0) {
-            text.0 = format!("{} Base: {}/{}", slot.0.label(), hp.current.max(0), hp.max);
+    for (tag, mut text) in &mut texts {
+        if let Some((_, hp)) = bases.iter().find(|(s, _)| **s == tag.0) {
+            text.0 = format!("{}: {}/{}", tag.0.label(), hp.current.max(0), hp.max);
         }
     }
 }
@@ -331,9 +424,10 @@ pub fn update_menu_overlay(
                 TextFont::from_font_size(56.0),
                 TextColor(Color::WHITE),
             ));
-            spawn_menu_button(parent, 0, "Play", Side::Left.color());
-            spawn_menu_button(parent, 1, "Settings", Color::srgb(0.7, 0.7, 0.75));
-            spawn_menu_button(parent, 2, "Quit", Side::Right.color());
+            spawn_menu_button(parent, 0, "Play 1v1", Side::Left.color());
+            spawn_menu_button(parent, 1, "Play 2v2", Side::Left.color());
+            spawn_menu_button(parent, 2, "Settings", Color::srgb(0.7, 0.7, 0.75));
+            spawn_menu_button(parent, 3, "Quit", Side::Right.color());
             parent.spawn((
                 Text::new("D-pad: navigate   A: select"),
                 TextFont::from_font_size(16.0),
@@ -879,7 +973,8 @@ pub fn pause_input_system(
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
-    mut bases: Query<&mut Health, With<Base>>,
+    bases: Query<Entity, With<Base>>,
+    rocks: Query<Entity, With<Rock>>,
     units: Query<Entity, With<Unit>>,
     arrows: Query<Entity, With<Arrow>>,
     towers: Query<Entity, With<Tower>>,
@@ -939,7 +1034,8 @@ pub fn pause_input_system(
             2 => {
                 reset_match(
                     &mut commands,
-                    &mut bases,
+                    &bases,
+                    &rocks,
                     &units,
                     &arrows,
                     &towers,
@@ -955,12 +1051,15 @@ pub fn pause_input_system(
     }
 }
 
-/// Wipe a finished/abandoned match: despawn every battlefield entity, restore
-/// bases to full HP and reset gold, placement and player→pad mapping. Used by
-/// both the pause "Main menu" action and the endgame "Main menu" action.
+/// Wipe a finished/abandoned match: despawn every battlefield entity (bases
+/// and rocks included, since GameMode may change before the next match), and
+/// reset gold, placement and player→pad mapping. The arena is rebuilt by
+/// `spawn_arena` on the next `Playing` transition. Used by both the pause
+/// "Main menu" action and the endgame "Main menu" action.
 fn reset_match(
     commands: &mut Commands,
-    bases: &mut Query<&mut Health, With<Base>>,
+    bases: &Query<Entity, With<Base>>,
+    rocks: &Query<Entity, With<Rock>>,
     units: &Query<Entity, With<Unit>>,
     arrows: &Query<Entity, With<Arrow>>,
     towers: &Query<Entity, With<Tower>>,
@@ -981,8 +1080,11 @@ fn reset_match(
     for e in ghosts {
         commands.entity(e).despawn();
     }
-    for mut hp in bases.iter_mut() {
-        hp.current = hp.max;
+    for e in bases {
+        commands.entity(e).despawn();
+    }
+    for e in rocks {
+        commands.entity(e).despawn();
     }
     *gold = Gold::default();
     *placement = PlacementMode::default();
@@ -1063,6 +1165,7 @@ pub fn update_endgame_overlay(
 pub fn update_sideselect_overlay(
     mut commands: Commands,
     state: Res<GameState>,
+    mode: Res<GameMode>,
     overlay: Query<Entity, With<SideSelectOverlay>>,
     seats: Query<Entity, With<SeatSelection>>,
 ) {
@@ -1102,30 +1205,65 @@ pub fn update_sideselect_overlay(
                 TextFont::from_font_size(36.0),
                 TextColor(Color::WHITE),
             ));
-            parent
-                .spawn((Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(48.0),
-                    ..default()
-                },))
-                .with_children(|row| {
-                    spawn_side_card(row, Side::Left);
-                    spawn_side_card(row, Side::Right);
-                });
+            if *mode == GameMode::TwoVsTwo {
+                parent
+                    .spawn((Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(20.0),
+                        ..default()
+                    },))
+                    .with_children(|col| {
+                        col.spawn((Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(48.0),
+                            ..default()
+                        },))
+                            .with_children(|row| {
+                                spawn_side_card(row, PlayerSlot::LeftTop);
+                                spawn_side_card(row, PlayerSlot::RightTop);
+                            });
+                        col.spawn((Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(48.0),
+                            ..default()
+                        },))
+                            .with_children(|row| {
+                                spawn_side_card(row, PlayerSlot::LeftBottom);
+                                spawn_side_card(row, PlayerSlot::RightBottom);
+                            });
+                    });
+            } else {
+                parent
+                    .spawn((Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(48.0),
+                        ..default()
+                    },))
+                    .with_children(|row| {
+                        spawn_side_card(row, PlayerSlot::LeftBottom);
+                        spawn_side_card(row, PlayerSlot::RightBottom);
+                    });
+            }
             parent.spawn((
-                Text::new("D-pad left/right: choose   A: confirm   B: cancel   Start: launch"),
+                Text::new("D-pad: choose   A: confirm   B: cancel   Start: launch"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.75, 0.75, 0.8)),
             ));
         });
 }
 
-fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
+fn spawn_side_card(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
+    let title = match slot {
+        PlayerSlot::LeftBottom => "Left Bottom",
+        PlayerSlot::LeftTop => "Left Top",
+        PlayerSlot::RightBottom => "Right Bottom",
+        PlayerSlot::RightTop => "Right Top",
+    };
     parent
         .spawn((
             Node {
-                width: Val::Px(240.0),
-                height: Val::Px(160.0),
+                width: Val::Px(220.0),
+                height: Val::Px(140.0),
                 padding: UiRect::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(4.0)),
                 flex_direction: FlexDirection::Column,
@@ -1134,23 +1272,20 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
                 ..default()
             },
             BackgroundColor(CARD_NORMAL),
-            BorderColor::all(side.color()),
-            SideCard(side),
+            BorderColor::all(slot.side().color()),
+            SideCard(slot),
         ))
         .with_children(|card| {
             card.spawn((
-                Text::new(match side {
-                    Side::Left => "Left Player",
-                    Side::Right => "Right Player",
-                }),
+                Text::new(title),
                 TextFont::from_font_size(22.0),
-                TextColor(side.color()),
+                TextColor(slot.side().color()),
             ));
             card.spawn((
                 Text::new("Available"),
                 TextFont::from_font_size(18.0),
                 TextColor(Color::srgb(0.85, 0.85, 0.9)),
-                SideCardStatus(side),
+                SideCardStatus(slot),
             ));
         });
 }
@@ -1201,29 +1336,37 @@ pub fn apply_menu_focus_visual(
 pub fn apply_player_focus_visual(
     state: Res<GameState>,
     focuses: Query<&PlayerFocus>,
-    units: Query<(&Side, &UnitKind), With<Unit>>,
-    mut slots: Query<(
-        &PanelSlot,
-        &mut Node,
-        &mut BackgroundColor,
-        &mut BorderColor,
-    )>,
+    units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
+    alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
+    mut panels: Query<
+        (
+            &PanelSlot,
+            &mut Node,
+            &mut BackgroundColor,
+            &mut BorderColor,
+        ),
+        Without<PlayerCorner>,
+    >,
+    mut corners: Query<
+        (&PlayerCorner, &mut BackgroundColor, &mut BorderColor),
+        Without<PanelSlot>,
+    >,
 ) {
     let active = matches!(*state, GameState::Playing | GameState::Paused);
-    let miners_left = units
-        .iter()
-        .filter(|(s, k)| **s == Side::Left && **k == UnitKind::Miner)
-        .count();
-    let miners_right = units
-        .iter()
-        .filter(|(s, k)| **s == Side::Right && **k == UnitKind::Miner)
-        .count();
-    for (slot, mut node, mut bg, mut border) in &mut slots {
-        let hidden = slot.index == 3
-            && match slot.side {
-                Side::Left => miners_left >= MAX_MINERS_PER_SIDE,
-                Side::Right => miners_right >= MAX_MINERS_PER_SIDE,
-            };
+    let mut miners_per_slot = [0usize; 4];
+    for (s, k) in &units {
+        if *k == UnitKind::Miner {
+            miners_per_slot[s.index()] += 1;
+        }
+    }
+    let mut alive = [false; 4];
+    for slot in &alive_bases {
+        alive[slot.index()] = true;
+    }
+    for (panel, mut node, mut bg, mut border) in &mut panels {
+        let defeated = !alive[panel.slot.index()];
+        let hidden =
+            panel.index == 3 && miners_per_slot[panel.slot.index()] >= MAX_MINERS_PER_PLAYER;
         let new_display = if hidden { Display::None } else { Display::Flex };
         if node.display != new_display {
             node.display = new_display;
@@ -1231,16 +1374,32 @@ pub fn apply_player_focus_visual(
         if hidden {
             continue;
         }
+        if defeated {
+            bg.0 = BTN_DISABLED;
+            *border = BorderColor::all(BORDER_DISABLED);
+            continue;
+        }
         let focused = active
             && focuses
                 .iter()
-                .any(|f| f.side == slot.side && f.index == slot.index);
+                .any(|f| f.slot == panel.slot && f.index == panel.index);
         bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
         *border = BorderColor::all(if focused {
             Color::WHITE
         } else {
-            slot.side.color()
+            panel.slot.side().color()
         });
+    }
+    let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
+    let hud_border = Color::srgb(0.85, 0.85, 0.9);
+    for (corner, mut bg, mut border) in &mut corners {
+        if alive[corner.0.index()] {
+            bg.0 = hud_bg;
+            *border = BorderColor::all(hud_border);
+        } else {
+            bg.0 = HUD_BG_DISABLED;
+            *border = BorderColor::all(HUD_BORDER_DISABLED);
+        }
     }
 }
 
@@ -1253,15 +1412,15 @@ pub fn update_sideselect_cards(
     if *state != GameState::SideSelect {
         return;
     }
-    for (slot, mut text, mut color) in &mut texts {
-        let confirmed = seats.iter().any(|s| s.confirmed && s.hovered == slot.0);
+    for (tag, mut text, mut color) in &mut texts {
+        let confirmed = seats.iter().any(|s| s.confirmed && s.hovered == tag.0);
         let hovered = seats
             .iter()
-            .filter(|s| !s.confirmed && s.hovered == slot.0)
+            .filter(|s| !s.confirmed && s.hovered == tag.0)
             .count();
         if confirmed {
             text.0 = "Locked in".to_string();
-            color.0 = slot.0.color();
+            color.0 = tag.0.side().color();
         } else if hovered > 0 {
             text.0 = format!("Selected ({})", hovered);
             color.0 = Color::WHITE;
@@ -1281,7 +1440,7 @@ pub fn update_sideselect_cards(
         let border_color = if confirmed {
             Color::WHITE
         } else {
-            card.0.color()
+            card.0.side().color()
         };
         *border = BorderColor::all(border_color);
     }
@@ -1294,6 +1453,7 @@ pub fn update_sideselect_cards(
 pub fn manage_input_components(
     mut commands: Commands,
     state: Res<GameState>,
+    mode: Res<GameMode>,
     players: Res<PlayerControllers>,
     gamepads: Query<&Gamepad>,
     focuses: Query<Entity, With<PlayerFocus>>,
@@ -1312,10 +1472,10 @@ pub fn manage_input_components(
     if focuses.iter().next().is_some() {
         return;
     }
-    for (side, opt) in [(Side::Left, players.left), (Side::Right, players.right)] {
-        if let Some(pad) = opt {
+    for &slot in mode.active_slots() {
+        if let Some(pad) = players.get(slot) {
             if gamepads.get(pad).is_ok() {
-                commands.entity(pad).insert(PlayerFocus { side, index: 0 });
+                commands.entity(pad).insert(PlayerFocus { slot, index: 0 });
             }
         }
     }
@@ -1328,12 +1488,14 @@ pub fn manage_input_components(
 pub fn menu_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
+    mut mode: ResMut<GameMode>,
     mut menu_focus: ResMut<MenuFocus>,
     mut origin: ResMut<SettingsOrigin>,
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
-    mut bases: Query<&mut Health, With<Base>>,
+    bases: Query<Entity, With<Base>>,
+    rocks: Query<Entity, With<Rock>>,
     units: Query<Entity, With<Unit>>,
     arrows: Query<Entity, With<Arrow>>,
     towers: Query<Entity, With<Tower>>,
@@ -1350,7 +1512,7 @@ pub fn menu_input_system(
         return;
     }
 
-    let slot_count = if in_menu { 3 } else { 1 };
+    let slot_count = if in_menu { 4 } else { 1 };
 
     let mut up = false;
     let mut down = false;
@@ -1386,14 +1548,21 @@ pub fn menu_input_system(
         match menu_focus.index {
             0 => {
                 if pad_count > 0 {
+                    *mode = GameMode::OneVsOne;
                     *state = GameState::SideSelect;
                 }
             }
             1 => {
+                if pad_count > 0 {
+                    *mode = GameMode::TwoVsTwo;
+                    *state = GameState::SideSelect;
+                }
+            }
+            2 => {
                 *origin = SettingsOrigin::Menu;
                 *state = GameState::Settings;
             }
-            2 => {
+            3 => {
                 exit.write(AppExit::Success);
             }
             _ => {}
@@ -1401,7 +1570,8 @@ pub fn menu_input_system(
     } else if in_endgame {
         reset_match(
             &mut commands,
-            &mut bases,
+            &bases,
+            &rocks,
             &units,
             &arrows,
             &towers,
@@ -1417,6 +1587,7 @@ pub fn menu_input_system(
 pub fn sideselect_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
+    mode: Res<GameMode>,
     mut players: ResMut<PlayerControllers>,
     mut seats: Query<(Entity, &Gamepad, Option<&mut SeatSelection>)>,
 ) {
@@ -1427,22 +1598,17 @@ pub fn sideselect_input_system(
         return;
     }
 
-    // Snapshot existing confirmations so we can reject same-frame conflicts.
-    let confirmations: Vec<(Entity, Side, bool)> = seats
-        .iter()
-        .map(|(e, _, s)| {
-            s.as_ref()
-                .map_or((e, Side::Left, false), |s| (e, s.hovered, s.confirmed))
-        })
-        .collect();
-    let confirmed_left = confirmations
-        .iter()
-        .find(|(_, h, c)| *c && *h == Side::Left)
-        .map(|x| x.0);
-    let confirmed_right = confirmations
-        .iter()
-        .find(|(_, h, c)| *c && *h == Side::Right)
-        .map(|x| x.0);
+    let two_v_two = *mode == GameMode::TwoVsTwo;
+
+    // Snapshot per-slot confirmations so we can reject same-frame conflicts.
+    let mut confirmed: [Option<Entity>; 4] = [None; 4];
+    for (e, _, s) in seats.iter() {
+        if let Some(sel) = s {
+            if sel.confirmed {
+                confirmed[sel.hovered.index()] = Some(e);
+            }
+        }
+    }
 
     let mut start_pressed = false;
 
@@ -1451,17 +1617,36 @@ pub fn sideselect_input_system(
             start_pressed = true;
         }
 
+        let locked_by_other = |pad: Entity| {
+            let mut out = [false; 4];
+            for (i, e) in confirmed.iter().enumerate() {
+                if let Some(owner) = e {
+                    if *owner != pad {
+                        out[i] = true;
+                    }
+                }
+            }
+            out
+        };
+
         match seat_opt {
             None => {
-                // Lazily create a seat on first input from this gamepad.
                 if pad.just_pressed(GamepadButton::DPadLeft)
                     || pad.just_pressed(GamepadButton::DPadRight)
+                    || pad.just_pressed(GamepadButton::DPadUp)
+                    || pad.just_pressed(GamepadButton::DPadDown)
                     || pad.just_pressed(GamepadButton::South)
                 {
-                    let hovered = if pad.just_pressed(GamepadButton::DPadRight) {
-                        Side::Right
+                    let locked = locked_by_other(pad_entity);
+                    let preferred = if pad.just_pressed(GamepadButton::DPadRight) {
+                        PlayerSlot::RightBottom
                     } else {
-                        Side::Left
+                        PlayerSlot::LeftBottom
+                    };
+                    let hovered = if locked[preferred.index()] {
+                        first_free_default(locked)
+                    } else {
+                        preferred
                     };
                     commands.entity(pad_entity).insert(SeatSelection {
                         hovered,
@@ -1476,17 +1661,24 @@ pub fn sideselect_input_system(
                     }
                     continue;
                 }
+                let locked = locked_by_other(pad_entity);
                 if pad.just_pressed(GamepadButton::DPadLeft) {
-                    seat.hovered = Side::Left;
+                    seat.hovered = move_seat(seat.hovered, SeatNav::Left, two_v_two, locked);
                 }
                 if pad.just_pressed(GamepadButton::DPadRight) {
-                    seat.hovered = Side::Right;
+                    seat.hovered = move_seat(seat.hovered, SeatNav::Right, two_v_two, locked);
+                }
+                if two_v_two {
+                    if pad.just_pressed(GamepadButton::DPadUp) {
+                        seat.hovered = move_seat(seat.hovered, SeatNav::Up, two_v_two, locked);
+                    }
+                    if pad.just_pressed(GamepadButton::DPadDown) {
+                        seat.hovered = move_seat(seat.hovered, SeatNav::Down, two_v_two, locked);
+                    }
                 }
                 if pad.just_pressed(GamepadButton::South) {
-                    let already_taken = match seat.hovered {
-                        Side::Left => confirmed_left.is_some_and(|e| e != pad_entity),
-                        Side::Right => confirmed_right.is_some_and(|e| e != pad_entity),
-                    };
+                    let already_taken =
+                        confirmed[seat.hovered.index()].is_some_and(|e| e != pad_entity);
                     if !already_taken {
                         seat.confirmed = true;
                     }
@@ -1495,11 +1687,80 @@ pub fn sideselect_input_system(
         }
     }
 
-    if start_pressed && (confirmed_left.is_some() || confirmed_right.is_some()) {
-        players.left = confirmed_left;
-        players.right = confirmed_right;
+    if start_pressed && confirmed.iter().any(|c| c.is_some()) {
+        let mut next = PlayerControllers::default();
+        for &slot in &PlayerSlot::ALL {
+            next.set(slot, confirmed[slot.index()]);
+        }
+        *players = next;
         *state = GameState::Playing;
     }
+}
+
+#[derive(Clone, Copy)]
+enum SeatNav {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+fn move_seat_step(current: PlayerSlot, nav: SeatNav, two_v_two: bool) -> PlayerSlot {
+    if !two_v_two {
+        return match nav {
+            SeatNav::Left => PlayerSlot::LeftBottom,
+            SeatNav::Right => PlayerSlot::RightBottom,
+            _ => current,
+        };
+    }
+    match (current, nav) {
+        (PlayerSlot::LeftTop, SeatNav::Right) => PlayerSlot::RightTop,
+        (PlayerSlot::RightTop, SeatNav::Left) => PlayerSlot::LeftTop,
+        (PlayerSlot::LeftBottom, SeatNav::Right) => PlayerSlot::RightBottom,
+        (PlayerSlot::RightBottom, SeatNav::Left) => PlayerSlot::LeftBottom,
+        (PlayerSlot::LeftTop, SeatNav::Down) => PlayerSlot::LeftBottom,
+        (PlayerSlot::LeftBottom, SeatNav::Up) => PlayerSlot::LeftTop,
+        (PlayerSlot::RightTop, SeatNav::Down) => PlayerSlot::RightBottom,
+        (PlayerSlot::RightBottom, SeatNav::Up) => PlayerSlot::RightTop,
+        _ => current,
+    }
+}
+
+/// Step in `nav` direction, skipping any slot locked by *another* player.
+/// Bails out after a full loop of all 4 slots so we never spin.
+fn move_seat(
+    current: PlayerSlot,
+    nav: SeatNav,
+    two_v_two: bool,
+    locked_by_other: [bool; 4],
+) -> PlayerSlot {
+    let mut next = move_seat_step(current, nav, two_v_two);
+    for _ in 0..4 {
+        if next == current || !locked_by_other[next.index()] {
+            return next;
+        }
+        let after = move_seat_step(next, nav, two_v_two);
+        if after == next {
+            // Edge of the grid in this direction; nothing free that way.
+            return current;
+        }
+        next = after;
+    }
+    current
+}
+
+fn first_free_default(locked_by_other: [bool; 4]) -> PlayerSlot {
+    for &slot in &[
+        PlayerSlot::LeftBottom,
+        PlayerSlot::RightBottom,
+        PlayerSlot::LeftTop,
+        PlayerSlot::RightTop,
+    ] {
+        if !locked_by_other[slot.index()] {
+            return slot;
+        }
+    }
+    PlayerSlot::LeftBottom
 }
 
 fn next_visible_slot(start: usize, dir: i32, hidden: &impl Fn(usize) -> bool) -> usize {
@@ -1517,18 +1778,25 @@ fn next_visible_slot(start: usize, dir: i32, hidden: &impl Fn(usize) -> bool) ->
 pub fn gameplay_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
+    mode: Res<GameMode>,
     lib: Res<MatLibrary>,
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut focuses: Query<(Entity, &mut PlayerFocus)>,
     gamepads: Query<&Gamepad>,
-    units: Query<(&Side, &UnitKind), With<Unit>>,
+    units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
+    alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
 ) {
     if *state != GameState::Playing {
         return;
     }
     if state.is_changed() {
         return;
+    }
+
+    let mut alive = [false; 4];
+    for slot in &alive_bases {
+        alive[slot.index()] = true;
     }
 
     let mut pause = false;
@@ -1543,21 +1811,27 @@ pub fn gameplay_input_system(
             continue;
         }
 
-        // While this side is placing a tower, let placement_system claim all inputs
+        // Defeated player: cancel any pending placement and ignore inputs.
+        if !alive[focus.slot.index()] {
+            if placement.get(focus.slot).is_some() {
+                placement.clear(focus.slot);
+            }
+            continue;
+        }
+
+        // While this player is placing a tower, let placement_system claim all inputs
         // (D-pad, South, West). Otherwise re-arming would swallow the confirm press.
-        if placement.get(focus.side).is_some() {
+        if placement.get(focus.slot).is_some() {
             continue;
         }
 
         let miner_count = units
             .iter()
-            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
+            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
             .count();
         // Slot indices match the vertical HUD order: 0 Tower, 1 Soldier,
         // 2 Archer, 3 Miner. Miner slot hides when the cap is reached.
-        let slot_hidden = |slot: usize| slot == 3 && miner_count >= MAX_MINERS_PER_SIDE;
-        // If we're currently parked on a hidden slot (cap just reached), nudge
-        // off it so visuals and input stay coherent.
+        let slot_hidden = |idx: usize| idx == 3 && miner_count >= MAX_MINERS_PER_PLAYER;
         if slot_hidden(focus.index) {
             focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
         }
@@ -1571,37 +1845,39 @@ pub fn gameplay_input_system(
         }
 
         if pad.just_pressed(GamepadButton::West) {
-            arm_placement(&mut placement, focus.side);
+            arm_placement(&mut placement, focus.slot, *mode);
         }
 
         if pad.just_pressed(GamepadButton::South) {
             match focus.index {
-                0 => arm_placement(&mut placement, focus.side),
+                0 => arm_placement(&mut placement, focus.slot, *mode),
                 1 => {
-                    if gold.try_spend(focus.side, SOLDIER_COST) {
+                    if gold.try_spend(focus.slot, SOLDIER_COST) {
                         let count = units
                             .iter()
-                            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Soldier)
+                            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Soldier)
                             .count();
-                        spawn_soldier(&mut commands, &lib, focus.side, count % LANE_COUNT);
+                        spawn_soldier(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
                     }
                 }
                 2 => {
-                    if gold.try_spend(focus.side, ARCHER_COST) {
+                    if gold.try_spend(focus.slot, ARCHER_COST) {
                         let count = units
                             .iter()
-                            .filter(|(s, k)| **s == focus.side && **k == UnitKind::Archer)
+                            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Archer)
                             .count();
-                        spawn_archer(&mut commands, &lib, focus.side, count % LANE_COUNT);
+                        spawn_archer(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
                     }
                 }
                 3 => {
                     let miner_count = units
                         .iter()
-                        .filter(|(s, k)| **s == focus.side && **k == UnitKind::Miner)
+                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
                         .count();
-                    if miner_count < MAX_MINERS_PER_SIDE && gold.try_spend(focus.side, MINER_COST) {
-                        spawn_miner(&mut commands, &lib, focus.side, miner_count);
+                    if miner_count < MAX_MINERS_PER_PLAYER
+                        && gold.try_spend(focus.slot, MINER_COST)
+                    {
+                        spawn_miner(&mut commands, &lib, focus.slot, *mode, miner_count);
                     }
                 }
                 _ => {}
@@ -1618,13 +1894,15 @@ pub fn placement_system(
     mut commands: Commands,
     time: Res<Time>,
     state: Res<GameState>,
+    mode: Res<GameMode>,
     lib: Res<MatLibrary>,
     mut placement: ResMut<PlacementMode>,
     mut gold: ResMut<Gold>,
     players: Res<PlayerControllers>,
     gamepads: Query<&Gamepad>,
-    ghosts: Query<(Entity, &Side), With<TowerGhost>>,
+    ghosts: Query<(Entity, &PlayerSlot), With<TowerGhost>>,
     existing_towers: Query<&Transform, With<Tower>>,
+    alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
 ) {
     // While paused, keep the ghosts visible in place but skip input handling.
     if *state == GameState::Paused {
@@ -1639,30 +1917,40 @@ pub fn placement_system(
         return;
     }
 
-    for side in [Side::Left, Side::Right] {
-        // Despawn any existing ghost for this side (will respawn below if still placing).
-        for (e, ghost_side) in &ghosts {
-            if *ghost_side == side {
+    let mut alive = [false; 4];
+    for slot in &alive_bases {
+        alive[slot.index()] = true;
+    }
+
+    for &slot in mode.active_slots() {
+        // Despawn any existing ghost for this slot (will respawn below if still placing).
+        for (e, ghost_slot) in &ghosts {
+            if *ghost_slot == slot {
                 commands.entity(e).despawn();
             }
         }
 
-        let Some(seat) = placement.get(side) else {
+        if !alive[slot.index()] {
+            placement.clear(slot);
+            continue;
+        }
+
+        let Some(seat) = placement.get(slot) else {
             continue;
         };
-        let Some(pad_entity) = players.get(side) else {
-            placement.clear(side);
+        let Some(pad_entity) = players.get(slot) else {
+            placement.clear(slot);
             continue;
         };
         let Ok(pad) = gamepads.get(pad_entity) else {
-            placement.clear(side);
+            placement.clear(slot);
             continue;
         };
 
         // Swallow the press that activated placement.
         if !seat.armed {
             placement.set(
-                side,
+                slot,
                 PlacementSeat {
                     world_pos: seat.world_pos,
                     armed: true,
@@ -1672,7 +1960,7 @@ pub fn placement_system(
         }
 
         if pad.just_pressed(GamepadButton::East) {
-            placement.clear(side);
+            placement.clear(slot);
             continue;
         }
 
@@ -1695,21 +1983,22 @@ pub fn placement_system(
         pos.z -= dz * GAMEPAD_CURSOR_SPEED * dt;
 
         let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
+        let side = slot.side();
         let in_zone = is_valid_tower_zone(side, pos);
         let no_overlap = !collides_with_existing_tower(pos, &tower_positions);
-        let can_afford = gold.get(side) >= TOWER_COST;
+        let can_afford = gold.get(slot) >= TOWER_COST;
         let valid = in_zone && no_overlap && can_afford;
 
         // Place on A.
-        if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(side, TOWER_COST) {
-            spawn_tower(&mut commands, &lib, side, Vec3::new(pos.x, 0.0, pos.z));
-            placement.clear(side);
+        if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(slot, TOWER_COST) {
+            spawn_tower(&mut commands, &lib, slot, Vec3::new(pos.x, 0.0, pos.z));
+            placement.clear(slot);
             continue;
         }
 
         // Update seat and spawn ghost.
         placement.set(
-            side,
+            slot,
             PlacementSeat {
                 world_pos: pos,
                 armed: true,
@@ -1725,27 +2014,27 @@ pub fn placement_system(
             MeshMaterial3d(mat),
             Transform::from_xyz(pos.x, TOWER_HEIGHT * 0.5, pos.z),
             TowerGhost,
-            side,
+            slot,
         ));
     }
 }
 
-fn arm_placement(placement: &mut PlacementMode, side: Side) {
+fn arm_placement(placement: &mut PlacementMode, slot: PlayerSlot, mode: GameMode) {
     placement.set(
-        side,
+        slot,
         PlacementSeat {
-            world_pos: default_placement_pos(side),
+            world_pos: default_placement_pos(slot, mode),
             armed: false,
         },
     );
 }
 
-fn default_placement_pos(side: Side) -> Vec3 {
-    let x = match side {
+fn default_placement_pos(slot: PlayerSlot, mode: GameMode) -> Vec3 {
+    let x = match slot.side() {
         Side::Left => (LEFT_BASE_X + TOWER_PLACEMENT_MARGIN - ZONE_BOUNDARY) * 0.5,
         Side::Right => (ZONE_BOUNDARY + RIGHT_BASE_X - TOWER_PLACEMENT_MARGIN) * 0.5,
     };
-    Vec3::new(x, 0.0, 0.0)
+    Vec3::new(x, 0.0, slot.base_z(mode))
 }
 
 pub fn settings_input_system(
@@ -1837,6 +2126,7 @@ pub fn settings_input_system(
             ParamId::Hdr => settings.hdr = !settings.hdr,
             ParamId::Exposure => settings.exposure = (settings.exposure + 1) % 3,
             ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
+            ParamId::FpsCap => settings.fps_cap = (settings.fps_cap + 1) % 6,
             ParamId::Raytracing => {
                 if cfg!(feature = "raytracing") && rt_avail.0 {
                     settings.raytracing = !settings.raytracing;

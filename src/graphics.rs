@@ -19,6 +19,7 @@ pub enum ParamId {
     Hdr,
     Exposure, // sub-param of Hdr
     Tonemapping,
+    FpsCap,
     // Graphics / quality
     Raytracing,
     Dlss,
@@ -61,6 +62,7 @@ pub fn tab_slots(tab: SettingsTab, s: &GameSettings) -> Vec<MenuSlot> {
                 v.push(MenuSlot::Param(ParamId::Exposure));
             }
             v.push(MenuSlot::Param(ParamId::Tonemapping));
+            v.push(MenuSlot::Param(ParamId::FpsCap));
         }
         SettingsTab::Graphics => {
             v.push(MenuSlot::Preset);
@@ -631,6 +633,21 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             ram: Impact::None,
             vram: Impact::None,
         },
+        ParamId::FpsCap => ParamDescription {
+            title: "FPS cap",
+            functional: concat!(
+                "Caps the maximum number of frames rendered per second.\n",
+                "Cycles Unlimited / 30 / 60 / 120 / 144 / 240."
+            ),
+            technical: concat!(
+                "End-of-frame sleep matched to the target frame interval.\n",
+                "Independent from VSync; useful to reduce GPU heat or noise."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
         ParamId::FogDensity => ParamDescription {
             title: "Fog density",
             functional: concat!(
@@ -665,6 +682,7 @@ pub fn param_label(
         ParamId::Hdr => format!("HDR: {}", on_off(s.hdr)),
         ParamId::Exposure => format!("  - Exposure: {}", exposure_label(s.exposure)),
         ParamId::Tonemapping => format!("Tonemapping: {}", tonemapping_label(s.tonemapping)),
+        ParamId::FpsCap => format!("FPS cap: {}", fps_cap_label(s.fps_cap)),
         ParamId::Raytracing => {
             if cfg!(feature = "raytracing") && rt_supported {
                 format!("Raytracing (Solari): {}", on_off(s.raytracing))
@@ -699,6 +717,29 @@ pub fn param_label(
 
 fn on_off(on: bool) -> &'static str {
     if on { "ON" } else { "OFF" }
+}
+
+pub fn fps_cap_label(idx: u8) -> &'static str {
+    match idx {
+        1 => "30",
+        2 => "60",
+        3 => "120",
+        4 => "144",
+        5 => "240",
+        _ => "Unlimited",
+    }
+}
+
+/// Target FPS, or `None` for unlimited.
+pub fn fps_cap_value(idx: u8) -> Option<u32> {
+    match idx {
+        1 => Some(30),
+        2 => Some(60),
+        3 => Some(120),
+        4 => Some(144),
+        5 => Some(240),
+        _ => None,
+    }
 }
 
 pub fn tonemapping_label(idx: u8) -> &'static str {
@@ -820,6 +861,7 @@ pub fn load_settings() -> GameSettings {
             "hdr" => s.hdr = parse_bool(v).unwrap_or(s.hdr),
             "msaa" => s.msaa = v.parse().unwrap_or(s.msaa),
             "tonemapping" => s.tonemapping = v.parse().unwrap_or(s.tonemapping),
+            "fps_cap" => s.fps_cap = v.parse().unwrap_or(s.fps_cap),
             "raytracing" => s.raytracing = parse_bool(v).unwrap_or(s.raytracing),
             "dlss" => s.dlss = parse_bool(v).unwrap_or(s.dlss),
             "taa" => s.taa = parse_bool(v).unwrap_or(s.taa),
@@ -847,6 +889,9 @@ pub fn load_settings() -> GameSettings {
     }
     if s.tonemapping > 3 {
         s.tonemapping = 0;
+    }
+    if s.fps_cap > 5 {
+        s.fps_cap = 0;
     }
     if !matches!(s.msaa, 0 | 2 | 4 | 8) {
         s.msaa = 0;
@@ -877,7 +922,7 @@ pub fn save_settings(s: &GameSettings) {
         let _ = std::fs::create_dir_all(parent);
     }
     let text = format!(
-        "fullscreen = {}\nvsync = {}\nhdr = {}\nmsaa = {}\ntonemapping = {}\n\
+        "fullscreen = {}\nvsync = {}\nhdr = {}\nmsaa = {}\ntonemapping = {}\nfps_cap = {}\n\
          raytracing = {}\ndlss = {}\ntaa = {}\nfxaa = {}\nbloom = {}\n\
          atmosphere = {}\nvolumetric_fog = {}\ndistance_fog = {}\nssao = {}\n\
          shadows = {}\nmotion_blur = {}\n\
@@ -887,6 +932,7 @@ pub fn save_settings(s: &GameSettings) {
         s.hdr,
         s.msaa,
         s.tonemapping,
+        s.fps_cap,
         s.raytracing,
         s.dlss,
         s.taa,
@@ -913,6 +959,96 @@ fn parse_bool(v: &str) -> Option<bool> {
         "false" | "0" | "off" | "no" => Some(false),
         _ => None,
     }
+}
+
+/// Enforce dependencies between graphics settings so we never end up with a
+/// combination that crashes the renderer. Called at load time, at every
+/// toggle and whenever hardware availability changes.
+///
+/// Rules:
+/// - Build/hardware off → feature off (raytracing, dlss).
+/// - DLSS implies Raytracing (Solari ray reconstruction lives on the
+///   deferred + RT path).
+/// - Raytracing / DLSS / TAA require the HDR (Rgba16Float) main texture:
+///   STORAGE_BINDING and HDR-aware accumulation are only valid there.
+///   Without it, wgpu rejects the texture creation and the app panics.
+/// - Range/value clamps for every multi-value parameter.
+pub fn sanitize_settings(s: &mut GameSettings, dlss_supported: bool, rt_supported: bool) {
+    if !cfg!(feature = "raytracing") || !rt_supported {
+        s.raytracing = false;
+    }
+    if !cfg!(feature = "dlss") || !dlss_supported {
+        s.dlss = false;
+    }
+    if s.dlss {
+        s.raytracing = true;
+    }
+    if s.raytracing || s.dlss || s.taa {
+        s.hdr = true;
+    }
+    if s.tonemapping > 3 {
+        s.tonemapping = 0;
+    }
+    if !matches!(s.msaa, 0 | 2 | 4 | 8) {
+        s.msaa = 0;
+    }
+    if s.fps_cap > 5 {
+        s.fps_cap = 0;
+    }
+    if s.exposure > 2 {
+        s.exposure = 1;
+    }
+    if s.bloom_intensity > 2 {
+        s.bloom_intensity = 1;
+    }
+    if s.dlss_quality > 4 {
+        s.dlss_quality = 4;
+    }
+    if s.ssao_quality > 3 {
+        s.ssao_quality = 2;
+    }
+    if s.fog_density > 2 {
+        s.fog_density = 1;
+    }
+}
+
+/// Re-runs `sanitize_settings` whenever the user-tweakable settings or the
+/// runtime hardware-availability flags change. Catches both the "DLSS just
+/// got detected, apply the saved-on value" case and the "user toggled HDR
+/// off, drop the dependents" case. Persistence is handled separately by
+/// `persist_settings`, so this system is allowed to write through.
+pub fn enforce_settings_invariants(
+    mut settings: ResMut<GameSettings>,
+    dlss_avail: Res<DlssAvailable>,
+    rt_avail: Res<RaytracingAvailable>,
+) {
+    if !settings.is_changed() && !dlss_avail.is_changed() && !rt_avail.is_changed() {
+        return;
+    }
+    let mut next = *settings;
+    sanitize_settings(&mut next, dlss_avail.0, rt_avail.0);
+    if next != *settings {
+        *settings = next;
+    }
+}
+
+/// End-of-frame sleep that caps the framerate at `settings.fps_cap`. Runs
+/// last in the schedule so we measure the full frame time and pad it out
+/// before yielding to the next iteration.
+pub fn limit_fps(settings: Res<GameSettings>, mut last: Local<Option<std::time::Instant>>) {
+    let Some(target) = fps_cap_value(settings.fps_cap) else {
+        *last = Some(std::time::Instant::now());
+        return;
+    };
+    let target_dt = std::time::Duration::from_secs_f64(1.0 / target as f64);
+    let now = std::time::Instant::now();
+    if let Some(prev) = *last {
+        let elapsed = now.duration_since(prev);
+        if elapsed < target_dt {
+            std::thread::sleep(target_dt - elapsed);
+        }
+    }
+    *last = Some(std::time::Instant::now());
 }
 
 pub fn persist_settings(settings: Res<GameSettings>, mut started: Local<bool>) {

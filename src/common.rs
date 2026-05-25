@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-pub const BASE_HP: i32 = 20;
+pub const BASE_HP: i32 = 40;
 
 // Soldier
 pub const SOLDIER_HP: i32 = 10;
@@ -11,12 +11,12 @@ pub const SOLDIER_COOLDOWN: f32 = 1.0;
 
 // Miner
 pub const MINER_HP: i32 = 8;
-pub const MINER_COST: u32 = 5;
+pub const MINER_COST: u32 = 4;
 pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
 pub const MAX_MINERS_PER_PLAYER: usize = 5;
-pub const MINER_CAPACITY: u32 = 3;
+pub const MINER_CAPACITY: u32 = 4;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 
@@ -26,14 +26,18 @@ pub const ARCHER_DAMAGE: i32 = 2;
 pub const ARCHER_COST: u32 = 3;
 pub const ARCHER_SPEED: f32 = 1.5;
 pub const ARCHER_COOLDOWN: f32 = 1.7;
-pub const ARCHER_RANGE: f32 = 6.5;
+pub const ARCHER_RANGE: f32 = 8.0;
 pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
+/// If the closest enemy is within this distance, the archer steps backward
+/// while continuing to shoot (kiting). Cheap, gives the archer a tactical
+/// identity vs. soldiers.
+pub const ARCHER_KITE_RANGE: f32 = 2.5;
 
 // Tower
 pub const TOWER_HP: i32 = 30;
 pub const TOWER_DAMAGE: i32 = 3;
-pub const TOWER_COST: u32 = 8;
-pub const TOWER_RANGE: f32 = 7.5;
+pub const TOWER_COST: u32 = 6;
+pub const TOWER_RANGE: f32 = 8.5;
 pub const TOWER_COOLDOWN: f32 = 1.5;
 pub const TOWER_HEIGHT: f32 = 2.6;
 pub const TOWER_RADIUS: f32 = 0.7;
@@ -55,7 +59,12 @@ pub const BASE_Z_OFFSET: f32 = 3.0;
 // Terrain between bases is split into three equal parts: left zone, neutral, right zone.
 pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
 pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
-pub const TOWER_PLACEMENT_Z_LIMIT: f32 = 4.0;
+/// Z half-extent of the placement zone in 1v1: lanes are centred on Z=0 so the
+/// usable strip is narrow. Wider would let you drop a tower way off any lane.
+pub const TOWER_PLACEMENT_Z_LIMIT_1V1: f32 = LANE_HALF_WIDTH_1V1 + 0.4;
+/// Z half-extent in 2v2: each side has two bases spread on Z, with lanes
+/// reaching `BASE_Z_OFFSET + LANE_HALF_WIDTH_2V2`. The limit covers both.
+pub const TOWER_PLACEMENT_Z_LIMIT_2V2: f32 = BASE_Z_OFFSET + LANE_HALF_WIDTH_2V2 + 0.5;
 
 pub const GAMEPAD_STICK_DEADZONE: f32 = 0.25;
 pub const GAMEPAD_CURSOR_SPEED: f32 = 6.0;
@@ -63,27 +72,53 @@ pub const PLAYER_PANEL_SLOTS: usize = 4;
 
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
+/// Number of parallel lanes (Z offsets) units cycle through on spawn so that
+/// successive same-kind units don't pile on top of each other.
 pub const LANE_COUNT: usize = 5;
-pub const LANE_HALF_WIDTH: f32 = 2.6;
+/// Half-width of the lane spread in 1v1: lanes are centred on each base's Z
+/// (which is 0 in 1v1) and span ±LANE_HALF_WIDTH_1V1.
+pub const LANE_HALF_WIDTH_1V1: f32 = 2.6;
+/// Half-width in 2v2: tighter so each ally's lanes don't bleed into the
+/// allied lanes (their bases are only `BASE_Z_OFFSET` apart on Z).
+pub const LANE_HALF_WIDTH_2V2: f32 = 1.5;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
 pub const ROCK_OFFSET: f32 = 5.5;
+/// Spread applied to non-laned units' Z at spawn so consecutive same-side
+/// spawns don't appear in a perfect line. ±half the value, around the slot's
+/// base Z.
 pub const SPAWN_Z_JITTER: f32 = 0.6;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Character rig geometry (units assemble themselves from primitives; these
+// constants describe the local-space placement of the limbs/bob node).
+//
+//   bob (Y = BOB_BASE_Y) ──── body + head + arms
+//      └─ limbs pivot at hip/shoulder, mesh hangs LEG_PIVOT_OFFSET below.
+//
+//   Y axis up; X is the unit's facing direction.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Local Y of the body/head/arms "bob" node above the unit's root.
 pub const BOB_BASE_Y: f32 = 0.55;
+/// Local Y of the leg pivot.
 pub const HIP_Y: f32 = 0.40;
+/// Y distance from the pivot to the mesh centre — lets the limb rotate around
+/// its top end instead of its midpoint.
 pub const LEG_PIVOT_OFFSET: f32 = 0.18;
 pub const LEG_SPREAD_Z: f32 = 0.13;
 pub const ARM_PIVOT_OFFSET: f32 = 0.18;
 pub const ARM_SPREAD_Z: f32 = 0.27;
 pub const ARM_SHOULDER_Y: f32 = 0.10;
 
+/// Walk cycle frequency (rad/s).
 pub const WALK_FREQUENCY: f32 = 10.0;
 pub const LEG_SWING: f32 = 0.55;
 pub const ARM_SWING: f32 = 0.40;
 pub const BOB_AMPLITUDE: f32 = 0.05;
 pub const ATTACK_SWING_AMPLITUDE: f32 = 1.2;
+/// Seconds the "hurt flash" / tilt lasts after a damage event.
 pub const HURT_DURATION: f32 = 0.18;
 pub const HURT_TILT: f32 = 0.28;
+/// Seconds the death animation takes before the unit is despawned.
 pub const DEATH_DURATION: f32 = 0.6;
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -165,6 +200,20 @@ impl GameMode {
             ],
         }
     }
+
+    pub fn tower_z_limit(self) -> f32 {
+        match self {
+            GameMode::OneVsOne => TOWER_PLACEMENT_Z_LIMIT_1V1,
+            GameMode::TwoVsTwo => TOWER_PLACEMENT_Z_LIMIT_2V2,
+        }
+    }
+
+    pub fn lane_half_width(self) -> f32 {
+        match self {
+            GameMode::OneVsOne => LANE_HALF_WIDTH_1V1,
+            GameMode::TwoVsTwo => LANE_HALF_WIDTH_2V2,
+        }
+    }
 }
 
 impl Side {
@@ -176,16 +225,29 @@ impl Side {
     }
 
     pub fn color(self) -> Color {
-        match self {
-            Side::Left => Color::srgb(0.25, 0.55, 1.0),
-            Side::Right => Color::srgb(1.0, 0.40, 0.35),
-        }
+        self.color_for(false)
     }
 
     pub fn color_dark(self) -> Color {
-        match self {
-            Side::Left => Color::srgb(0.14, 0.32, 0.70),
-            Side::Right => Color::srgb(0.70, 0.24, 0.20),
+        self.color_dark_for(false)
+    }
+
+    /// Side colour respecting the colorblind toggle. Standard palette pits
+    /// blue vs. red; the colorblind variant swaps Right to orange so the two
+    /// sides remain distinguishable under deuteranopia/protanopia.
+    pub fn color_for(self, colorblind: bool) -> Color {
+        match (self, colorblind) {
+            (Side::Left, _) => Color::srgb(0.25, 0.55, 1.0),
+            (Side::Right, false) => Color::srgb(1.0, 0.40, 0.35),
+            (Side::Right, true) => Color::srgb(1.0, 0.68, 0.10),
+        }
+    }
+
+    pub fn color_dark_for(self, colorblind: bool) -> Color {
+        match (self, colorblind) {
+            (Side::Left, _) => Color::srgb(0.14, 0.32, 0.70),
+            (Side::Right, false) => Color::srgb(0.70, 0.24, 0.20),
+            (Side::Right, true) => Color::srgb(0.65, 0.42, 0.05),
         }
     }
 
@@ -229,6 +291,15 @@ pub struct Rock;
 #[derive(Component)]
 pub struct Tower;
 
+/// Marker added when a tower's HP hits 0. Drives a brief collapse animation
+/// (tilt + sink) over `TOWER_DEATH_DURATION` before the entity is despawned.
+#[derive(Component, Default)]
+pub struct TowerDying {
+    pub t: f32,
+}
+
+pub const TOWER_DEATH_DURATION: f32 = 0.45;
+
 #[derive(Component)]
 pub struct Sun;
 
@@ -242,7 +313,7 @@ pub const TORCH_INTENSITY: f32 = 250_000.0;
 pub const TORCH_RANGE: f32 = 10.0;
 pub const TORCH_COLOR: Color = Color::srgb(1.0, 0.65, 0.30);
 
-pub const SUN_DAY_PERIOD: f32 = 240.0;
+pub const SUN_DAY_PERIOD: f32 = 90.0;
 pub const SUN_DISTANCE: f32 = 55.0;
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
@@ -389,6 +460,10 @@ pub struct UnitAnim {
     pub hurt_t: f32,
     pub dying: bool,
     pub death_t: f32,
+    /// Last observed `Health.current`. Lets `process_damage_effects` flash
+    /// only when HP actually drops (a heal that leaves current<max should
+    /// not look like a hit).
+    pub last_hp: Option<i32>,
 }
 
 #[derive(Component)]
@@ -436,6 +511,10 @@ pub struct GameSettings {
     // FPS cap (0=Unlimited 1=30 2=60 3=120 4=144 5=240)
     pub fps_cap: u8,
 
+    // Accessibility: swap the Right side from red to orange so the two sides
+    // stay distinguishable under deuteranopia/protanopia.
+    pub colorblind: bool,
+
     // Sub-parameters (only meaningful when their parent is on; persist regardless)
     pub exposure: u8,        // 0=Low 1=Default 2=High (EV100 11 / 13 / 15)
     pub bloom_intensity: u8, // 0=Low 1=Default 2=High
@@ -464,6 +543,7 @@ impl Default for GameSettings {
             shadows: true,
             motion_blur: false,
             fps_cap: 0,
+            colorblind: false,
             exposure: 1,
             bloom_intensity: 1,
             dlss_quality: 2,
@@ -604,4 +684,78 @@ pub struct MatLibrary {
     // Zone boundary marker
     pub zone_marker_mesh: Handle<Mesh>,
     pub zone_marker_mat: Handle<StandardMaterial>,
+    // Castle (shared across both 1v1 bases and all four 2v2 bases).
+    pub castle_foundation: Handle<Mesh>,
+    pub castle_keep: Handle<Mesh>,
+    pub castle_top_slab: Handle<Mesh>,
+    pub castle_crenel: Handle<Mesh>,
+    pub castle_tower: Handle<Mesh>,
+    pub castle_roof: Handle<Mesh>,
+    pub castle_door: Handle<Mesh>,
+    pub castle_pole: Handle<Mesh>,
+    pub castle_flag: Handle<Mesh>,
+    // Rock (mining target).
+    pub rock_large: Handle<Mesh>,
+    pub rock_medium: Handle<Mesh>,
+    pub rock_small: Handle<Mesh>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_forward_is_opposite() {
+        assert_eq!(Side::Left.forward(), 1.0);
+        assert_eq!(Side::Right.forward(), -1.0);
+    }
+
+    #[test]
+    fn player_slot_side_groups() {
+        assert_eq!(PlayerSlot::LeftBottom.side(), Side::Left);
+        assert_eq!(PlayerSlot::LeftTop.side(), Side::Left);
+        assert_eq!(PlayerSlot::RightBottom.side(), Side::Right);
+        assert_eq!(PlayerSlot::RightTop.side(), Side::Right);
+    }
+
+    #[test]
+    fn base_z_centred_in_1v1_and_offset_in_2v2() {
+        assert_eq!(PlayerSlot::LeftBottom.base_z(GameMode::OneVsOne), 0.0);
+        assert_eq!(PlayerSlot::RightBottom.base_z(GameMode::OneVsOne), 0.0);
+        assert_eq!(
+            PlayerSlot::LeftTop.base_z(GameMode::TwoVsTwo),
+            -BASE_Z_OFFSET
+        );
+        assert_eq!(
+            PlayerSlot::LeftBottom.base_z(GameMode::TwoVsTwo),
+            BASE_Z_OFFSET
+        );
+    }
+
+    #[test]
+    fn tower_z_limit_differs_by_mode() {
+        assert!(GameMode::TwoVsTwo.tower_z_limit() > GameMode::OneVsOne.tower_z_limit());
+    }
+
+    #[test]
+    fn lane_half_width_tighter_in_2v2() {
+        assert!(GameMode::OneVsOne.lane_half_width() > GameMode::TwoVsTwo.lane_half_width());
+    }
+
+    #[test]
+    fn health_starts_full() {
+        let h = Health::new(42);
+        assert_eq!(h.current, 42);
+        assert_eq!(h.max, 42);
+    }
+
+    #[test]
+    fn gold_pools_are_per_slot() {
+        let mut g = Gold::default();
+        g.add(PlayerSlot::LeftBottom, 5);
+        assert_eq!(g.get(PlayerSlot::LeftBottom), STARTING_GOLD + 5);
+        assert_eq!(g.get(PlayerSlot::RightBottom), STARTING_GOLD);
+        assert!(g.try_spend(PlayerSlot::LeftBottom, STARTING_GOLD + 5));
+        assert!(!g.try_spend(PlayerSlot::LeftBottom, 1));
+    }
 }

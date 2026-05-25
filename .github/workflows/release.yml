@@ -75,8 +75,8 @@ jobs:
         run: |
           mkdir -p dist/attack_tower/assets
           cp "target/release/${{ matrix.artifact }}" "dist/attack_tower/"
-          # Assets are optional (the music file is not committed yet) — copy
-          # whatever is present without failing if the tree is empty.
+          # Copy whatever is present in assets/ without failing on an empty
+          # tree (assets are optional at runtime — see music.rs).
           if [ -d assets ] && [ -n "$(ls -A assets 2>/dev/null)" ]; then
             cp -r assets/. "dist/attack_tower/assets/"
           fi

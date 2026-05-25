@@ -103,8 +103,19 @@ pub fn init_mat_library(
         // Strong emissive so the mesh acts as a light source under Solari
         // (raytraced lighting ignores PointLight, only DirectionalLight +
         // emissive meshes contribute).
-        emissive: LinearRgba::rgb(60.0, 28.0, 8.0),
-        unlit: true,
+        //
+        // NOTE: `unlit` is intentionally OFF. Bevy 0.18's deferred path
+        // (forced by Solari) rewrites the G-buffer emissive to base_color
+        // for unlit materials (see pbr_deferred_functions.wgsl), which
+        // discards our high emissive value and leaves the flame both
+        // visually dim and unable to inject light through GI bounces.
+        // Keeping it lit means the cone receives a tiny bit of ambient
+        // lighting too, but at this emissive level it stays clearly glowing.
+        //
+        // Emissive is pumped 8× higher than visually needed: Solari's ReSTIR
+        // DI picks emissive triangles by area, so a tiny cone is under-sampled
+        // unless its per-area radiance is very high.
+        emissive: LinearRgba::rgb(480.0, 220.0, 60.0),
         ..default()
     });
     lib.flame_mesh = meshes.add(Cone::new(0.14, 0.32));
@@ -162,6 +173,22 @@ pub fn init_mat_library(
         unlit: true,
         ..default()
     });
+
+    // Castle pieces — shared across all bases (1v1 and 2v2).
+    lib.castle_foundation = meshes.add(Cuboid::new(2.0, 0.4, 2.0));
+    lib.castle_keep = meshes.add(Cuboid::new(1.1, 1.2, 1.1));
+    lib.castle_top_slab = meshes.add(Cuboid::new(1.3, 0.12, 1.3));
+    lib.castle_crenel = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
+    lib.castle_tower = meshes.add(Cuboid::new(0.45, 1.6, 0.45));
+    lib.castle_roof = meshes.add(Cone::new(0.36, 0.55));
+    lib.castle_door = meshes.add(Cuboid::new(0.08, 0.55, 0.36));
+    lib.castle_pole = meshes.add(Cylinder::new(0.03, 0.9));
+    lib.castle_flag = meshes.add(Cuboid::new(0.34, 0.22, 0.02));
+
+    // Rock — three sphere sizes reused per side.
+    lib.rock_large = meshes.add(Sphere::new(0.65));
+    lib.rock_medium = meshes.add(Sphere::new(0.42));
+    lib.rock_small = meshes.add(Sphere::new(0.36));
 }
 
 pub fn setup_world(
@@ -233,25 +260,26 @@ pub fn setup_world(
 
 /// Build bases + rocks for the active GameMode when entering Playing with an
 /// empty arena. Despawned on return-to-menu paths so the next match can be
-/// rebuilt cleanly for either 1v1 or 2v2.
+/// rebuilt cleanly for either 1v1 or 2v2. Guarded by `state.is_changed()` so
+/// the bases query isn't iterated every frame during a match.
 pub fn spawn_arena(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     lib: Res<MatLibrary>,
     state: Res<GameState>,
     mode: Res<GameMode>,
     bases: Query<Entity, With<Base>>,
 ) {
-    if *state != GameState::Playing {
+    if !state.is_changed() || *state != GameState::Playing {
         return;
     }
+    // Resume from Paused → Playing must keep the existing arena.
     if bases.iter().next().is_some() {
         return;
     }
     for &slot in mode.active_slots() {
         let z = slot.base_z(*mode);
-        spawn_castle(&mut commands, &mut meshes, &lib, slot, z);
-        spawn_rock(&mut commands, &mut meshes, &lib, slot, z);
+        spawn_castle(&mut commands, &lib, slot, z);
+        spawn_rock(&mut commands, &lib, slot, z);
     }
 }
 
@@ -489,6 +517,30 @@ pub fn apply_dlss_setting(
 
 #[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
 pub fn apply_dlss_setting() {}
+
+/// Mutate the shared side colour materials whenever the colorblind toggle
+/// flips, so every entity that references them (units, towers, castle accents,
+/// arrows) picks up the new palette without a respawn.
+pub fn apply_colorblind_palette(
+    settings: Res<GameSettings>,
+    lib: Res<MatLibrary>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let cb = settings.colorblind;
+    for (handle, color) in [
+        (&lib.left, Side::Left.color_for(cb)),
+        (&lib.right, Side::Right.color_for(cb)),
+        (&lib.left_dark, Side::Left.color_dark_for(cb)),
+        (&lib.right_dark, Side::Right.color_dark_for(cb)),
+    ] {
+        if let Some(mat) = materials.get_mut(handle) {
+            mat.base_color = color;
+        }
+    }
+}
 
 pub fn update_torches(
     tod: Res<TimeOfDay>,
@@ -773,13 +825,7 @@ fn spawn_grass_tuft(commands: &mut Commands, lib: &MatLibrary, x: f32, z: f32) {
         });
 }
 
-fn spawn_castle(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    lib: &MatLibrary,
-    slot: PlayerSlot,
-    z: f32,
-) {
+fn spawn_castle(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: f32) {
     let side = slot.side();
     let x = match side {
         Side::Left => LEFT_BASE_X,
@@ -789,16 +835,6 @@ fn spawn_castle(
         Side::Left => lib.left.clone(),
         Side::Right => lib.right.clone(),
     };
-
-    let foundation_mesh = meshes.add(Cuboid::new(2.0, 0.4, 2.0));
-    let keep_mesh = meshes.add(Cuboid::new(1.1, 1.2, 1.1));
-    let top_slab_mesh = meshes.add(Cuboid::new(1.3, 0.12, 1.3));
-    let crenel_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
-    let tower_mesh = meshes.add(Cuboid::new(0.45, 1.6, 0.45));
-    let roof_mesh = meshes.add(Cone::new(0.36, 0.55));
-    let door_mesh = meshes.add(Cuboid::new(0.08, 0.55, 0.36));
-    let pole_mesh = meshes.add(Cylinder::new(0.03, 0.9));
-    let flag_mesh = meshes.add(Cuboid::new(0.34, 0.22, 0.02));
 
     let base_entity = commands
         .spawn((
@@ -816,19 +852,19 @@ fn spawn_castle(
         .with_children(|p| {
             // Foundation
             p.spawn((
-                Mesh3d(foundation_mesh),
+                Mesh3d(lib.castle_foundation.clone()),
                 MeshMaterial3d(lib.stone_dark.clone()),
                 Transform::from_xyz(0.0, 0.2, 0.0),
             ));
             // Central keep
             p.spawn((
-                Mesh3d(keep_mesh),
+                Mesh3d(lib.castle_keep.clone()),
                 MeshMaterial3d(lib.stone_light.clone()),
                 Transform::from_xyz(0.0, 1.0, 0.0),
             ));
             // Battlement slab
             p.spawn((
-                Mesh3d(top_slab_mesh),
+                Mesh3d(lib.castle_top_slab.clone()),
                 MeshMaterial3d(lib.stone_dark.clone()),
                 Transform::from_xyz(0.0, 1.66, 0.0),
             ));
@@ -845,7 +881,7 @@ fn spawn_castle(
                 (-0.40, -0.40),
             ] {
                 p.spawn((
-                    Mesh3d(crenel_mesh.clone()),
+                    Mesh3d(lib.castle_crenel.clone()),
                     MeshMaterial3d(lib.stone_light.clone()),
                     Transform::from_xyz(cx, crenel_y, cz),
                 ));
@@ -853,12 +889,12 @@ fn spawn_castle(
             // Four corner towers with cone roofs (roofs use side color).
             for &(tx, tz) in &[(0.78, 0.78), (-0.78, 0.78), (0.78, -0.78), (-0.78, -0.78)] {
                 p.spawn((
-                    Mesh3d(tower_mesh.clone()),
+                    Mesh3d(lib.castle_tower.clone()),
                     MeshMaterial3d(lib.stone_light.clone()),
                     Transform::from_xyz(tx, 1.2, tz),
                 ));
                 p.spawn((
-                    Mesh3d(roof_mesh.clone()),
+                    Mesh3d(lib.castle_roof.clone()),
                     MeshMaterial3d(main.clone()),
                     Transform::from_xyz(tx, 2.28, tz),
                 ));
@@ -889,18 +925,18 @@ fn spawn_castle(
             }
             // Door at the back (toward this side's miners).
             p.spawn((
-                Mesh3d(door_mesh),
+                Mesh3d(lib.castle_door.clone()),
                 MeshMaterial3d(lib.wood_mat.clone()),
                 Transform::from_xyz(-1.0 + 0.04, 0.67, 0.0),
             ));
             // Flag pole + flag on top of the keep.
             p.spawn((
-                Mesh3d(pole_mesh),
+                Mesh3d(lib.castle_pole.clone()),
                 MeshMaterial3d(lib.wood_mat.clone()),
                 Transform::from_xyz(0.0, 2.3, 0.0),
             ));
             p.spawn((
-                Mesh3d(flag_mesh),
+                Mesh3d(lib.castle_flag.clone()),
                 MeshMaterial3d(main.clone()),
                 Transform::from_xyz(0.18, 2.65, 0.0),
             ));
@@ -909,13 +945,7 @@ fn spawn_castle(
     crate::healthbar::spawn_health_bar_for_base(commands, base_entity);
 }
 
-fn spawn_rock(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    lib: &MatLibrary,
-    slot: PlayerSlot,
-    z: f32,
-) {
+fn spawn_rock(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: f32) {
     let side = slot.side();
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
@@ -934,12 +964,12 @@ fn spawn_rock(
         ))
         .with_children(|p| {
             p.spawn((
-                Mesh3d(meshes.add(Sphere::new(0.65))),
+                Mesh3d(lib.rock_large.clone()),
                 MeshMaterial3d(lib.rock_mat.clone()),
                 Transform::from_xyz(0.0, 0.45, 0.0),
             ));
             p.spawn((
-                Mesh3d(meshes.add(Sphere::new(0.42))),
+                Mesh3d(lib.rock_medium.clone()),
                 MeshMaterial3d(lib.rock_mat.clone()),
                 Transform {
                     translation: Vec3::new(0.32, 0.28, 0.30),
@@ -948,7 +978,7 @@ fn spawn_rock(
                 },
             ));
             p.spawn((
-                Mesh3d(meshes.add(Sphere::new(0.36))),
+                Mesh3d(lib.rock_small.clone()),
                 MeshMaterial3d(lib.rock_mat.clone()),
                 Transform::from_xyz(-0.38, 0.22, -0.28),
             ));

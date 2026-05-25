@@ -20,6 +20,7 @@ pub enum ParamId {
     Exposure, // sub-param of Hdr
     Tonemapping,
     FpsCap,
+    Colorblind,
     // Graphics / quality
     Raytracing,
     Dlss,
@@ -63,6 +64,7 @@ pub fn tab_slots(tab: SettingsTab, s: &GameSettings) -> Vec<MenuSlot> {
             }
             v.push(MenuSlot::Param(ParamId::Tonemapping));
             v.push(MenuSlot::Param(ParamId::FpsCap));
+            v.push(MenuSlot::Param(ParamId::Colorblind));
         }
         SettingsTab::Graphics => {
             v.push(MenuSlot::Preset);
@@ -409,7 +411,10 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             title: "DLSS",
             functional: concat!(
                 "AI upscaler: renders the scene at a lower internal resolution then\n",
-                "reconstructs the native-resolution image, usually a big FPS win."
+                "reconstructs the native-resolution image, usually a big FPS win.\n",
+                "Shows \"N/A\" when unavailable — either the GPU isn't an RTX card,\n",
+                "or the build is shipping the default mock (NVIDIA NGX SDK not linked).\n",
+                "Rebuild with `--no-default-features --features raytracing,dlss` for real DLSS."
             ),
             technical: concat!(
                 "NVIDIA NGX Ray Reconstruction on RTX GPUs.\n",
@@ -663,6 +668,23 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             ram: Impact::None,
             vram: Impact::None,
         },
+        ParamId::Colorblind => ParamDescription {
+            title: "Colorblind palette",
+            functional: concat!(
+                "Swaps the Right side from red to orange so the two sides remain\n",
+                "easy to tell apart for deuteranopia / protanopia.\n",
+                "Only affects in-world units, towers and bases — UI accents stay\n",
+                "in the default palette."
+            ),
+            technical: concat!(
+                "Re-tints the shared StandardMaterials in MatLibrary. Existing\n",
+                "entities pick up the new colour on the next frame; no respawn."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
     }
 }
 
@@ -683,6 +705,7 @@ pub fn param_label(
         ParamId::Exposure => format!("  - Exposure: {}", exposure_label(s.exposure)),
         ParamId::Tonemapping => format!("Tonemapping: {}", tonemapping_label(s.tonemapping)),
         ParamId::FpsCap => format!("FPS cap: {}", fps_cap_label(s.fps_cap)),
+        ParamId::Colorblind => format!("Colorblind palette: {}", on_off(s.colorblind)),
         ParamId::Raytracing => {
             if cfg!(feature = "raytracing") && rt_supported {
                 format!("Raytracing (Solari): {}", on_off(s.raytracing))
@@ -873,6 +896,7 @@ pub fn load_settings() -> GameSettings {
             "ssao" => s.ssao = parse_bool(v).unwrap_or(s.ssao),
             "shadows" => s.shadows = parse_bool(v).unwrap_or(s.shadows),
             "motion_blur" => s.motion_blur = parse_bool(v).unwrap_or(s.motion_blur),
+            "colorblind" => s.colorblind = parse_bool(v).unwrap_or(s.colorblind),
             "exposure" => s.exposure = v.parse().unwrap_or(s.exposure),
             "bloom_intensity" => s.bloom_intensity = v.parse().unwrap_or(s.bloom_intensity),
             "dlss_quality" => s.dlss_quality = v.parse().unwrap_or(s.dlss_quality),
@@ -925,7 +949,7 @@ pub fn save_settings(s: &GameSettings) {
         "fullscreen = {}\nvsync = {}\nhdr = {}\nmsaa = {}\ntonemapping = {}\nfps_cap = {}\n\
          raytracing = {}\ndlss = {}\ntaa = {}\nfxaa = {}\nbloom = {}\n\
          atmosphere = {}\nvolumetric_fog = {}\ndistance_fog = {}\nssao = {}\n\
-         shadows = {}\nmotion_blur = {}\n\
+         shadows = {}\nmotion_blur = {}\ncolorblind = {}\n\
          exposure = {}\nbloom_intensity = {}\ndlss_quality = {}\nssao_quality = {}\nfog_density = {}\n",
         s.fullscreen,
         s.vsync,
@@ -944,6 +968,7 @@ pub fn save_settings(s: &GameSettings) {
         s.ssao,
         s.shadows,
         s.motion_blur,
+        s.colorblind,
         s.exposure,
         s.bloom_intensity,
         s.dlss_quality,
@@ -1034,18 +1059,27 @@ pub fn enforce_settings_invariants(
 
 /// End-of-frame sleep that caps the framerate at `settings.fps_cap`. Runs
 /// last in the schedule so we measure the full frame time and pad it out
-/// before yielding to the next iteration.
+/// before yielding to the next iteration. Uses `thread::sleep` for the bulk
+/// of the wait, then a short spin on the final ~1ms so the OS quantum
+/// (1–15 ms on most platforms) doesn't undershoot the target FPS.
 pub fn limit_fps(settings: Res<GameSettings>, mut last: Local<Option<std::time::Instant>>) {
     let Some(target) = fps_cap_value(settings.fps_cap) else {
         *last = Some(std::time::Instant::now());
         return;
     };
     let target_dt = std::time::Duration::from_secs_f64(1.0 / target as f64);
-    let now = std::time::Instant::now();
     if let Some(prev) = *last {
-        let elapsed = now.duration_since(prev);
-        if elapsed < target_dt {
-            std::thread::sleep(target_dt - elapsed);
+        let deadline = prev + target_dt;
+        let spin_window = std::time::Duration::from_millis(1);
+        let now = std::time::Instant::now();
+        if now < deadline {
+            let remaining = deadline - now;
+            if remaining > spin_window {
+                std::thread::sleep(remaining - spin_window);
+            }
+            while std::time::Instant::now() < deadline {
+                std::hint::spin_loop();
+            }
         }
     }
     *last = Some(std::time::Instant::now());
@@ -1060,4 +1094,90 @@ pub fn persist_settings(settings: Res<GameSettings>, mut started: Local<bool>) {
         return;
     }
     save_settings(&settings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bool_accepts_common_spellings() {
+        assert_eq!(parse_bool("true"), Some(true));
+        assert_eq!(parse_bool("1"), Some(true));
+        assert_eq!(parse_bool("yes"), Some(true));
+        assert_eq!(parse_bool("false"), Some(false));
+        assert_eq!(parse_bool("0"), Some(false));
+        assert_eq!(parse_bool("no"), Some(false));
+        assert_eq!(parse_bool("bogus"), None);
+    }
+
+    #[test]
+    fn fps_cap_label_and_value_agree() {
+        assert_eq!(fps_cap_value(0), None);
+        assert_eq!(fps_cap_value(2), Some(60));
+        assert_eq!(fps_cap_label(2), "60");
+        assert_eq!(fps_cap_label(99), "Unlimited");
+    }
+
+    #[test]
+    fn preset_apply_and_detect_round_trip() {
+        // After applying a preset, detect should return that same preset
+        // (modulo gating on raytracing/dlss support).
+        for preset in [
+            GraphicsPreset::Low,
+            GraphicsPreset::Medium,
+            GraphicsPreset::High,
+        ] {
+            let mut s = GameSettings::default();
+            preset.apply(&mut s, false, false);
+            assert_eq!(GraphicsPreset::detect(&s, false, false), preset);
+        }
+    }
+
+    #[test]
+    fn detect_returns_custom_when_no_preset_matches() {
+        let mut s = GameSettings::default();
+        GraphicsPreset::Low.apply(&mut s, false, false);
+        s.bloom = true; // diverges from Low
+        assert_eq!(
+            GraphicsPreset::detect(&s, false, false),
+            GraphicsPreset::Custom
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_raytracing_when_unsupported() {
+        let mut s = GameSettings {
+            raytracing: true,
+            dlss: true,
+            ..GameSettings::default()
+        };
+        sanitize_settings(&mut s, false, false);
+        assert!(!s.raytracing);
+        assert!(!s.dlss);
+    }
+
+    #[test]
+    fn sanitize_clamps_out_of_range_indices() {
+        let mut s = GameSettings {
+            tonemapping: 99,
+            fps_cap: 99,
+            msaa: 99,
+            exposure: 99,
+            bloom_intensity: 99,
+            dlss_quality: 99,
+            ssao_quality: 99,
+            fog_density: 99,
+            ..GameSettings::default()
+        };
+        sanitize_settings(&mut s, false, false);
+        assert!(s.tonemapping <= 3);
+        assert!(s.fps_cap <= 5);
+        assert!(matches!(s.msaa, 0 | 2 | 4 | 8));
+        assert!(s.exposure <= 2);
+        assert!(s.bloom_intensity <= 2);
+        assert!(s.dlss_quality <= 4);
+        assert!(s.ssao_quality <= 3);
+        assert!(s.fog_density <= 2);
+    }
 }

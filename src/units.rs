@@ -18,16 +18,17 @@ pub fn spawn_soldier(
         slot,
         mode,
         UnitKind::Soldier,
-        Some(lane_z(lane)),
+        Some(lane_z(lane, mode)),
     );
 }
 
-pub fn lane_z(lane: usize) -> f32 {
+pub fn lane_z(lane: usize, mode: GameMode) -> f32 {
     if LANE_COUNT <= 1 {
         return 0.0;
     }
-    let step = (LANE_HALF_WIDTH * 2.0) / (LANE_COUNT as f32 - 1.0);
-    -LANE_HALF_WIDTH + (lane.min(LANE_COUNT - 1) as f32) * step
+    let half = mode.lane_half_width();
+    let step = (half * 2.0) / (LANE_COUNT as f32 - 1.0);
+    -half + (lane.min(LANE_COUNT - 1) as f32) * step
 }
 
 pub fn spawn_miner(
@@ -92,7 +93,7 @@ pub fn spawn_archer(
         slot,
         mode,
         UnitKind::Archer,
-        Some(lane_z(lane)),
+        Some(lane_z(lane, mode)),
     );
 }
 
@@ -424,11 +425,15 @@ fn attach_bow_and_arrow(
     commands.entity(arm_right).add_children(&[arrow]);
 }
 
-fn rand_jitter() -> f32 {
+pub fn rand_jitter() -> f32 {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEED: AtomicU32 = AtomicU32::new(0x1234_5678);
-    let mut x = SEED.load(Ordering::Relaxed).wrapping_add(0x9E37_79B9);
-    SEED.store(x, Ordering::Relaxed);
+    // fetch_add then hash, so concurrent callers get distinct seeds even on
+    // platforms with weak memory ordering. The previous load+store had a TOCTOU
+    // race that could produce duplicate jitter values.
+    let mut x = SEED
+        .fetch_add(0x9E37_79B9, Ordering::Relaxed)
+        .wrapping_add(0x9E37_79B9);
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
@@ -436,7 +441,7 @@ fn rand_jitter() -> f32 {
 }
 
 #[derive(Clone, Copy)]
-struct Combatant {
+pub struct Combatant {
     entity: Entity,
     side: Side,
     slot: Option<PlayerSlot>,
@@ -445,7 +450,7 @@ struct Combatant {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CombatantKind {
+pub enum CombatantKind {
     Soldier,
     Miner,
     Archer,
@@ -460,6 +465,10 @@ pub fn combat_tick(
     state: Res<GameState>,
     lib: Res<MatLibrary>,
     mut gold: ResMut<Gold>,
+    // Reused across frames to avoid per-frame Vec allocations.
+    mut combatants: Local<Vec<Combatant>>,
+    mut damage_events: Local<Vec<(Entity, i32)>>,
+    mut gold_events: Local<Vec<(PlayerSlot, u32)>>,
     mut sets: ParamSet<(
         Query<
             (
@@ -481,7 +490,7 @@ pub fn combat_tick(
         Query<(Entity, &Side, &PlayerSlot, &Transform), (With<Base>, Without<BaseDestroyed>)>,
         Query<(Entity, &Side, &PlayerSlot, &Transform), With<Rock>>,
         Query<&mut Health>,
-        Query<(Entity, &Side, &Transform), With<Tower>>,
+        Query<(Entity, &Side, &Transform), (With<Tower>, Without<TowerDying>)>,
     )>,
 ) {
     if *state != GameState::Playing {
@@ -493,7 +502,9 @@ pub fn combat_tick(
     }
 
     // 1. Snapshot every combatant's position.
-    let mut combatants: Vec<Combatant> = Vec::new();
+    combatants.clear();
+    damage_events.clear();
+    gold_events.clear();
     for (entity, side, slot, kind, transform, _, _, _, _, _, _, _) in sets.p0().iter() {
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
@@ -537,8 +548,6 @@ pub fn combat_tick(
     }
 
     let dt = time.delta_secs();
-    let mut damage_events: Vec<(Entity, i32)> = Vec::new();
-    let mut gold_events: Vec<(PlayerSlot, u32)> = Vec::new();
 
     // 2. Per-unit decision.
     for (
@@ -583,6 +592,12 @@ pub fn combat_tick(
                 if let Some((target, dist)) = enemy
                     && dist <= ENGAGE_RANGE
                 {
+                    if !anim.attacking {
+                        // First frame in melee: restart the swing from the
+                        // beginning so the animation doesn't pick up at a
+                        // random fraction left over from a previous fight.
+                        cooldown.0.reset();
+                    }
                     cooldown.0.tick(time.delta());
                     anim.attacking = true;
                     anim.attack_phase = cooldown.0.fraction();
@@ -729,6 +744,9 @@ pub fn combat_tick(
                 if let Some((target, dist)) = enemy
                     && dist <= ARCHER_RANGE
                 {
+                    if !anim.attacking {
+                        cooldown.0.reset();
+                    }
                     cooldown.0.tick(time.delta());
                     anim.attacking = true;
                     anim.attack_phase = cooldown.0.fraction();
@@ -750,7 +768,17 @@ pub fn combat_tick(
                             damage.0,
                         );
                     }
-                    anim.walking = false;
+                    // Kite: an enemy that closes inside ARCHER_KITE_RANGE in
+                    // front of us pushes us back so the archer stays at range
+                    // instead of being slaughtered in melee. Slower than the
+                    // normal walk so it reads as a careful retreat.
+                    let target_ahead = (target.pos.x - pos.x) * walk_sign;
+                    if dist < ARCHER_KITE_RANGE && target_ahead > 0.0 {
+                        transform.translation.x -= walk_sign * speed.0 * 0.7 * dt;
+                        anim.walking = true;
+                    } else {
+                        anim.walking = false;
+                    }
                     continue;
                 }
 
@@ -789,12 +817,12 @@ pub fn combat_tick(
 
     // 3. Apply damage and gold.
     let mut healths = sets.p3();
-    for (target, dmg) in damage_events {
+    for (target, dmg) in damage_events.drain(..) {
         if let Ok(mut hp) = healths.get_mut(target) {
             hp.current -= dmg;
         }
     }
-    for (slot, amount) in gold_events {
+    for (slot, amount) in gold_events.drain(..) {
         gold.add(slot, amount);
     }
 }
@@ -887,12 +915,15 @@ pub fn process_damage_effects(
     mut query: Query<(&Health, &mut UnitAnim), (With<Unit>, Changed<Health>)>,
 ) {
     for (hp, mut anim) in query.iter_mut() {
+        let prev = anim.last_hp.replace(hp.current);
         if hp.current <= 0 {
             if !anim.dying {
                 anim.dying = true;
                 anim.death_t = 0.0;
             }
-        } else if hp.current < hp.max {
+        } else if let Some(prev_hp) = prev
+            && hp.current < prev_hp
+        {
             anim.hurt_t = HURT_DURATION;
         }
     }
@@ -1137,5 +1168,66 @@ pub fn cleanup_dead_units(mut commands: Commands, query: Query<(Entity, &UnitAni
         if anim.dying && anim.death_t >= DEATH_DURATION {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lane_z_spreads_symmetrically() {
+        let half = GameMode::OneVsOne.lane_half_width();
+        let first = lane_z(0, GameMode::OneVsOne);
+        let last = lane_z(LANE_COUNT - 1, GameMode::OneVsOne);
+        assert!((first + half).abs() < 1e-4);
+        assert!((last - half).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lane_z_clamps_out_of_range_indices() {
+        let last = lane_z(LANE_COUNT - 1, GameMode::OneVsOne);
+        let beyond = lane_z(LANE_COUNT + 100, GameMode::OneVsOne);
+        assert!((last - beyond).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lane_z_tighter_in_2v2_than_1v1() {
+        let edge_1v1 = lane_z(0, GameMode::OneVsOne).abs();
+        let edge_2v2 = lane_z(0, GameMode::TwoVsTwo).abs();
+        assert!(edge_1v1 > edge_2v2);
+    }
+
+    #[test]
+    fn miner_ring_is_on_the_correct_side() {
+        let off_left = miner_slot_offset(0, Side::Left);
+        let off_right = miner_slot_offset(0, Side::Right);
+        // Slot 0 sits on the +X-facing arc relative to the side's forward.
+        assert!(off_left.x > 0.0);
+        assert!(off_right.x < 0.0);
+    }
+
+    #[test]
+    fn miner_slot_offset_inside_ring_radius() {
+        for slot in 0..MAX_MINERS_PER_PLAYER {
+            let off = miner_slot_offset(slot, Side::Left);
+            let r = (off.x * off.x + off.z * off.z).sqrt();
+            assert!((r - MINER_RING_RADIUS).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn rand_jitter_in_unit_interval_and_not_constant() {
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        for _ in 0..256 {
+            let v = rand_jitter();
+            assert!((0.0..1.0).contains(&v));
+            min = min.min(v);
+            max = max.max(v);
+        }
+        // 256 samples should cover a non-trivial range, otherwise something's
+        // wrong with the seed advance.
+        assert!(max - min > 0.5);
     }
 }

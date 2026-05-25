@@ -2,6 +2,12 @@
 name = "attack_tower"
 version = "0.1.4"
 edition = "2024"
+description = "POC of a bilateral 3D tower defense game (Rust + Bevy + Avian3d)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alexisjapas/AttackTower"
+keywords = ["game", "bevy", "tower-defense", "3d"]
+categories = ["games"]
+readme = "README.md"
 
 [features]
 default = ["raytracing", "dlss", "force_disable_dlss"]
@@ -21,3 +27,8 @@ bevy = { version = "0.18.1", features = ["mp3"] }
 # feature flag but report `max_blas_geometry_count = 0` (e.g. AMD Vega) crash
 # the renderer on the first frame.
 wgpu = { version = "27.0.1", optional = true }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

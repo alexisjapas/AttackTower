@@ -126,6 +126,9 @@ pub fn update_health_bars(
     let cam_pos = cam_t.translation();
     for (entity, bar, mut transform, mut vis) in bars.iter_mut() {
         let Ok((owner_t, hp)) = healths.get(bar.owner) else {
+            // Owner gone — drop the bar AND its `fill` child. Bevy 0.18
+            // `despawn()` is recursive over the relationship graph, so the
+            // fill (added via `add_child` in `spawn_bar`) goes with it.
             commands.entity(entity).despawn();
             continue;
         };

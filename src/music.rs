@@ -28,7 +28,9 @@ pub fn setup_music(mut commands: Commands, asset_server: Res<AssetServer>) {
 /// Keeps the music sink playing only while `GameState::Playing`. Pause, menu,
 /// settings and end-of-game all pause the music. Reacts both to state changes
 /// and to the moment the audio finally loads (`AudioSink` is inserted by the
-/// audio backend once the source is decoded).
+/// audio backend once the source is decoded) — when `Added<AudioSink>` fires
+/// we re-read the current state, so a Menu→Playing transition that happens
+/// before the sink exists still resolves correctly once it does.
 pub fn sync_music_playback(
     state: Res<GameState>,
     sinks: Query<&AudioSink, With<GameMusic>>,

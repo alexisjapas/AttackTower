@@ -34,24 +34,31 @@ The Nix dev shell exports `LD_LIBRARY_PATH` for Vulkan/Wayland/X11. Running outs
 
 ### Runtime resources
 
-- Music: `setup_music` loads `assets/music/main_theme.ogg` at startup. The file is intentionally optional — Bevy logs a "Path not found" error and the game runs silently if it is missing.
+- Music: `setup_music` loads `assets/music/battleTheme.mp3` at startup (path defined in `music::MUSIC_PATH`; the `mp3` Cargo feature is enabled on Bevy). The file is intentionally optional — Bevy logs a "Path not found" error and the game runs silently if it is missing.
 - Persisted settings: `~/.config/attack_tower/settings.cfg` (or `$XDG_CONFIG_HOME/attack_tower/settings.cfg`). Written by `persist_settings` whenever `GameSettings` changes; loaded once at startup by `load_settings` in place of `init_resource::<GameSettings>()`.
 
 ## Architecture
 
-The whole game is a single Bevy `App` in `src/main.rs` that registers `DefaultPlugins`, `PhysicsPlugins::default()` (Avian, no colliders used yet — it is loaded so physics can be layered in later without re-architecting), and chains all gameplay systems in `Update`. **System order in `main.rs` matters** — both the "world tick" chunk and the "UI/state reaction" chunk are explicitly `.chain()`ed, and they themselves are chained together so state changes propagate to overlays within the same frame.
+The whole game is a single Bevy `App` in `src/main.rs` that registers `DefaultPlugins`, `PhysicsPlugins::default()` (Avian, no colliders used yet — it is loaded so physics can be layered in later without re-architecting), and groups every gameplay system into five `SystemSet`s in `Update`:
 
-The Update tuple was split into two nested `.chain()` groups because the flat tuple exceeded Bevy's 20-element trait-impl ceiling. Adding a new system requires placing it inside one of the sub-tuples, not flattening them back.
+1. **`AppSet::Input`** — gamepad-driven systems that mutate `GameState` (one per state). Chained because they all touch the same resource.
+2. **`AppSet::World`** — gameplay tick: spawn / time / sun / combat / damage / animate / cleanup. The combat → damage → animate → cleanup chain is preserved; `spawn_*` and `animate_sun` run in parallel.
+3. **`AppSet::React`** — systems that flip state (`check_winner`, `detect_pad_disconnect`) and the overlays that rebuild on `state.is_changed()`. Overlays run in parallel since they touch disjoint marker components.
+4. **`AppSet::Visual`** — text refreshes, healthbar billboarding, settings application. Mostly parallel; Bevy infers ordering from query conflicts.
+5. **`AppSet::FrameLimit`** — `limit_fps` only. Must be last so the sleep happens after every other system.
+
+The sets are `.chain()`ed at configuration time so state changes propagate across them within a single frame. Adding a new system means picking the right set and using `.after(...)` only where there's an actual data dependency.
 
 Modules:
 
 - **`common.rs`** — shared types touched by every other module.
   - `Side` (`Left`/`Right`) — both a marker `Component` (on each unit/base/tower) and an enum used as a map key for `Gold`. When querying entities filter on the side component; when reading resources, pass the side enum.
-  - Components: `Base`, `Unit`, `Tower`, `Rock`, `Health`, `Damage`, `MoveSpeed`, `AttackCooldown`, plus animation helpers (`UnitAnim`, `UnitRig`), miner state (`MinerCarry`, `MinerPhase`, `MinerSlot`), `Arrow`, `Sun`, `TorchLight`/`TorchFlame`.
-  - Resources: `Gold`, `GameState`, `GameSettings`, `SettingsTab`, `SettingsOrigin`, `MatLibrary`, `PlacementMode`, `PlayerControllers`, `MenuFocus`, `TimeOfDay`, `GameTime`, `DlssAvailable`, `AtmosphereHandle`.
+  - `PlayerSlot` (`LeftBottom`/`LeftTop`/`RightBottom`/`RightTop`) — finer than `Side`. Each unit/base/tower carries both. In 1v1 only `LeftBottom`/`RightBottom` are active; in 2v2 all four. Used for per-slot gold, base Z offset, and miner ownership (so the right miner returns to the right base in 2v2).
+  - Components: `Base`, `BaseDestroyed` (marker added when HP hits 0 so combat/tower targeting ignores it and the HUD greys out the panel), `Unit`, `Tower`, `Rock`, `Health`, `Damage`, `MoveSpeed`, `AttackCooldown`, plus animation helpers (`UnitAnim`, `UnitRig`), miner state (`MinerCarry`, `MinerPhase`, `MinerSlot`), `Arrow`, `Sun`, `TorchLight`/`TorchFlame`.
+  - Resources: `Gold` (per-`PlayerSlot` pool), `GameState`, `GameMode` (`OneVsOne`/`TwoVsTwo`, selected on the SideSelect screen), `GameSettings`, `SettingsTab`, `SettingsOrigin`, `MatLibrary`, `PlacementMode`, `PlayerControllers`, `MenuFocus`, `TimeOfDay`, `GameTime`, `DlssAvailable`, `RaytracingAvailable`, `AtmosphereHandle`.
   - **All tunable constants live here** (HP, damage, gold cost, speeds, ranges, geometry, animation amplitudes, day/night period). Change game balance from one place.
 
-- **`setup.rs`** — `Startup` systems and most static scene authoring. `init_mat_library` populates `MatLibrary` (must run before anything spawns meshes — enforced via `.chain()` in `main.rs`). `setup_world` spawns the camera (fixed 3/4 view with `Hdr`, atmosphere, bloom, fog), the sun, the ground, mountains, sky, both castles, rocks, zone markers, scenery (trees, bushes, grass, flowers, torches). Also hosts the Solari/DLSS sync systems (gated on cargo features) and `update_torches` / `animate_sun`.
+- **`setup.rs`** — `Startup` systems and most static scene authoring. `init_mat_library` populates `MatLibrary` (must run before anything spawns meshes — enforced via `.chain()` in `main.rs`). `setup_world` spawns the camera (fixed 3/4 view with `Hdr`, atmosphere, bloom, fog), the sun, the ground, mountains, sky, zone markers, scenery (trees, bushes, grass, flowers). `spawn_arena` (an `Update` system) builds the castles and rocks lazily on the `Menu→Playing` transition so the layout can reflect the chosen `GameMode` (two or four bases). Also hosts the Solari/DLSS sync systems (gated on cargo features) and `update_torches` / `animate_sun`.
 
 - **`units.rs`** — unit lifecycle, AI and rendering rigs.
   - Three unit kinds spawned by `spawn_soldier`, `spawn_miner`, `spawn_archer`. All units share a body+head+limbs rig (`UnitRig`) so `animate_units` can drive walking/attack/hurt/death animations from a single component (`UnitAnim`).
@@ -59,7 +66,9 @@ Modules:
   - Archers shoot via `spawn_arrow` + `arrow_flight_system` (parabolic trajectory; arrow despawns on impact and applies queued damage).
   - `process_damage_effects` and `cleanup_dead_units` close the loop.
 
-- **`towers.rs`** — tower entity construction and aiming (`tower_attack_tick`, `cleanup_dead_towers`, validity helpers `is_valid_tower_zone` and `collides_with_existing_tower`). Each side may only build inside its own zone, defined by `ZONE_BOUNDARY` in `common.rs`.
+- **`towers.rs`** — tower entity construction and aiming (`tower_attack_tick`, `cleanup_dead_towers`, validity helpers `is_valid_tower_zone` and `collides_with_existing_tower`). Each side may only build inside its own zone, defined by `ZONE_BOUNDARY` in `common.rs`. `is_valid_tower_zone` also takes `GameMode` so the Z bounds match the active lane layout (tighter in 1v1, wider in 2v2).
+
+- **`healthbar.rs`** — billboarded health bars over units, towers and bases. `spawn_health_bar_for_{unit,tower,base}` are called by each spawner; `update_health_bars` runs every frame to position, billboard (Y-axis only), rescale the fill and re-tint green→red. Bars whose owner has despawned clean themselves up.
 
 - **`game.rs`** — `check_winner` flips `GameState::Ended(winner)` as soon as a base hits 0 HP.
 
@@ -72,7 +81,7 @@ Modules:
 - **`music.rs`** — `setup_music` spawns a paused looping `AudioPlayer<AudioSource>` tagged `GameMusic`. `sync_music_playback` calls `sink.play()` only while `GameState::Playing` (Paused, Menu, Settings, SideSelect, Ended all keep it silent). Also reacts to `Added<AudioSink>` so playback starts the moment the file finishes loading.
 
 - **`ui.rs`** — every Bevy UI node lives here, plus the per-state input systems.
-  - `setup_ui` builds the persistent HUD (top: base HP + clock, bottom: per-side panel with unit buttons and gold).
+  - `setup_ui` builds the persistent HUD (top: in-game clock; bottom corners: one panel per `PlayerSlot` with the unit/tower buttons, the base HP readout and the gold counter). In 2v2 the top corners host the second pair of player panels.
   - State overlays: `update_menu_overlay`, `update_settings_overlay`, `update_pause_overlay`, `update_sideselect_overlay`, `update_endgame_overlay` — each rebuilds when `GameState` changes (the settings overlay also rebuilds on `SettingsTab` change). Despawn is implicitly recursive (Bevy 0.18 relationships) so removing the root removes the children.
   - Settings overlay is the most involved: a two-column layout (menu column + description card) with a tab strip (Video/Graphics) at the top, switched with LB/RB. Background is translucent so live setting changes are visible behind the menu. Description text is populated at spawn and refreshed by `update_settings_description` on `MenuFocus`/`SettingsTab`/`GraphicsPreset` change.
   - Input systems: `menu_input_system`, `sideselect_input_system`, `pause_input_system`, `settings_input_system`, `gameplay_input_system`, `placement_system` — all guard with `*state == GameState::X` and `!state.is_changed()` so the system that just transitioned the state does not also process the activation press.

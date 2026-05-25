@@ -109,7 +109,10 @@ pub fn tower_attack_tick(
     time: Res<Time>,
     state: Res<GameState>,
     lib: Res<MatLibrary>,
-    mut towers: Query<(&Side, &Transform, &Damage, &mut AttackCooldown), With<Tower>>,
+    mut towers: Query<
+        (&Side, &Transform, &Damage, &mut AttackCooldown),
+        (With<Tower>, Without<TowerDying>),
+    >,
     units: Query<(Entity, &Side, &Transform), (With<Unit>, Without<Tower>)>,
     bases: Query<(Entity, &Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
 ) {
@@ -157,16 +160,37 @@ pub fn tower_attack_tick(
     }
 }
 
-pub fn cleanup_dead_towers(mut commands: Commands, towers: Query<(Entity, &Health), With<Tower>>) {
-    for (entity, hp) in &towers {
-        if hp.current <= 0 {
-            commands.entity(entity).despawn();
+pub fn cleanup_dead_towers(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut towers: Query<(Entity, &Health, &mut Transform, Option<&mut TowerDying>), With<Tower>>,
+) {
+    let dt = time.delta_secs();
+    for (entity, hp, mut transform, dying) in towers.iter_mut() {
+        if hp.current > 0 {
+            continue;
+        }
+        match dying {
+            None => {
+                commands.entity(entity).insert(TowerDying::default());
+            }
+            Some(mut d) => {
+                d.t += dt;
+                let progress = (d.t / TOWER_DEATH_DURATION).clamp(0.0, 1.0);
+                // Tilt forward + sink: dramatic enough to read at a glance,
+                // small enough not to clip into neighbours.
+                transform.rotation = Quat::from_rotation_z(-progress * 0.9);
+                transform.translation.y = -progress * 0.4;
+                if progress >= 1.0 {
+                    commands.entity(entity).despawn();
+                }
+            }
         }
     }
 }
 
-pub fn is_valid_tower_zone(side: Side, pos: Vec3) -> bool {
-    let z_ok = pos.z.abs() <= TOWER_PLACEMENT_Z_LIMIT;
+pub fn is_valid_tower_zone(side: Side, pos: Vec3, mode: GameMode) -> bool {
+    let z_ok = pos.z.abs() <= mode.tower_z_limit();
     if !z_ok {
         return false;
     }
@@ -182,4 +206,55 @@ pub fn collides_with_existing_tower(pos: Vec3, towers: &[Vec3]) -> bool {
         let dz = t.z - pos.z;
         (dx * dx + dz * dz).sqrt() < TOWER_MIN_SEPARATION
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(x: f32, z: f32) -> Vec3 {
+        Vec3::new(x, 0.0, z)
+    }
+
+    #[test]
+    fn placement_inside_left_zone_accepted() {
+        let pos = p(-7.0, 0.0);
+        assert!(is_valid_tower_zone(Side::Left, pos, GameMode::OneVsOne));
+    }
+
+    #[test]
+    fn placement_outside_zone_rejected() {
+        // Past the neutral strip in the enemy half.
+        let pos = p(5.0, 0.0);
+        assert!(!is_valid_tower_zone(Side::Left, pos, GameMode::OneVsOne));
+    }
+
+    #[test]
+    fn placement_too_far_on_z_rejected_in_1v1() {
+        // In 1v1 the Z limit is tight, so a tower at large |z| should be refused.
+        let limit = GameMode::OneVsOne.tower_z_limit();
+        let pos = p(-7.0, limit + 1.0);
+        assert!(!is_valid_tower_zone(Side::Left, pos, GameMode::OneVsOne));
+    }
+
+    #[test]
+    fn placement_at_large_z_accepted_in_2v2() {
+        // The same Z that fails in 1v1 must succeed in 2v2 (where the second
+        // base is offset and the lane Z range extends further).
+        let pos = p(-7.0, GameMode::OneVsOne.tower_z_limit() + 0.5);
+        assert!(is_valid_tower_zone(Side::Left, pos, GameMode::TwoVsTwo));
+    }
+
+    #[test]
+    fn collision_detects_overlap() {
+        let existing = [p(0.0, 0.0)];
+        assert!(collides_with_existing_tower(
+            p(TOWER_MIN_SEPARATION * 0.5, 0.0),
+            &existing
+        ));
+        assert!(!collides_with_existing_tower(
+            p(TOWER_MIN_SEPARATION * 2.0, 0.0),
+            &existing
+        ));
+    }
 }

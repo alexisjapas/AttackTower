@@ -308,11 +308,17 @@ fn focus_stats_string(index: usize) -> String {
 }
 
 pub fn update_focus_stats_text(
-    focuses: Query<&PlayerFocus>,
+    focuses: Query<&PlayerFocus, Changed<PlayerFocus>>,
+    all_focuses: Query<&PlayerFocus>,
     mut texts: Query<(&FocusStatsText, &mut Text)>,
 ) {
+    // Only refresh when a player's focus actually moved. The text is otherwise
+    // static and re-formatting it every frame is wasted work.
+    if focuses.is_empty() {
+        return;
+    }
     let mut focus_per_slot: [Option<usize>; 4] = [None; 4];
-    for f in &focuses {
+    for f in &all_focuses {
         focus_per_slot[f.slot.index()] = Some(f.index);
     }
     for (tag, mut text) in &mut texts {
@@ -362,21 +368,37 @@ pub fn update_gold_text(gold: Res<Gold>, mut texts: Query<(&GoldText, &mut Text)
     }
 }
 
-pub fn update_clock_text(gtime: Res<GameTime>, mut q: Query<&mut Text, With<ClockText>>) {
+pub fn update_clock_text(
+    gtime: Res<GameTime>,
+    mut last_shown: Local<(u32, u32)>,
+    mut q: Query<&mut Text, With<ClockText>>,
+) {
     let hours_f = (gtime.0 / SUN_DAY_PERIOD * 24.0 + 6.0).rem_euclid(24.0);
     let h = hours_f.floor() as u32;
     let m = ((hours_f - h as f32) * 60.0).floor() as u32;
+    // Only push to the Text components when the displayed minute changes.
+    // Bevy's change-detection wraps each Text mutation in a Changed flag and
+    // re-uploads the glyph mesh, so skipping idempotent writes is cheap.
+    if (h, m) == *last_shown {
+        return;
+    }
+    *last_shown = (h, m);
     for mut text in &mut q {
         text.0 = format!("{:02}:{:02}", h, m);
     }
 }
 
 pub fn update_base_hp_text(
-    bases: Query<(&PlayerSlot, &Health), With<Base>>,
+    bases: Query<(&PlayerSlot, &Health), (With<Base>, Changed<Health>)>,
+    all_bases: Query<(&PlayerSlot, &Health), With<Base>>,
     mut texts: Query<(&BaseHpText, &mut Text)>,
 ) {
+    // Only refresh when a base's HP actually changed (or a base was spawned).
+    if bases.is_empty() {
+        return;
+    }
     for (tag, mut text) in &mut texts {
-        if let Some((_, hp)) = bases.iter().find(|(s, _)| **s == tag.0) {
+        if let Some((_, hp)) = all_bases.iter().find(|(s, _)| **s == tag.0) {
             text.0 = format!("{}: {}/{}", tag.0.label(), hp.current.max(0), hp.max);
         }
     }
@@ -919,10 +941,14 @@ fn spawn_toggle_button<M: Component>(
 pub fn update_pause_overlay(
     mut commands: Commands,
     state: Res<GameState>,
+    mode: Res<GameMode>,
+    players: Res<PlayerControllers>,
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<PauseOverlay>>,
 ) {
-    if !state.is_changed() {
+    // Also rebuild on PlayerControllers change so a pad disconnect during
+    // pause refreshes the "Pad X disconnected" warning.
+    if !state.is_changed() && !players.is_changed() {
         return;
     }
     for entity in &overlay {
@@ -931,7 +957,15 @@ pub fn update_pause_overlay(
     if *state != GameState::Paused {
         return;
     }
-    menu_focus.index = 0;
+    if state.is_changed() {
+        menu_focus.index = 0;
+    }
+    let missing: Vec<PlayerSlot> = mode
+        .active_slots()
+        .iter()
+        .copied()
+        .filter(|s| players.get(*s).is_none())
+        .collect();
     commands
         .spawn((
             Node {
@@ -955,6 +989,13 @@ pub fn update_pause_overlay(
                 TextFont::from_font_size(40.0),
                 TextColor(Color::WHITE),
             ));
+            for slot in &missing {
+                parent.spawn((
+                    Text::new(format!("Pad disconnected: {}", slot.label())),
+                    TextFont::from_font_size(18.0),
+                    TextColor(Color::srgb(1.0, 0.55, 0.30)),
+                ));
+            }
             spawn_menu_button(parent, 0, "Resume", Side::Left.color());
             spawn_menu_button(parent, 1, "Settings", Color::srgb(0.7, 0.7, 0.75));
             spawn_menu_button(parent, 2, "Main menu", Side::Right.color());
@@ -1447,6 +1488,33 @@ pub fn update_sideselect_cards(
 // ────────────────────────────────────────────────────────────────────────────
 // Lifecycle helpers (run on state change)
 // ────────────────────────────────────────────────────────────────────────────
+
+/// Auto-pause the match if any active player's gamepad goes missing (the
+/// entity disappears from the `Gamepad` query). Without this the abandoned
+/// player would silently freeze in place while the other plays on, with no
+/// way to recover except for the surviving pad to open the pause menu.
+pub fn detect_pad_disconnect(
+    mut state: ResMut<GameState>,
+    mut players: ResMut<PlayerControllers>,
+    mode: Res<GameMode>,
+    gamepads: Query<Entity, With<Gamepad>>,
+) {
+    if !matches!(*state, GameState::Playing | GameState::Paused) {
+        return;
+    }
+    let mut any_lost = false;
+    for &slot in mode.active_slots() {
+        if let Some(entity) = players.get(slot)
+            && gamepads.get(entity).is_err()
+        {
+            players.set(slot, None);
+            any_lost = true;
+        }
+    }
+    if any_lost && *state == GameState::Playing {
+        *state = GameState::Paused;
+    }
+}
 
 pub fn manage_input_components(
     mut commands: Commands,
@@ -1973,7 +2041,7 @@ pub fn placement_system(
 
         let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
         let side = slot.side();
-        let in_zone = is_valid_tower_zone(side, pos);
+        let in_zone = is_valid_tower_zone(side, pos, *mode);
         let no_overlap = !collides_with_existing_tower(pos, &tower_positions);
         let can_afford = gold.get(slot) >= TOWER_COST;
         let valid = in_zone && no_overlap && can_afford;
@@ -2116,6 +2184,7 @@ pub fn settings_input_system(
             ParamId::Exposure => settings.exposure = (settings.exposure + 1) % 3,
             ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
             ParamId::FpsCap => settings.fps_cap = (settings.fps_cap + 1) % 6,
+            ParamId::Colorblind => settings.colorblind = !settings.colorblind,
             ParamId::Raytracing => {
                 if cfg!(feature = "raytracing") && rt_avail.0 {
                     settings.raytracing = !settings.raytracing;
@@ -2155,136 +2224,240 @@ pub fn apply_graphics_settings(
     mut exposures: Query<&mut Exposure, With<Camera3d>>,
     mut sun: Query<&mut DirectionalLight, With<Sun>>,
     mut windows: Query<&mut Window>,
+    // Cached copy of the last fully-applied settings. We only touch the camera
+    // components whose underlying fields actually moved, instead of reinserting
+    // a dozen renderer features on every settings change.
+    mut last_applied: Local<Option<GameSettings>>,
 ) {
     if !settings.is_changed() {
         return;
     }
+    let first = last_applied.is_none();
+    let prev = last_applied.unwrap_or(*settings);
+    let curr = *settings;
+    let changed_any = |fields: &[bool]| first || fields.iter().any(|b| *b);
+
     // Window mode + vsync.
-    let mode = if settings.fullscreen {
-        WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
-    } else {
-        WindowMode::Windowed
-    };
-    let present = if settings.vsync {
-        PresentMode::AutoVsync
-    } else {
-        PresentMode::AutoNoVsync
-    };
-    for mut window in &mut windows {
-        if window.mode != mode {
-            window.mode = mode;
-        }
-        if window.present_mode != present {
-            window.present_mode = present;
+    if first || curr.fullscreen != prev.fullscreen || curr.vsync != prev.vsync {
+        let mode = if curr.fullscreen {
+            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+        } else {
+            WindowMode::Windowed
+        };
+        let present = if curr.vsync {
+            PresentMode::AutoVsync
+        } else {
+            PresentMode::AutoNoVsync
+        };
+        for mut window in &mut windows {
+            if window.mode != mode {
+                window.mode = mode;
+            }
+            if window.present_mode != present {
+                window.present_mode = present;
+            }
         }
     }
     // Per-camera components. Both Solari (raytracing) and TAA force the
     // deferred renderer, which is incompatible with MSAA — Bevy logs a warning
     // every frame the camera setting changes if we'd insert MSAA anyway. Drop
     // it silently in both cases.
-    let msaa = if settings.raytracing || settings.taa {
+    let msaa_changed = first
+        || curr.msaa != prev.msaa
+        || curr.raytracing != prev.raytracing
+        || curr.taa != prev.taa;
+    let msaa = if curr.raytracing || curr.taa {
         Msaa::Off
     } else {
-        match settings.msaa {
+        match curr.msaa {
             2 => Msaa::Sample2,
             4 => Msaa::Sample4,
             8 => Msaa::Sample8,
             _ => Msaa::Off,
         }
     };
+    let hdr_changed = first || curr.hdr != prev.hdr;
+    let bloom_changed =
+        first || curr.bloom != prev.bloom || curr.bloom_intensity != prev.bloom_intensity;
+    let atmo_changed = first || curr.atmosphere != prev.atmosphere;
+    let vfog_changed = changed_any(&[
+        curr.volumetric_fog != prev.volumetric_fog,
+        curr.fog_density != prev.fog_density,
+    ]);
+    let dfog_changed = first || curr.distance_fog != prev.distance_fog;
+    let taa_changed = first || curr.taa != prev.taa;
+    let fxaa_changed = first || curr.fxaa != prev.fxaa;
+    let ssao_changed = first || curr.ssao != prev.ssao || curr.ssao_quality != prev.ssao_quality;
+    let mblur_changed = first || curr.motion_blur != prev.motion_blur;
     for cam in &cameras {
         let mut e = commands.entity(cam);
-        // MSAA is a per-camera component in Bevy 0.18.
-        e.insert(msaa);
-        // HDR is a marker component on the camera in Bevy 0.18.
-        if settings.hdr {
-            e.insert(bevy::render::view::Hdr);
-        } else {
-            e.remove::<bevy::render::view::Hdr>();
+        if msaa_changed {
+            e.insert(msaa);
         }
-        if settings.bloom {
-            e.insert(Bloom {
-                intensity: bloom_intensity_value(settings.bloom_intensity),
-                ..Bloom::NATURAL
-            });
-        } else {
-            e.remove::<Bloom>();
+        if hdr_changed {
+            if curr.hdr {
+                e.insert(bevy::render::view::Hdr);
+            } else {
+                e.remove::<bevy::render::view::Hdr>();
+            }
         }
-        if settings.atmosphere {
-            e.insert((
-                Atmosphere::earthlike(atmo.0.clone()),
-                AtmosphereSettings::default(),
-            ));
-        } else {
-            e.remove::<Atmosphere>().remove::<AtmosphereSettings>();
+        if bloom_changed {
+            if curr.bloom {
+                e.insert(Bloom {
+                    intensity: bloom_intensity_value(curr.bloom_intensity),
+                    ..Bloom::NATURAL
+                });
+            } else {
+                e.remove::<Bloom>();
+            }
         }
-        if settings.volumetric_fog {
-            e.insert(VolumetricFog {
-                ambient_intensity: fog_density_value(settings.fog_density),
-                ..default()
-            });
-        } else {
-            e.remove::<VolumetricFog>();
+        if atmo_changed {
+            if curr.atmosphere {
+                e.insert((
+                    Atmosphere::earthlike(atmo.0.clone()),
+                    AtmosphereSettings::default(),
+                ));
+            } else {
+                e.remove::<Atmosphere>().remove::<AtmosphereSettings>();
+            }
         }
-        if settings.distance_fog {
-            e.insert(DistanceFog {
-                color: Color::srgba(0.55, 0.70, 0.85, 1.0),
-                falloff: FogFalloff::ExponentialSquared { density: 0.012 },
-                ..default()
-            });
-        } else {
-            e.remove::<DistanceFog>();
+        if vfog_changed {
+            if curr.volumetric_fog {
+                e.insert(VolumetricFog {
+                    ambient_intensity: fog_density_value(curr.fog_density),
+                    ..default()
+                });
+            } else {
+                e.remove::<VolumetricFog>();
+            }
         }
-        if settings.taa {
-            e.insert(TemporalAntiAliasing::default());
-        } else {
-            e.remove::<TemporalAntiAliasing>();
+        if dfog_changed {
+            if curr.distance_fog {
+                e.insert(DistanceFog {
+                    color: Color::srgba(0.55, 0.70, 0.85, 1.0),
+                    falloff: FogFalloff::ExponentialSquared { density: 0.012 },
+                    ..default()
+                });
+            } else {
+                e.remove::<DistanceFog>();
+            }
         }
-        if settings.fxaa {
-            e.insert(Fxaa::default());
-        } else {
-            e.remove::<Fxaa>();
+        if taa_changed {
+            if curr.taa {
+                e.insert(TemporalAntiAliasing::default());
+            } else {
+                e.remove::<TemporalAntiAliasing>();
+            }
         }
-        if settings.ssao {
-            e.insert(ScreenSpaceAmbientOcclusion {
-                quality_level: match settings.ssao_quality {
-                    0 => ScreenSpaceAmbientOcclusionQualityLevel::Low,
-                    1 => ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-                    3 => ScreenSpaceAmbientOcclusionQualityLevel::Ultra,
-                    _ => ScreenSpaceAmbientOcclusionQualityLevel::High,
-                },
-                ..default()
-            });
-        } else {
-            e.remove::<ScreenSpaceAmbientOcclusion>();
+        if fxaa_changed {
+            if curr.fxaa {
+                e.insert(Fxaa::default());
+            } else {
+                e.remove::<Fxaa>();
+            }
         }
-        if settings.motion_blur {
-            e.insert(MotionBlur::default());
-        } else {
-            e.remove::<MotionBlur>();
+        if ssao_changed {
+            if curr.ssao {
+                e.insert(ScreenSpaceAmbientOcclusion {
+                    quality_level: match curr.ssao_quality {
+                        0 => ScreenSpaceAmbientOcclusionQualityLevel::Low,
+                        1 => ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                        3 => ScreenSpaceAmbientOcclusionQualityLevel::Ultra,
+                        _ => ScreenSpaceAmbientOcclusionQualityLevel::High,
+                    },
+                    ..default()
+                });
+            } else {
+                e.remove::<ScreenSpaceAmbientOcclusion>();
+            }
+        }
+        if mblur_changed {
+            if curr.motion_blur {
+                e.insert(MotionBlur::default());
+            } else {
+                e.remove::<MotionBlur>();
+            }
         }
     }
     // Tonemapping (mutates existing component on the camera).
-    for mut t in &mut tonemap {
-        *t = match settings.tonemapping {
-            0 => Tonemapping::AcesFitted,
-            1 => Tonemapping::TonyMcMapface,
-            2 => Tonemapping::Reinhard,
-            _ => Tonemapping::None,
-        };
+    if first || curr.tonemapping != prev.tonemapping {
+        for mut t in &mut tonemap {
+            *t = match curr.tonemapping {
+                0 => Tonemapping::AcesFitted,
+                1 => Tonemapping::TonyMcMapface,
+                2 => Tonemapping::Reinhard,
+                _ => Tonemapping::None,
+            };
+        }
     }
     // Exposure (HDR sub-parameter; meaningful only when HDR is on but applying
     // is harmless either way).
-    let target_ev100 = exposure_ev100(settings.exposure);
-    for mut exp in &mut exposures {
-        if (exp.ev100 - target_ev100).abs() > f32::EPSILON {
-            exp.ev100 = target_ev100;
+    if first || curr.exposure != prev.exposure {
+        let target_ev100 = exposure_ev100(curr.exposure);
+        for mut exp in &mut exposures {
+            if (exp.ev100 - target_ev100).abs() > f32::EPSILON {
+                exp.ev100 = target_ev100;
+            }
         }
     }
     // Sun shadows on/off.
-    for mut light in &mut sun {
-        if light.shadows_enabled != settings.shadows {
-            light.shadows_enabled = settings.shadows;
+    if first || curr.shadows != prev.shadows {
+        for mut light in &mut sun {
+            if light.shadows_enabled != curr.shadows {
+                light.shadows_enabled = curr.shadows;
+            }
         }
+    }
+    *last_applied = Some(curr);
+}
+
+#[cfg(test)]
+mod seat_tests {
+    use super::*;
+
+    #[test]
+    fn move_seat_step_1v1_picks_side() {
+        assert_eq!(
+            move_seat_step(PlayerSlot::LeftBottom, SeatNav::Right, false),
+            PlayerSlot::RightBottom
+        );
+        assert_eq!(
+            move_seat_step(PlayerSlot::RightBottom, SeatNav::Left, false),
+            PlayerSlot::LeftBottom
+        );
+        // Up/Down are no-ops in 1v1.
+        assert_eq!(
+            move_seat_step(PlayerSlot::LeftBottom, SeatNav::Up, false),
+            PlayerSlot::LeftBottom
+        );
+    }
+
+    #[test]
+    fn move_seat_step_2v2_navigates_grid() {
+        assert_eq!(
+            move_seat_step(PlayerSlot::LeftBottom, SeatNav::Up, true),
+            PlayerSlot::LeftTop
+        );
+        assert_eq!(
+            move_seat_step(PlayerSlot::RightTop, SeatNav::Down, true),
+            PlayerSlot::RightBottom
+        );
+        // No wrap-around on edges.
+        assert_eq!(
+            move_seat_step(PlayerSlot::LeftTop, SeatNav::Up, true),
+            PlayerSlot::LeftTop
+        );
+    }
+
+    #[test]
+    fn move_seat_skips_locked_neighbour() {
+        // 2v2: LeftBottom moves right, but RightBottom is taken — should land
+        // on… current (nothing free that way after one step).
+        let mut locked = [false; 4];
+        locked[PlayerSlot::RightBottom.index()] = true;
+        assert_eq!(
+            move_seat(PlayerSlot::LeftBottom, SeatNav::Right, true, locked),
+            PlayerSlot::LeftBottom
+        );
     }
 }

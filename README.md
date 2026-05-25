@@ -4,61 +4,91 @@ POC of a bilateral 3D tower defense game, written in Rust with Bevy and Avian3d.
 
 ## Tech stack
 
-- **Language**: Rust
-- **Engine**: Bevy (latest version, picked by cargo)
-- **Physics**: Avian3d
+- **Language**: Rust (edition 2024)
+- **Engine**: Bevy 0.18 (pinned)
+- **Physics**: Avian3d 0.6 (loaded; colliders not yet used)
 - **Dev environment**: Nix flake (Vulkan, Wayland/X11, mold linker)
+
+## Prerequisites
+
+The build needs Vulkan and Wayland/X11 development libraries. The repository ships a Nix dev shell that exports the right `LD_LIBRARY_PATH`. With `direnv` installed the shell loads automatically when you `cd` into the directory; otherwise run `nix develop` first. Building or running outside the shell will fail to find the dynamic libraries.
+
+Two **gamepads** are required to play. Keyboard/mouse input is not supported.
 
 ## Concept
 
-Real-time bilateral tower defense: one player on the left, one on the right. Each player buys units that walk straight toward the opposing base. First to destroy the opposing base wins.
-
-For this POC, both players are controlled from the same machine (local testing).
+Real-time bilateral tower defense: one player on the left, one on the right (1v1), or two-vs-two on the same screen (2v2). Each player buys units that walk straight toward the opposing base. First base destroyed loses.
 
 ## Specifications
 
+### Modes
+- **1v1**: one base per side, centred on Z=0.
+- **2v2**: two bases per side, offset on the Z axis. Each player owns one base and one miner economy; allies share the same colour but separate gold pools.
+
 ### Bases
-- 1 base per player (left / right)
-- **20 HP** each
-- Representation: colored cube
+- **40 HP** each
+- Castle-style mesh assembled from primitives (foundation + keep + crenellated battlement + four corner towers).
 
 ### Units
-- **10 HP**, **3 attack**
-- Cost: **1 gold**
-- Walk straight toward the opposing base
-- Representation: colored cylinder
+| Unit    | HP | Damage | Cost | Speed | Cooldown | Range |
+|---------|----|--------|------|-------|----------|-------|
+| Soldier | 10 | 3      | 1    | 1.8   | 1.0 s    | melee |
+| Archer  | 7  | 2      | 3    | 1.5   | 1.7 s    | 8.0   |
+| Miner   | 8  | 0      | 4    | 1.4   | mining 1.1 s | — |
 
-### Combat
-- **Unit melee**: two opposing units that meet stop and attack each other until one dies
-- **Base attack**: on contact, a unit deals its damage in a loop until it dies or destroys the base
+### Towers
+- **30 HP**, **3 damage**, **6 gold**, range **8.5**, cooldown **1.5 s**.
+- Placed inside the player's own zone (terrain is split into three strips by `ZONE_BOUNDARY`; the Z extent of the zone adapts to `GameMode`). A ghost preview at the cursor turns green on a legal spot, red otherwise.
+- Towers shoot arrows on a parabolic trajectory at the nearest enemy unit/base in range. Killed towers tilt + sink briefly before despawning.
 
 ### Economy
-- **10 gold** starting per player
-- **Miners**: each side starts with one. Miners walk to their side's rock, mine for a few seconds, then return to the base to deposit gold. Buy more miners to scale income.
+- **10 gold** starting per player.
+- Each player starts with one miner. Miners walk to their side's rock, mine in place, then return to their base to deposit (capacity 4 per trip). Max 5 miners per player. There is no passive income.
+
+### Combat
+- Units engage anything within `ENGAGE_RANGE` (1.4) for melee, or `ARCHER_RANGE` (8.0) for arrows. The closest valid target is picked each frame.
+- Archers **kite**: an enemy that closes inside `ARCHER_KITE_RANGE` (2.5) pushes the archer back while it keeps shooting.
+- Allies walking directly behind another ally in the same lane form a queue (no overlap).
+- Archers fire arrows on a parabolic trajectory with light homing; the arrow despawns on impact.
 
 ### Camera & map
-- Horizontal map, bases aligned on the left/right axis
-- **Fixed** camera in the middle, 3/4 view from 45° above
-- Far enough to see both bases simultaneously
-- Designed for two players sharing the same screen (no split-screen)
+- Horizontal map, bases aligned on the left/right axis.
+- **Fixed** 3/4 camera, ~45° above ground, framed to fit both bases.
+- Designed for two-to-four players sharing the same screen (no split-screen).
+- Day/night cycle (90 s period) drives sun position and torch lighting (torches inside castles and on towers light up at night).
 
 ### UI
-- One **vertical panel per player** in the bottom corners of the screen, organised by category: **Buildings** (Tower), **Combat** (Soldier, Archer), **Resources** (Miner).
-- Gold counter under each panel.
-- Gamepad-only input: D-pad navigates slots, A confirms (spawn / arm tower placement), X arms tower placement directly.
+- Persistent HUD: clock at the top, one player panel in each bottom corner (and top corners in 2v2). Each panel lists the unit/tower buttons, the player's base HP, gold, and currently focused stats.
+- Endgame: **"Player X wins"** overlay with options to restart or return to menu.
 
-### Endgame
-- When a base reaches 0 HP: **"Player X wins"** text displayed
-- **Restart button** to start a new game
+### Settings
+- Two-tab overlay (Video / Graphics) with a description column showing each parameter's role and its rendering-cost impact.
+- Persisted to `~/.config/attack_tower/settings.cfg` (or `$XDG_CONFIG_HOME/attack_tower/`). Loaded once at startup; saved every time `GameSettings` changes.
+- `GraphicsPreset` (Low/Medium/High/Ultra) only touches quality fields; Video parameters (fullscreen, vsync, HDR, tonemapping, **colorblind palette**) are preserved across preset switches. `Custom` is derived automatically when no preset matches.
+- Colorblind palette swaps the Right side from red to orange for deuteranopia / protanopia.
 
-### Art direction (POC)
-- Primitive geometric shapes (cubes, cylinders)
-- Solid colors (uniform green ground, distinct colors per side)
-- No textures or imported models
+### Input
+- **Gamepad-only.** Two pads connect during the SideSelect screen, claim a side, and from then on all input flows through that pad: D-pad navigates slots, A confirms (spawn / arm tower placement), X arms tower placement directly. Sticks drive the tower placement cursor.
 
-## Running the project
+## Cargo features
+
+| Feature              | Default | Effect                                                                                     |
+|----------------------|---------|--------------------------------------------------------------------------------------------|
+| `raytracing`         | yes     | Pulls in `bevy_solari` for raytraced GI/shadows. Auto-disabled at startup on incapable GPUs. |
+| `dlss`               | yes     | Compiles the DLSS code paths.                                                              |
+| `force_disable_dlss` | yes     | Mocks DLSS at compile time so the NVIDIA NGX SDK isn't required.                           |
+
+To run with real DLSS:
+```sh
+cargo run --release --no-default-features --features raytracing,dlss
+```
+
+## Running
 
 ```sh
-# Inside the Nix dev shell (auto via direnv)
-cargo run
+# Inside the Nix dev shell (auto via direnv).
+cargo run             # debug
+cargo run --release   # release
 ```
+
+See `CLAUDE.md` for an architectural tour.

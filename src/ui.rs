@@ -262,23 +262,24 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
                 GoldText(slot),
             ));
             // Hover stats card: lit by update_focus_stats_text.
-            panel.spawn((
-                Node {
-                    margin: UiRect::top(Val::Px(6.0)),
-                    padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    flex_direction: FlexDirection::Column,
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.08, 0.08, 0.10, 0.85)),
-                BorderColor::all(Color::srgba(0.5, 0.5, 0.55, 0.7)),
-            ))
-            .with_child((
-                Text::new(focus_stats_string(0)),
-                TextFont::from_font_size(12.0),
-                TextColor(Color::srgb(0.92, 0.92, 0.96)),
-                FocusStatsText(slot),
-            ));
+            panel
+                .spawn((
+                    Node {
+                        margin: UiRect::top(Val::Px(6.0)),
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        flex_direction: FlexDirection::Column,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.08, 0.08, 0.10, 0.85)),
+                    BorderColor::all(Color::srgba(0.5, 0.5, 0.55, 0.7)),
+                ))
+                .with_child((
+                    Text::new(focus_stats_string(0)),
+                    TextFont::from_font_size(12.0),
+                    TextColor(Color::srgb(0.92, 0.92, 0.96)),
+                    FocusStatsText(slot),
+                ));
         });
 }
 
@@ -1347,10 +1348,7 @@ pub fn apply_player_focus_visual(
         ),
         Without<PlayerCorner>,
     >,
-    mut corners: Query<
-        (&PlayerCorner, &mut BackgroundColor, &mut BorderColor),
-        Without<PanelSlot>,
-    >,
+    mut corners: Query<(&PlayerCorner, &mut BackgroundColor, &mut BorderColor), Without<PanelSlot>>,
 ) {
     let active = matches!(*state, GameState::Playing | GameState::Paused);
     let mut miners_per_slot = [0usize; 4];
@@ -1473,10 +1471,10 @@ pub fn manage_input_components(
         return;
     }
     for &slot in mode.active_slots() {
-        if let Some(pad) = players.get(slot) {
-            if gamepads.get(pad).is_ok() {
-                commands.entity(pad).insert(PlayerFocus { slot, index: 0 });
-            }
+        if let Some(pad) = players.get(slot)
+            && gamepads.get(pad).is_ok()
+        {
+            commands.entity(pad).insert(PlayerFocus { slot, index: 0 });
         }
     }
 }
@@ -1546,17 +1544,13 @@ pub fn menu_input_system(
 
     if in_menu {
         match menu_focus.index {
-            0 => {
-                if pad_count > 0 {
-                    *mode = GameMode::OneVsOne;
-                    *state = GameState::SideSelect;
-                }
+            0 if pad_count > 0 => {
+                *mode = GameMode::OneVsOne;
+                *state = GameState::SideSelect;
             }
-            1 => {
-                if pad_count > 0 {
-                    *mode = GameMode::TwoVsTwo;
-                    *state = GameState::SideSelect;
-                }
+            1 if pad_count > 0 => {
+                *mode = GameMode::TwoVsTwo;
+                *state = GameState::SideSelect;
             }
             2 => {
                 *origin = SettingsOrigin::Menu;
@@ -1603,10 +1597,10 @@ pub fn sideselect_input_system(
     // Snapshot per-slot confirmations so we can reject same-frame conflicts.
     let mut confirmed: [Option<Entity>; 4] = [None; 4];
     for (e, _, s) in seats.iter() {
-        if let Some(sel) = s {
-            if sel.confirmed {
-                confirmed[sel.hovered.index()] = Some(e);
-            }
+        if let Some(sel) = s
+            && sel.confirmed
+        {
+            confirmed[sel.hovered.index()] = Some(e);
         }
     }
 
@@ -1620,10 +1614,10 @@ pub fn sideselect_input_system(
         let locked_by_other = |pad: Entity| {
             let mut out = [false; 4];
             for (i, e) in confirmed.iter().enumerate() {
-                if let Some(owner) = e {
-                    if *owner != pad {
-                        out[i] = true;
-                    }
+                if let Some(owner) = e
+                    && *owner != pad
+                {
+                    out[i] = true;
                 }
             }
             out
@@ -1851,31 +1845,26 @@ pub fn gameplay_input_system(
         if pad.just_pressed(GamepadButton::South) {
             match focus.index {
                 0 => arm_placement(&mut placement, focus.slot, *mode),
-                1 => {
-                    if gold.try_spend(focus.slot, SOLDIER_COST) {
-                        let count = units
-                            .iter()
-                            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Soldier)
-                            .count();
-                        spawn_soldier(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
-                    }
+                1 if gold.try_spend(focus.slot, SOLDIER_COST) => {
+                    let count = units
+                        .iter()
+                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Soldier)
+                        .count();
+                    spawn_soldier(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
                 }
-                2 => {
-                    if gold.try_spend(focus.slot, ARCHER_COST) {
-                        let count = units
-                            .iter()
-                            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Archer)
-                            .count();
-                        spawn_archer(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
-                    }
+                2 if gold.try_spend(focus.slot, ARCHER_COST) => {
+                    let count = units
+                        .iter()
+                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Archer)
+                        .count();
+                    spawn_archer(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
                 }
                 3 => {
                     let miner_count = units
                         .iter()
                         .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
                         .count();
-                    if miner_count < MAX_MINERS_PER_PLAYER
-                        && gold.try_spend(focus.slot, MINER_COST)
+                    if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(focus.slot, MINER_COST)
                     {
                         spawn_miner(&mut commands, &lib, focus.slot, *mode, miner_count);
                     }

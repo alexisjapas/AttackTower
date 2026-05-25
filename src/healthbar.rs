@@ -57,9 +57,11 @@ fn spawn_bar(commands: &mut Commands, owner: Entity, height: f32, width: f32, al
             .resource_mut::<Assets<Mesh>>()
             .add(Cuboid::new(width, BAR_HEIGHT, BAR_DEPTH));
         // Slightly thinner fill so the dark frame stays visible on edges.
-        let fill_mesh = world
-            .resource_mut::<Assets<Mesh>>()
-            .add(Cuboid::new(width * 0.96, BAR_HEIGHT * 0.7, BAR_DEPTH * 1.2));
+        let fill_mesh = world.resource_mut::<Assets<Mesh>>().add(Cuboid::new(
+            width * 0.96,
+            BAR_HEIGHT * 0.7,
+            BAR_DEPTH * 1.2,
+        ));
         let bg_mat = world
             .resource_mut::<Assets<StandardMaterial>>()
             .add(StandardMaterial {
@@ -154,16 +156,16 @@ pub fn update_health_bars(
         }
 
         // Re-tint the fill green → red as HP drops.
-        if let Ok(mat_handle) = fill_mats.get(bar.fill) {
-            if let Some(mat) = materials.get_mut(&mat_handle.0) {
-                let full = BAR_FILL_FULL.to_srgba();
-                let low = BAR_FILL_LOW.to_srgba();
-                mat.base_color = Color::srgb(
-                    low.red * (1.0 - frac) + full.red * frac,
-                    low.green * (1.0 - frac) + full.green * frac,
-                    low.blue * (1.0 - frac) + full.blue * frac,
-                );
-            }
+        if let Ok(mat_handle) = fill_mats.get(bar.fill)
+            && let Some(mat) = materials.get_mut(&mat_handle.0)
+        {
+            let full = BAR_FILL_FULL.to_srgba();
+            let low = BAR_FILL_LOW.to_srgba();
+            mat.base_color = Color::srgb(
+                low.red * (1.0 - frac) + full.red * frac,
+                low.green * (1.0 - frac) + full.green * frac,
+                low.blue * (1.0 - frac) + full.blue * frac,
+            );
         }
     }
 }

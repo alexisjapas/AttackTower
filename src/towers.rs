@@ -122,7 +122,7 @@ pub fn tower_attack_tick(
         let mut nearest: Option<(Entity, Vec3, f32)> = None;
         let mut consider = |entity: Entity, target_pos: Vec3| {
             let d = (target_pos.x - pos.x).hypot(target_pos.z - pos.z);
-            if nearest.map_or(true, |(_, _, nd)| d < nd) {
+            if nearest.is_none_or(|(_, _, nd)| d < nd) {
                 nearest = Some((entity, target_pos, d));
             }
         };
@@ -137,21 +137,21 @@ pub fn tower_attack_tick(
             }
         }
 
-        if let Some((target_entity, target_pos, dist)) = nearest {
-            if dist <= TOWER_RANGE {
-                cooldown.0.tick(time.delta());
-                if cooldown.0.just_finished() {
-                    let start = pos + Vec3::new(0.0, TOWER_ARROW_HEIGHT, 0.0);
-                    spawn_arrow(
-                        &mut commands,
-                        &lib,
-                        *side,
-                        start,
-                        target_entity,
-                        target_pos,
-                        damage.0,
-                    );
-                }
+        if let Some((target_entity, target_pos, dist)) = nearest
+            && dist <= TOWER_RANGE
+        {
+            cooldown.0.tick(time.delta());
+            if cooldown.0.just_finished() {
+                let start = pos + Vec3::new(0.0, TOWER_ARROW_HEIGHT, 0.0);
+                spawn_arrow(
+                    &mut commands,
+                    &lib,
+                    *side,
+                    start,
+                    target_entity,
+                    target_pos,
+                    damage.0,
+                );
             }
         }
     }

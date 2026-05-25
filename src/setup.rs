@@ -336,10 +336,10 @@ pub fn sync_raytracing_meshes(
     for (entity, mesh3d) in &new {
         // Solari needs POSITION/NORMAL/UV_0/TANGENT. Bevy primitives don't ship
         // tangents — generate them once per asset on first sight.
-        if let Some(mesh) = meshes.get_mut(&mesh3d.0) {
-            if mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
-                let _ = mesh.generate_tangents();
-            }
+        if let Some(mesh) = meshes.get_mut(&mesh3d.0)
+            && mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_none()
+        {
+            let _ = mesh.generate_tangents();
         }
         commands
             .entity(entity)

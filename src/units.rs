@@ -580,17 +580,17 @@ pub fn combat_tick(
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                if let Some((target, dist)) = enemy {
-                    if dist <= ENGAGE_RANGE {
-                        cooldown.0.tick(time.delta());
-                        anim.attacking = true;
-                        anim.attack_phase = cooldown.0.fraction();
-                        if cooldown.0.just_finished() {
-                            damage_events.push((target.entity, damage.0));
-                        }
-                        anim.walking = false;
-                        continue;
+                if let Some((target, dist)) = enemy
+                    && dist <= ENGAGE_RANGE
+                {
+                    cooldown.0.tick(time.delta());
+                    anim.attacking = true;
+                    anim.attack_phase = cooldown.0.fraction();
+                    if cooldown.0.just_finished() {
+                        damage_events.push((target.entity, damage.0));
                     }
+                    anim.walking = false;
+                    continue;
                 }
 
                 anim.attacking = false;
@@ -673,14 +673,14 @@ pub fn combat_tick(
                         anim.attacking = true;
                         anim.attack_phase = cooldown.0.fraction();
                         anim.walking = false;
-                        if cooldown.0.just_finished() {
-                            if let Some(carry) = carry_opt.as_deref_mut() {
-                                carry.current = carry.current.saturating_add(MINER_GOLD_PER_HIT);
-                                if carry.current >= MINER_CAPACITY {
-                                    if let Some(phase) = phase_opt.as_deref_mut() {
-                                        *phase = MinerPhase::Returning;
-                                    }
-                                }
+                        if cooldown.0.just_finished()
+                            && let Some(carry) = carry_opt.as_deref_mut()
+                        {
+                            carry.current = carry.current.saturating_add(MINER_GOLD_PER_HIT);
+                            if carry.current >= MINER_CAPACITY
+                                && let Some(phase) = phase_opt.as_deref_mut()
+                            {
+                                *phase = MinerPhase::Returning;
                             }
                         }
                     }
@@ -694,11 +694,11 @@ pub fn combat_tick(
                         let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
                         let dist = (target_xz - pos_xz).length();
                         if dist <= MINER_DEPOSIT_RANGE {
-                            if let Some(carry) = carry_opt.as_deref_mut() {
-                                if carry.current > 0 {
-                                    gold_events.push((*slot, carry.current));
-                                    carry.current = 0;
-                                }
+                            if let Some(carry) = carry_opt.as_deref_mut()
+                                && carry.current > 0
+                            {
+                                gold_events.push((*slot, carry.current));
+                                carry.current = 0;
                             }
                             if let Some(phase) = phase_opt.as_deref_mut() {
                                 *phase = MinerPhase::ToRock;
@@ -726,36 +726,36 @@ pub fn combat_tick(
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                if let Some((target, dist)) = enemy {
-                    if dist <= ARCHER_RANGE {
-                        cooldown.0.tick(time.delta());
-                        anim.attacking = true;
-                        anim.attack_phase = cooldown.0.fraction();
-                        if cooldown.0.just_finished() {
-                            // Arrow leaves the bow (hand-raised left arm), which sits
-                            // ~0.36 in front of the body at chest height (0.65), offset
-                            // toward the left-arm side (Z = +ARM_SPREAD_Z) before the
-                            // unit's facing rotation. side.forward() flips X and Z for
-                            // the Right side (rotated by Y(PI)).
-                            let start = pos
-                                + Vec3::new(
-                                    side.forward() * 0.36,
-                                    0.65,
-                                    side.forward() * ARM_SPREAD_Z,
-                                );
-                            spawn_arrow(
-                                &mut commands,
-                                &lib,
-                                *side,
-                                start,
-                                target.entity,
-                                target.pos,
-                                damage.0,
+                if let Some((target, dist)) = enemy
+                    && dist <= ARCHER_RANGE
+                {
+                    cooldown.0.tick(time.delta());
+                    anim.attacking = true;
+                    anim.attack_phase = cooldown.0.fraction();
+                    if cooldown.0.just_finished() {
+                        // Arrow leaves the bow (hand-raised left arm), which sits
+                        // ~0.36 in front of the body at chest height (0.65), offset
+                        // toward the left-arm side (Z = +ARM_SPREAD_Z) before the
+                        // unit's facing rotation. side.forward() flips X and Z for
+                        // the Right side (rotated by Y(PI)).
+                        let start = pos
+                            + Vec3::new(
+                                side.forward() * 0.36,
+                                0.65,
+                                side.forward() * ARM_SPREAD_Z,
                             );
-                        }
-                        anim.walking = false;
-                        continue;
+                        spawn_arrow(
+                            &mut commands,
+                            &lib,
+                            *side,
+                            start,
+                            target.entity,
+                            target.pos,
+                            damage.0,
+                        );
                     }
+                    anim.walking = false;
+                    continue;
                 }
 
                 anim.attacking = false;

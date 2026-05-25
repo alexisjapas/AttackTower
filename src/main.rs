@@ -127,6 +127,7 @@ fn main() {
                         update_sideselect_cards,
                         update_settings_toggle_texts,
                         update_settings_description,
+                        scroll_focused_into_view,
                         apply_menu_focus_visual,
                         apply_player_focus_visual,
                         apply_graphics_settings,

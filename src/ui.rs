@@ -52,6 +52,12 @@ pub struct SettingsOverlay;
 #[derive(Component)]
 pub struct PauseOverlay;
 
+/// Marker on the scrollable column that lists the settings parameters. Used by
+/// [`scroll_focused_into_view`] to find the column and update its
+/// [`ScrollPosition`] when the focused row would fall outside the viewport.
+#[derive(Component)]
+pub struct SettingsMenuColumn;
+
 #[derive(Component, Clone, Copy)]
 pub struct SettingsToggleText(pub ParamId);
 
@@ -313,7 +319,7 @@ pub fn update_menu_overlay(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(24.0),
+                row_gap: Val::Px(18.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.05, 0.06, 0.10, 0.65)),
@@ -322,7 +328,7 @@ pub fn update_menu_overlay(
         .with_children(|parent| {
             parent.spawn((
                 Text::new("AttackTower"),
-                TextFont::from_font_size(72.0),
+                TextFont::from_font_size(56.0),
                 TextColor(Color::WHITE),
             ));
             spawn_menu_button(parent, 0, "Play", Side::Left.color());
@@ -384,8 +390,8 @@ pub fn update_settings_overlay(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(20.0),
-                padding: UiRect::axes(Val::Px(24.0), Val::Px(24.0)),
+                row_gap: Val::Px(14.0),
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(18.0)),
                 ..default()
             },
             // Translucent so the user can see live changes behind the menu.
@@ -395,7 +401,7 @@ pub fn update_settings_overlay(
         .with_children(|parent| {
             parent.spawn((
                 Text::new("Settings"),
-                TextFont::from_font_size(52.0),
+                TextFont::from_font_size(32.0),
                 TextColor(Color::WHITE),
             ));
 
@@ -441,7 +447,7 @@ fn spawn_tab_selector(parent: &mut ChildSpawnerCommands, active: SettingsTab) {
                 let selected = tab == active;
                 row.spawn((
                     Node {
-                        padding: UiRect::axes(Val::Px(20.0), Val::Px(8.0)),
+                        padding: UiRect::axes(Val::Px(18.0), Val::Px(6.0)),
                         border: UiRect::all(Val::Px(2.0)),
                         min_width: Val::Px(140.0),
                         justify_content: JustifyContent::Center,
@@ -457,7 +463,7 @@ fn spawn_tab_selector(parent: &mut ChildSpawnerCommands, active: SettingsTab) {
                 ))
                 .with_child((
                     Text::new(tab.label()),
-                    TextFont::from_font_size(20.0),
+                    TextFont::from_font_size(18.0),
                     TextColor(if selected {
                         Color::WHITE
                     } else {
@@ -476,36 +482,42 @@ fn spawn_settings_menu_column(
     rt_supported: bool,
     preset: GraphicsPreset,
 ) {
-    row.spawn((Node {
-        flex_direction: FlexDirection::Column,
-        align_items: AlignItems::Stretch,
-        row_gap: Val::Px(8.0),
-        min_width: Val::Px(420.0),
-        ..default()
-    },))
-        .with_children(|col| {
-            for (i, slot) in tab_slots(tab, settings).iter().enumerate() {
-                match slot {
-                    MenuSlot::Preset => spawn_preset_button(col, i, preset),
-                    MenuSlot::Param(id) => {
-                        let label = param_label(*id, settings, dlss_supported, rt_supported);
-                        spawn_toggle_button(col, i, label, SettingsToggleText(*id));
-                    }
-                    MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Stretch,
+            row_gap: Val::Px(4.0),
+            min_width: Val::Px(380.0),
+            max_height: Val::Vh(72.0),
+            overflow: Overflow::scroll_y(),
+            ..default()
+        },
+        ScrollPosition::default(),
+        SettingsMenuColumn,
+    ))
+    .with_children(|col| {
+        for (i, slot) in tab_slots(tab, settings).iter().enumerate() {
+            match slot {
+                MenuSlot::Preset => spawn_preset_button(col, i, preset),
+                MenuSlot::Param(id) => {
+                    let label = param_label(*id, settings, dlss_supported, rt_supported);
+                    spawn_toggle_button(col, i, label, SettingsToggleText(*id));
                 }
+                MenuSlot::Back => spawn_menu_button(col, i, "Back", Color::WHITE),
             }
-        });
+        }
+    });
 }
 
 fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: GraphicsPreset) {
     parent
         .spawn((
             Node {
-                padding: UiRect::axes(Val::Px(20.0), Val::Px(12.0)),
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(8.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 min_width: Val::Px(360.0),
                 justify_content: JustifyContent::Center,
-                margin: UiRect::bottom(Val::Px(8.0)),
+                margin: UiRect::bottom(Val::Px(4.0)),
                 ..default()
             },
             BackgroundColor(BTN_NORMAL),
@@ -514,7 +526,7 @@ fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: 
         ))
         .with_child((
             Text::new(format!("Preset: {}", preset.label())),
-            TextFont::from_font_size(22.0),
+            TextFont::from_font_size(20.0),
             TextColor(Color::srgb(0.95, 0.90, 0.55)),
             PresetText,
         ));
@@ -532,10 +544,10 @@ fn spawn_description_card(
         Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::FlexStart,
-            row_gap: Val::Px(10.0),
-            width: Val::Px(480.0),
-            min_height: Val::Px(420.0),
-            padding: UiRect::all(Val::Px(20.0)),
+            row_gap: Val::Px(8.0),
+            width: Val::Px(420.0),
+            min_height: Val::Px(340.0),
+            padding: UiRect::all(Val::Px(16.0)),
             border: UiRect::all(Val::Px(2.0)),
             ..default()
         },
@@ -547,26 +559,26 @@ fn spawn_description_card(
 
         card.spawn((
             Text::new(title),
-            TextFont::from_font_size(24.0),
+            TextFont::from_font_size(20.0),
             TextColor(Color::srgb(0.95, 0.95, 0.98)),
             DescField::Title,
         ));
         card.spawn((
             Text::new(functional),
-            TextFont::from_font_size(15.0),
+            TextFont::from_font_size(13.0),
             TextColor(Color::srgb(0.85, 0.88, 0.92)),
             DescField::Functional,
         ));
         card.spawn((
             Text::new(technical),
-            TextFont::from_font_size(15.0),
+            TextFont::from_font_size(13.0),
             TextColor(Color::srgb(0.70, 0.76, 0.85)),
             DescField::Technical,
         ));
 
         card.spawn((
             Node {
-                margin: UiRect::top(Val::Px(8.0)),
+                margin: UiRect::top(Val::Px(6.0)),
                 display: if impacts.is_some() {
                     Display::Flex
                 } else {
@@ -575,7 +587,7 @@ fn spawn_description_card(
                 ..default()
             },
             Text::new("Performance impact"),
-            TextFont::from_font_size(16.0),
+            TextFont::from_font_size(14.0),
             TextColor(Color::srgb(0.95, 0.95, 0.55)),
             DescField::ImpactHeading,
             ImpactRowNode,
@@ -611,7 +623,7 @@ fn spawn_impact_row(
     .with_children(|row| {
         row.spawn((
             Text::new(format!("{:<5}: ", label)),
-            TextFont::from_font_size(16.0),
+            TextFont::from_font_size(14.0),
             TextColor(Color::srgb(0.80, 0.82, 0.88)),
         ));
         let (value_text, color) = match impact {
@@ -620,7 +632,7 @@ fn spawn_impact_row(
         };
         row.spawn((
             Text::new(value_text),
-            TextFont::from_font_size(16.0),
+            TextFont::from_font_size(14.0),
             TextColor(color),
             field,
         ));
@@ -714,6 +726,61 @@ pub fn update_settings_description(
     }
 }
 
+/// Adjust the settings menu column's [`ScrollPosition`] so the currently
+/// focused [`MenuButton`] is fully visible. The column itself has a capped
+/// `max_height` + `Overflow::scroll_y`, so this is what makes D-pad navigation
+/// past the visible area actually scroll into view on small screens.
+pub fn scroll_focused_into_view(
+    state: Res<GameState>,
+    focus: Res<MenuFocus>,
+    tab: Res<SettingsTab>,
+    settings: Res<GameSettings>,
+    mut columns: Query<(&ComputedNode, &Children, &mut ScrollPosition), With<SettingsMenuColumn>>,
+    buttons: Query<(&ComputedNode, &MenuButton)>,
+) {
+    if *state != GameState::Settings {
+        return;
+    }
+    if !focus.is_changed() && !tab.is_changed() && !settings.is_changed() {
+        return;
+    }
+    let Ok((column_node, children, mut scroll)) = columns.single_mut() else {
+        return;
+    };
+    let viewport_height = column_node.size().y;
+    // Walk the column's direct children in order, accumulating heights to
+    // compute each button's top offset in the (unscrolled) content space.
+    // `row_gap` matches the column's `Node.row_gap` above.
+    let row_gap = 4.0_f32;
+    let mut y_offset = 0.0_f32;
+    let mut focused: Option<(f32, f32)> = None; // (top, height)
+    for child in children.iter() {
+        let Ok((child_node, btn)) = buttons.get(child) else {
+            continue;
+        };
+        let h = child_node.size().y;
+        if btn.0 == focus.index {
+            focused = Some((y_offset, h));
+            break;
+        }
+        y_offset += h + row_gap;
+    }
+    let Some((top, height)) = focused else {
+        return;
+    };
+    let bottom = top + height;
+    let mut s = scroll.y;
+    if top < s {
+        s = top;
+    } else if bottom > s + viewport_height {
+        s = bottom - viewport_height;
+    }
+    s = s.max(0.0);
+    if (scroll.y - s).abs() > f32::EPSILON {
+        scroll.y = s;
+    }
+}
+
 fn apply_impact(text: &mut Text, color: &mut TextColor, impact: Option<Impact>) {
     match impact {
         Some(i) => {
@@ -736,7 +803,7 @@ fn spawn_toggle_button<M: Component>(
     parent
         .spawn((
             Node {
-                padding: UiRect::axes(Val::Px(36.0), Val::Px(14.0)),
+                padding: UiRect::axes(Val::Px(28.0), Val::Px(8.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 min_width: Val::Px(360.0),
                 justify_content: JustifyContent::Center,
@@ -748,7 +815,7 @@ fn spawn_toggle_button<M: Component>(
         ))
         .with_child((
             Text::new(label),
-            TextFont::from_font_size(24.0),
+            TextFont::from_font_size(20.0),
             TextColor(Color::WHITE),
             marker,
         ));
@@ -781,7 +848,7 @@ pub fn update_pause_overlay(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(20.0),
+                row_gap: Val::Px(14.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
@@ -790,7 +857,7 @@ pub fn update_pause_overlay(
         .with_children(|parent| {
             parent.spawn((
                 Text::new("Pause"),
-                TextFont::from_font_size(56.0),
+                TextFont::from_font_size(40.0),
                 TextColor(Color::WHITE),
             ));
             spawn_menu_button(parent, 0, "Resume", Side::Left.color());
@@ -971,7 +1038,7 @@ pub fn update_endgame_overlay(
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
-                    row_gap: Val::Px(20.0),
+                    row_gap: Val::Px(14.0),
                     ..default()
                 },
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
@@ -980,7 +1047,7 @@ pub fn update_endgame_overlay(
             .with_children(|parent| {
                 parent.spawn((
                     Text::new(format!("Player {} wins", winner.label())),
-                    TextFont::from_font_size(54.0),
+                    TextFont::from_font_size(40.0),
                     TextColor(winner.color()),
                 ));
                 spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
@@ -1023,7 +1090,7 @@ pub fn update_sideselect_overlay(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(28.0),
+                row_gap: Val::Px(20.0),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.05, 0.06, 0.10, 0.65)),
@@ -1032,7 +1099,7 @@ pub fn update_sideselect_overlay(
         .with_children(|parent| {
             parent.spawn((
                 Text::new("Choose a side"),
-                TextFont::from_font_size(48.0),
+                TextFont::from_font_size(36.0),
                 TextColor(Color::WHITE),
             ));
             parent
@@ -1057,9 +1124,9 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
     parent
         .spawn((
             Node {
-                width: Val::Px(260.0),
-                height: Val::Px(180.0),
-                padding: UiRect::all(Val::Px(16.0)),
+                width: Val::Px(240.0),
+                height: Val::Px(160.0),
+                padding: UiRect::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(4.0)),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
@@ -1076,12 +1143,12 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, side: Side) {
                     Side::Left => "Left Player",
                     Side::Right => "Right Player",
                 }),
-                TextFont::from_font_size(26.0),
+                TextFont::from_font_size(22.0),
                 TextColor(side.color()),
             ));
             card.spawn((
                 Text::new("Available"),
-                TextFont::from_font_size(20.0),
+                TextFont::from_font_size(18.0),
                 TextColor(Color::srgb(0.85, 0.85, 0.9)),
                 SideCardStatus(side),
             ));
@@ -1092,7 +1159,7 @@ fn spawn_menu_button(parent: &mut ChildSpawnerCommands, index: usize, label: &st
     parent
         .spawn((
             Node {
-                padding: UiRect::axes(Val::Px(36.0), Val::Px(14.0)),
+                padding: UiRect::axes(Val::Px(32.0), Val::Px(10.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 min_width: Val::Px(220.0),
                 justify_content: JustifyContent::Center,
@@ -1104,7 +1171,7 @@ fn spawn_menu_button(parent: &mut ChildSpawnerCommands, index: usize, label: &st
         ))
         .with_child((
             Text::new(label),
-            TextFont::from_font_size(26.0),
+            TextFont::from_font_size(22.0),
             TextColor(Color::WHITE),
         ));
 }

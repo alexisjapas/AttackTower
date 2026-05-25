@@ -739,11 +739,7 @@ pub fn combat_tick(
                         // unit's facing rotation. side.forward() flips X and Z for
                         // the Right side (rotated by Y(PI)).
                         let start = pos
-                            + Vec3::new(
-                                side.forward() * 0.36,
-                                0.65,
-                                side.forward() * ARM_SPREAD_Z,
-                            );
+                            + Vec3::new(side.forward() * 0.36, 0.65, side.forward() * ARM_SPREAD_Z);
                         spawn_arrow(
                             &mut commands,
                             &lib,

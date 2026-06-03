@@ -32,6 +32,47 @@ pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
 /// while continuing to shoot (kiting). Cheap, gives the archer a tactical
 /// identity vs. soldiers.
 pub const ARCHER_KITE_RANGE: f32 = 2.5;
+/// The archer is rendered from a rigged glTF model (Meshy export) instead of
+/// the procedural capsule rig the soldier/miner use. The mesh/skeleton come from
+/// the Walking file's scene; each clip is loaded from its own one-animation file
+/// (Meshy scrambles the internal animation names, so the file path — not the
+/// name — is the source of truth). All files share the same rig, so the clips
+/// retarget onto the scene's skeleton.
+pub const ARCHER_SCENE_PATH: &str =
+    "models/irrhakur/irrhakur_archer_biped_Animation_Walking_withSkin.glb";
+pub const ARCHER_WALK_PATH: &str = ARCHER_SCENE_PATH;
+pub const ARCHER_SHOT_PATH: &str =
+    "models/irrhakur/irrhakur_archer_biped_Animation_Archery_Shot_withSkin.glb";
+pub const ARCHER_HURT_PATHS: [&str; 2] = [
+    "models/irrhakur/irrhakur_archer_biped_Animation_Face_Punch_Reaction_withSkin.glb",
+    "models/irrhakur/irrhakur_archer_biped_Animation_Slap_Reaction_withSkin.glb",
+];
+pub const ARCHER_DEATH_PATH: &str =
+    "models/irrhakur/irrhakur_archer_biped_Animation_Shot_in_the_Back_and_Fall_withSkin.glb";
+/// The glTF already bakes the Mixamo cm→m 0.01 at its Armature root, so the
+/// scene instances ~1.8 units tall on its own. This extra factor brings the
+/// archer down to roughly the procedural units' height (~1.3 world units).
+pub const ARCHER_MODEL_SCALE: f32 = 0.7;
+/// The model faces +Z in its own space; the game's forward is +X. This yaw on
+/// the SceneRoot child maps model-forward onto the unit's facing direction.
+pub const ARCHER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+/// The archer plays a full "shot in the back and fall" clip on death, longer
+/// than the generic `DEATH_DURATION`; hold the corpse until it lands.
+pub const ARCHER_DEATH_DURATION: f32 = 1.8;
+/// How fast (rad/s) the archer pivots toward its target before shooting (and
+/// back toward the advance direction when it departs). The `Idle_Turn_*` clips
+/// play while this rotation is in progress.
+pub const ARCHER_TURN_SPEED: f32 = 6.0;
+/// Below this facing error (rad) the archer is considered aimed: it stops
+/// turning and may shoot / walk.
+pub const ARCHER_TURN_EPS: f32 = 0.06;
+/// How long (s) the archer keeps playing the shot animation after its target
+/// briefly leaves range, so the pose doesn't flicker to idle between volleys.
+pub const ARCHER_ATTACK_HOLD: f32 = 0.6;
+/// Where arrows leave the archer, in its own oriented frame (X = forward toward
+/// the target, Y = up, Z = lateral): roughly the bow hand at chest height,
+/// rather than the body centre.
+pub const ARCHER_HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.95, 0.2);
 
 // Tower
 pub const TOWER_HP: i32 = 30;
@@ -460,6 +501,11 @@ pub struct UnitAnim {
     pub hurt_t: f32,
     pub dying: bool,
     pub death_t: f32,
+    /// Desired entity yaw (rotation around Y) for the archer, set by
+    /// `combat_tick` (toward the target when shooting, toward the advance
+    /// direction otherwise). `animate_archer` smoothly rotates to it and plays
+    /// the `Idle_Turn_*` clips while turning. Unused by procedural units.
+    pub face_yaw: f32,
     /// Last observed `Health.current`. Lets `process_damage_effects` flash
     /// only when HP actually drops (a heal that leaves current<max should
     /// not look like a hit).
@@ -473,6 +519,69 @@ pub struct UnitRig {
     pub leg_right: Entity,
     pub arm_left: Entity,
     pub arm_right: Entity,
+}
+
+/// Marker on the root of an archer rendered from the glTF model. Such units
+/// carry no `UnitRig` (so `animate_units` skips them) and are driven instead by
+/// `animate_archer` through a descendant `AnimationPlayer`.
+#[derive(Component)]
+pub struct ArcherModel;
+
+/// Which logical clip an archer is currently playing. Lets `animate_archer`
+/// avoid re-issuing `play` every frame.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArcherClip {
+    #[default]
+    None,
+    Idle,
+    Walk,
+    Attack,
+    Hurt,
+    Death,
+}
+
+/// Per-archer animation bookkeeping: the descendant `AnimationPlayer` entity
+/// (instanced asynchronously with the scene) plus the small state machine that
+/// `animate_archer` runs off `UnitAnim`.
+#[derive(Component, Default)]
+pub struct ArcherAnimState {
+    pub player: Option<Entity>,
+    pub current: ArcherClip,
+    pub hurt_index: usize,
+    pub oneshot_active: bool,
+    /// Previous-frame `UnitAnim.hurt_t`, to detect a fresh hit (rising edge).
+    pub last_hurt_t: f32,
+    /// Countdown that keeps the shot animation playing through brief target
+    /// losses (see `ARCHER_ATTACK_HOLD`).
+    pub attack_hold: f32,
+}
+
+/// Indices (and precomputed playback speeds) of the archer's clips inside its
+/// shared `AnimationGraph`.
+#[derive(Clone, Copy)]
+pub struct ArcherAnimNodes {
+    pub walk: AnimationNodeIndex,
+    pub attack: AnimationNodeIndex,
+    pub hurts: [AnimationNodeIndex; 2],
+    pub death: AnimationNodeIndex,
+    /// Speed that makes one loop of the shot clip last `ARCHER_COOLDOWN`.
+    pub attack_speed: f32,
+    /// Speed that makes the fall clip finish within `ARCHER_DEATH_DURATION`.
+    pub death_speed: f32,
+}
+
+/// Handles for the shared archer model: the scene (mesh + skeleton) plus one
+/// `AnimationClip` per action loaded from its own file. `graph`/`nodes` stay
+/// `None` until `build_archer_graph` has seen all clips finish loading.
+#[derive(Resource, Default)]
+pub struct ArcherAssets {
+    pub scene: Handle<Scene>,
+    pub walk: Handle<AnimationClip>,
+    pub attack: Handle<AnimationClip>,
+    pub hurts: [Handle<AnimationClip>; 2],
+    pub death: Handle<AnimationClip>,
+    pub graph: Option<Handle<AnimationGraph>>,
+    pub nodes: Option<ArcherAnimNodes>,
 }
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]

@@ -87,9 +87,17 @@ fn main() {
         .init_resource::<DlssAvailable>()
         .init_resource::<GameTime>()
         .init_resource::<GameMode>()
+        .init_resource::<ArcherAssets>()
         .add_systems(
             Startup,
-            (init_mat_library, setup_world, setup_ui, setup_music).chain(),
+            (
+                init_mat_library,
+                setup_world,
+                setup_ui,
+                setup_music,
+                load_archer_assets,
+            )
+                .chain(),
         )
         .configure_sets(
             Update,
@@ -127,10 +135,12 @@ fn main() {
                 animate_sun,
                 spawn_arena,
                 spawn_initial_miners,
+                build_archer_graph,
+                bind_archer_animation_player,
                 (
                     (combat_tick, tower_attack_tick, arrow_flight_system),
                     process_damage_effects,
-                    animate_units,
+                    (animate_units, animate_archer),
                     (cleanup_dead_units, cleanup_dead_towers),
                 )
                     .chain(),

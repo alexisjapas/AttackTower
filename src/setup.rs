@@ -191,6 +191,75 @@ pub fn init_mat_library(
     lib.rock_small = meshes.add(Sphere::new(0.36));
 }
 
+/// Startup: kick off the async load of the archer scene (mesh + skeleton, from
+/// the Walking file) and one `AnimationClip` per action, each from its own
+/// single-animation file. The scene is instanced per-archer in `spawn_unit`; the
+/// animation graph is built once the clips decode (see `build_archer_graph`).
+pub fn load_archer_assets(asset_server: Res<AssetServer>, mut assets: ResMut<ArcherAssets>) {
+    let clip =
+        |path: &'static str| asset_server.load(GltfAssetLabel::Animation(0).from_asset(path));
+    assets.scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset(ARCHER_SCENE_PATH));
+    assets.walk = clip(ARCHER_WALK_PATH);
+    assets.attack = clip(ARCHER_SHOT_PATH);
+    assets.hurts = [clip(ARCHER_HURT_PATHS[0]), clip(ARCHER_HURT_PATHS[1])];
+    assets.death = clip(ARCHER_DEATH_PATH);
+}
+
+/// Update: once every archer clip has decoded, build the `AnimationGraph` and
+/// cache the node indices. Waits for the clips so the playback speeds can be
+/// derived from their real durations. Runs each frame until built, then no-ops.
+pub fn build_archer_graph(
+    mut assets: ResMut<ArcherAssets>,
+    clips: Res<Assets<AnimationClip>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    if assets.nodes.is_some() {
+        return;
+    }
+    // Bail (retry next frame) until all clips are loaded.
+    let handles = [
+        &assets.walk,
+        &assets.attack,
+        &assets.hurts[0],
+        &assets.hurts[1],
+        &assets.death,
+    ];
+    if handles.iter().any(|h| clips.get(*h).is_none()) {
+        return;
+    }
+
+    let mut graph = AnimationGraph::new();
+    let root = graph.root;
+    let walk = graph.add_clip(assets.walk.clone(), 1.0, root);
+    let attack = graph.add_clip(assets.attack.clone(), 1.0, root);
+    let hurts = [
+        graph.add_clip(assets.hurts[0].clone(), 1.0, root),
+        graph.add_clip(assets.hurts[1].clone(), 1.0, root),
+    ];
+    let death = graph.add_clip(assets.death.clone(), 1.0, root);
+
+    // Match clip playback to gameplay timing: one shot loop per cooldown, and
+    // the fall finishing within the archer's death window.
+    let speed_for = |h: &Handle<AnimationClip>, target: f32| {
+        clips
+            .get(h)
+            .map(|c| (c.duration() / target).max(0.01))
+            .unwrap_or(1.0)
+    };
+    let attack_speed = speed_for(&assets.attack, ARCHER_COOLDOWN);
+    let death_speed = speed_for(&assets.death, ARCHER_DEATH_DURATION);
+
+    assets.graph = Some(graphs.add(graph));
+    assets.nodes = Some(ArcherAnimNodes {
+        walk,
+        attack,
+        hurts,
+        death,
+        attack_speed,
+        death_speed,
+    });
+}
+
 pub fn setup_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,

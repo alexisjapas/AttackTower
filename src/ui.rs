@@ -1844,6 +1844,7 @@ pub fn gameplay_input_system(
     lib: Res<MatLibrary>,
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
+    archer_assets: Res<ArcherAssets>,
     mut focuses: Query<(Entity, &mut PlayerFocus)>,
     gamepads: Query<&Gamepad>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
@@ -1925,7 +1926,14 @@ pub fn gameplay_input_system(
                         .iter()
                         .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Archer)
                         .count();
-                    spawn_archer(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
+                    spawn_archer(
+                        &mut commands,
+                        &lib,
+                        &archer_assets,
+                        focus.slot,
+                        *mode,
+                        count % LANE_COUNT,
+                    );
                 }
                 3 => {
                     let miner_count = units

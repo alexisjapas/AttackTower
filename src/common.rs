@@ -39,16 +39,16 @@ pub const ARCHER_KITE_RANGE: f32 = 2.5;
 /// name — is the source of truth). All files share the same rig, so the clips
 /// retarget onto the scene's skeleton.
 pub const ARCHER_SCENE_PATH: &str =
-    "models/irrhakur/irrhakur_archer_biped_Animation_Walking_withSkin.glb";
+    "models/adamar/characters/adamar_archer_biped_Animation_Walking_withSkin.glb";
 pub const ARCHER_WALK_PATH: &str = ARCHER_SCENE_PATH;
 pub const ARCHER_SHOT_PATH: &str =
-    "models/irrhakur/irrhakur_archer_biped_Animation_Archery_Shot_withSkin.glb";
+    "models/adamar/characters/adamar_archer_biped_Animation_Archery_Shot_withSkin.glb";
 pub const ARCHER_HURT_PATHS: [&str; 2] = [
-    "models/irrhakur/irrhakur_archer_biped_Animation_Face_Punch_Reaction_withSkin.glb",
-    "models/irrhakur/irrhakur_archer_biped_Animation_Slap_Reaction_withSkin.glb",
+    "models/adamar/characters/adamar_archer_biped_Animation_Face_Punch_Reaction_withSkin.glb",
+    "models/adamar/characters/adamar_archer_biped_Animation_Slap_Reaction_withSkin.glb",
 ];
 pub const ARCHER_DEATH_PATH: &str =
-    "models/irrhakur/irrhakur_archer_biped_Animation_Shot_in_the_Back_and_Fall_withSkin.glb";
+    "models/adamar/characters/adamar_archer_biped_Animation_Shot_in_the_Back_and_Fall_withSkin.glb";
 /// The glTF already bakes the Mixamo cm→m 0.01 at its Armature root, so the
 /// scene instances ~1.8 units tall on its own. This extra factor brings the
 /// archer down to roughly the procedural units' height (~1.3 world units).
@@ -88,6 +88,12 @@ pub const ARCHER_BOW_HAND_BONE: &str = "LeftHand";
 /// at `ARCHER_MODEL_YAW_OFFSET`). Negative Z = the model's left side, where the
 /// bow hand is; matches `ARCHER_SHOT_YAW_OFFSET`.
 pub const ARCHER_HAND_OFFSET: Vec3 = Vec3::new(0.3, 0.95, -0.35);
+/// Path of the bow mesh attached to the archer's left hand.
+pub const ARCHER_BOW_PATH: &str = "models/adamar/weapons/adamar_bow.glb";
+/// Local transform applied to the bow scene once parented to the `LeftHand` bone.
+/// Tune these if the bow sits slightly off once the real rig is visible.
+pub const ARCHER_BOW_SCALE: f32 = 1.0;
+pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
 
 // Tower
 pub const TOWER_HP: i32 = 30;
@@ -699,7 +705,12 @@ pub struct ArcherAssets {
     pub death: Handle<AnimationClip>,
     pub graph: Option<Handle<AnimationGraph>>,
     pub nodes: Option<ArcherAnimNodes>,
+    pub bow: Handle<Scene>,
 }
+
+/// Marker on the bow scene entity parented to the archer's `LeftHand` bone.
+#[derive(Component)]
+pub struct ArcherBow;
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {

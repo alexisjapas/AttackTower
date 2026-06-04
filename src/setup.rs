@@ -203,6 +203,7 @@ pub fn load_archer_assets(asset_server: Res<AssetServer>, mut assets: ResMut<Arc
     assets.attack = clip(ARCHER_SHOT_PATH);
     assets.hurts = [clip(ARCHER_HURT_PATHS[0]), clip(ARCHER_HURT_PATHS[1])];
     assets.death = clip(ARCHER_DEATH_PATH);
+    assets.bow = asset_server.load(GltfAssetLabel::Scene(0).from_asset(ARCHER_BOW_PATH));
 }
 
 /// Update: once every archer clip has decoded, build the `AnimationGraph` and

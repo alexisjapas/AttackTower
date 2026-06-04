@@ -1220,9 +1220,11 @@ pub fn bind_archer_animation_player(
 /// appears, walk up to the owning archer root and record it so `animate_archer`
 /// can read its world position as the arrow's muzzle.
 pub fn bind_archer_bow_hand(
+    mut commands: Commands,
     bones: Query<(Entity, &Name), Added<Name>>,
     parents: Query<&ChildOf>,
     mut archers: Query<&mut ArcherAnimState, With<ArcherModel>>,
+    assets: Res<ArcherAssets>,
 ) {
     for (bone, name) in &bones {
         if name.as_str() != ARCHER_BOW_HAND_BONE {
@@ -1241,6 +1243,12 @@ pub fn bind_archer_bow_hand(
         let Some(owner) = owner else { continue };
         if let Ok(mut state) = archers.get_mut(owner) {
             state.left_hand = Some(bone);
+            commands.entity(bone).with_child((
+                SceneRoot(assets.bow.clone()),
+                Transform::from_translation(ARCHER_BOW_OFFSET)
+                    .with_scale(Vec3::splat(ARCHER_BOW_SCALE)),
+                ArcherBow,
+            ));
         }
     }
 }

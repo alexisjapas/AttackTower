@@ -113,8 +113,21 @@ pub struct SideSelectOverlay;
 #[derive(Component, Clone, Copy)]
 pub struct SideCard(pub PlayerSlot);
 
+/// Which text line of a SideSelect card this entity is. One component type for
+/// all three lines so `update_sideselect_cards` can drive them from a single
+/// `Query<&mut Text>` without `&mut Text` aliasing across markers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CardLine {
+    Controller,
+    Status,
+    Nation,
+}
+
 #[derive(Component, Clone, Copy)]
-pub struct SideCardStatus(pub PlayerSlot);
+pub struct SideCardLine {
+    pub slot: PlayerSlot,
+    pub line: CardLine,
+}
 
 #[derive(Component, Clone, Copy)]
 pub struct MenuButton(pub usize);
@@ -1015,12 +1028,9 @@ pub fn pause_input_system(
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
-    bases: Query<Entity, With<Base>>,
-    rocks: Query<Entity, With<Rock>>,
-    units: Query<Entity, With<Unit>>,
-    arrows: Query<Entity, With<Arrow>>,
-    towers: Query<Entity, With<Tower>>,
-    ghosts: Query<Entity, With<TowerGhost>>,
+    mut gtime: ResMut<GameTime>,
+    mut tod: ResMut<TimeOfDay>,
+    battlefield: Query<Entity, BattlefieldEntity>,
     gamepads: Query<&Gamepad>,
 ) {
     if *state != GameState::Paused {
@@ -1076,15 +1086,12 @@ pub fn pause_input_system(
             2 => {
                 reset_match(
                     &mut commands,
-                    &bases,
-                    &rocks,
-                    &units,
-                    &arrows,
-                    &towers,
-                    &ghosts,
+                    &battlefield,
                     &mut gold,
                     &mut placement,
                     &mut players,
+                    &mut gtime,
+                    &mut tod,
                 );
                 *state = GameState::Menu;
             }
@@ -1093,44 +1100,42 @@ pub fn pause_input_system(
     }
 }
 
-/// Wipe a finished/abandoned match: despawn every battlefield entity (bases
-/// and rocks included, since GameMode may change before the next match), and
-/// reset gold, placement and player→pad mapping. The arena is rebuilt by
-/// `spawn_arena` on the next `Playing` transition. Used by both the pause
-/// "Main menu" action and the endgame "Main menu" action.
+/// Query filter for everything that belongs to a live match and must be wiped
+/// on reset (bases and rocks included, since GameMode may change before the next
+/// match). Bundled into one filter so the reset systems stay under Bevy's
+/// system-parameter count limit.
+type BattlefieldEntity = Or<(
+    With<Base>,
+    With<Rock>,
+    With<Unit>,
+    With<Arrow>,
+    With<Tower>,
+    With<TowerGhost>,
+)>;
+
+/// Wipe a finished/abandoned match: despawn every battlefield entity, and reset
+/// gold, placement, player→pad mapping and the day/night clock. The arena is
+/// rebuilt by `spawn_arena` on the next `Playing` transition. Used by both the
+/// pause "Main menu" action and the endgame "Main menu" action.
 fn reset_match(
     commands: &mut Commands,
-    bases: &Query<Entity, With<Base>>,
-    rocks: &Query<Entity, With<Rock>>,
-    units: &Query<Entity, With<Unit>>,
-    arrows: &Query<Entity, With<Arrow>>,
-    towers: &Query<Entity, With<Tower>>,
-    ghosts: &Query<Entity, With<TowerGhost>>,
+    battlefield: &Query<Entity, BattlefieldEntity>,
     gold: &mut Gold,
     placement: &mut PlacementMode,
     players: &mut PlayerControllers,
+    gtime: &mut GameTime,
+    tod: &mut TimeOfDay,
 ) {
-    for e in units {
-        commands.entity(e).despawn();
-    }
-    for e in arrows {
-        commands.entity(e).despawn();
-    }
-    for e in towers {
-        commands.entity(e).despawn();
-    }
-    for e in ghosts {
-        commands.entity(e).despawn();
-    }
-    for e in bases {
-        commands.entity(e).despawn();
-    }
-    for e in rocks {
+    for e in battlefield {
         commands.entity(e).despawn();
     }
     *gold = Gold::default();
     *placement = PlacementMode::default();
     *players = PlayerControllers::default();
+    // Restart the day/night clock so the new match opens at the same morning,
+    // not wherever the abandoned one left off.
+    *gtime = GameTime::default();
+    *tod = TimeOfDay::default();
 }
 
 pub fn update_settings_toggle_texts(
@@ -1287,7 +1292,7 @@ pub fn update_sideselect_overlay(
                     });
             }
             parent.spawn((
-                Text::new("D-pad: choose   A: confirm   B: cancel   Start: launch"),
+                Text::new("D-pad: choose seat / nation   A: confirm   B: back   Start: launch"),
                 TextFont::from_font_size(16.0),
                 TextColor(Color::srgb(0.75, 0.75, 0.8)),
             ));
@@ -1304,8 +1309,8 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
     parent
         .spawn((
             Node {
-                width: Val::Px(220.0),
-                height: Val::Px(140.0),
+                width: Val::Px(230.0),
+                height: Val::Px(176.0),
                 padding: UiRect::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(4.0)),
                 flex_direction: FlexDirection::Column,
@@ -1323,11 +1328,34 @@ fn spawn_side_card(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
                 TextFont::from_font_size(22.0),
                 TextColor(slot.side().color()),
             ));
+            // Controller name (item: show which pad holds the seat).
+            card.spawn((
+                Text::new("—"),
+                TextFont::from_font_size(15.0),
+                TextColor(Color::srgb(0.65, 0.65, 0.72)),
+                SideCardLine {
+                    slot,
+                    line: CardLine::Controller,
+                },
+            ));
             card.spawn((
                 Text::new("Available"),
                 TextFont::from_font_size(18.0),
                 TextColor(Color::srgb(0.85, 0.85, 0.9)),
-                SideCardStatus(slot),
+                SideCardLine {
+                    slot,
+                    line: CardLine::Status,
+                },
+            ));
+            // Nation choice (shown once the seat is claimed).
+            card.spawn((
+                Text::new("—"),
+                TextFont::from_font_size(17.0),
+                TextColor(Color::srgb(0.8, 0.8, 0.85)),
+                SideCardLine {
+                    slot,
+                    line: CardLine::Nation,
+                },
             ));
         });
 }
@@ -1442,41 +1470,110 @@ pub fn apply_player_focus_visual(
     }
 }
 
+/// Trim a gamepad's reported name so it fits inside a card.
+fn pad_short_name(name: &str) -> String {
+    const MAX: usize = 18;
+    if name.chars().count() > MAX {
+        let head: String = name.chars().take(MAX - 1).collect();
+        format!("{head}…")
+    } else {
+        name.to_string()
+    }
+}
+
 pub fn update_sideselect_cards(
     state: Res<GameState>,
-    seats: Query<&SeatSelection>,
-    mut texts: Query<(&SideCardStatus, &mut Text, &mut TextColor)>,
+    seats: Query<(&SeatSelection, Option<&Name>)>,
+    mut texts: Query<(&SideCardLine, &mut Text, &mut TextColor)>,
     mut cards: Query<(&SideCard, &mut BackgroundColor, &mut BorderColor)>,
 ) {
     if *state != GameState::SideSelect {
         return;
     }
-    for (tag, mut text, mut color) in &mut texts {
-        let confirmed = seats.iter().any(|s| s.confirmed && s.hovered == tag.0);
-        let hovered = seats
-            .iter()
-            .filter(|s| !s.confirmed && s.hovered == tag.0)
-            .count();
-        if confirmed {
-            text.0 = "Locked in".to_string();
-            color.0 = tag.0.side().color();
-        } else if hovered > 0 {
-            text.0 = format!("Selected ({})", hovered);
-            color.0 = Color::WHITE;
+
+    // Aggregate per slot: who claimed it (at most one), and who is just hovering.
+    let mut claimant: [Option<(SeatPhase, usize, Option<String>)>; 4] = Default::default();
+    let mut hover_count: [usize; 4] = [0; 4];
+    let mut hover_name: [Option<String>; 4] = Default::default();
+    for (sel, name) in &seats {
+        let i = sel.hovered.index();
+        let nm = name.map(|n| pad_short_name(n.as_str()));
+        if sel.claims_seat() {
+            claimant[i] = Some((sel.phase, sel.nation, nm));
         } else {
-            text.0 = "Available".to_string();
-            color.0 = Color::srgb(0.7, 0.7, 0.75);
+            if hover_count[i] == 0 {
+                hover_name[i] = nm;
+            }
+            hover_count[i] += 1;
         }
     }
+
+    let dim = Color::srgb(0.5, 0.5, 0.56);
+    let n_nations = Nation::ALL.len();
+
+    for (line, mut text, mut color) in &mut texts {
+        let i = line.slot.index();
+        let side_color = line.slot.side().color();
+        match line.line {
+            CardLine::Status => match &claimant[i] {
+                Some((SeatPhase::Locked, _, _)) => {
+                    text.0 = "Locked in".to_string();
+                    color.0 = side_color;
+                }
+                Some((SeatPhase::PickingNation, _, _)) => {
+                    text.0 = "Choosing nation".to_string();
+                    color.0 = Color::WHITE;
+                }
+                _ if hover_count[i] > 0 => {
+                    text.0 = format!("Selected ({})", hover_count[i]);
+                    color.0 = Color::WHITE;
+                }
+                _ => {
+                    text.0 = "Available".to_string();
+                    color.0 = Color::srgb(0.7, 0.7, 0.75);
+                }
+            },
+            CardLine::Controller => {
+                if let Some((_, _, name)) = &claimant[i] {
+                    text.0 = name.clone().unwrap_or_else(|| "Controller".to_string());
+                    color.0 = Color::srgb(0.85, 0.85, 0.9);
+                } else if hover_count[i] == 1 {
+                    text.0 = hover_name[i]
+                        .clone()
+                        .unwrap_or_else(|| "Controller".to_string());
+                    color.0 = Color::srgb(0.7, 0.7, 0.78);
+                } else if hover_count[i] > 1 {
+                    text.0 = format!("{} controllers", hover_count[i]);
+                    color.0 = Color::srgb(0.7, 0.7, 0.78);
+                } else {
+                    text.0 = "—".to_string();
+                    color.0 = dim;
+                }
+            }
+            CardLine::Nation => match &claimant[i] {
+                Some((phase, nation, _)) => {
+                    let n = Nation::ALL[nation % n_nations];
+                    text.0 = format!("▸ {}", n.label());
+                    color.0 = if *phase == SeatPhase::Locked {
+                        side_color
+                    } else {
+                        Color::WHITE
+                    };
+                }
+                None => {
+                    text.0 = "—".to_string();
+                    color.0 = dim;
+                }
+            },
+        }
+    }
+
     for (card, mut bg, mut border) in &mut cards {
-        let confirmed = seats.iter().any(|s| s.confirmed && s.hovered == card.0);
-        let hovered = seats.iter().any(|s| !s.confirmed && s.hovered == card.0);
-        bg.0 = if confirmed || hovered {
-            CARD_HOVERED
-        } else {
-            CARD_NORMAL
-        };
-        let border_color = if confirmed {
+        let i = card.0.index();
+        let locked = matches!(claimant[i], Some((SeatPhase::Locked, _, _)));
+        let occupied = claimant[i].is_some() || hover_count[i] > 0;
+        bg.0 = if occupied { CARD_HOVERED } else { CARD_NORMAL };
+        let border_color = if locked {
             Color::WHITE
         } else {
             card.0.side().color()
@@ -1560,12 +1657,9 @@ pub fn menu_input_system(
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
-    bases: Query<Entity, With<Base>>,
-    rocks: Query<Entity, With<Rock>>,
-    units: Query<Entity, With<Unit>>,
-    arrows: Query<Entity, With<Arrow>>,
-    towers: Query<Entity, With<Tower>>,
-    ghosts: Query<Entity, With<TowerGhost>>,
+    mut gtime: ResMut<GameTime>,
+    mut tod: ResMut<TimeOfDay>,
+    battlefield: Query<Entity, BattlefieldEntity>,
     mut exit: MessageWriter<AppExit>,
     gamepads: Query<&Gamepad>,
 ) {
@@ -1632,15 +1726,12 @@ pub fn menu_input_system(
     } else if in_endgame {
         reset_match(
             &mut commands,
-            &bases,
-            &rocks,
-            &units,
-            &arrows,
-            &towers,
-            &ghosts,
+            &battlefield,
             &mut gold,
             &mut placement,
             &mut players,
+            &mut gtime,
+            &mut tod,
         );
         *state = GameState::Menu;
     }
@@ -1651,6 +1742,7 @@ pub fn sideselect_input_system(
     mut state: ResMut<GameState>,
     mode: Res<GameMode>,
     mut players: ResMut<PlayerControllers>,
+    mut nations: ResMut<PlayerNations>,
     mut seats: Query<(Entity, &Gamepad, Option<&mut SeatSelection>)>,
 ) {
     if *state != GameState::SideSelect {
@@ -1661,14 +1753,16 @@ pub fn sideselect_input_system(
     }
 
     let two_v_two = *mode == GameMode::TwoVsTwo;
+    let nation_count = Nation::ALL.len();
 
-    // Snapshot per-slot confirmations so we can reject same-frame conflicts.
-    let mut confirmed: [Option<Entity>; 4] = [None; 4];
+    // Snapshot which slots are *claimed* (a pad past seat selection) so others
+    // can't hover/take them; reject same-frame conflicts.
+    let mut claimed: [Option<Entity>; 4] = [None; 4];
     for (e, _, s) in seats.iter() {
         if let Some(sel) = s
-            && sel.confirmed
+            && sel.claims_seat()
         {
-            confirmed[sel.hovered.index()] = Some(e);
+            claimed[sel.hovered.index()] = Some(e);
         }
     }
 
@@ -1681,7 +1775,7 @@ pub fn sideselect_input_system(
 
         let locked_by_other = |pad: Entity| {
             let mut out = [false; 4];
-            for (i, e) in confirmed.iter().enumerate() {
+            for (i, e) in claimed.iter().enumerate() {
                 if let Some(owner) = e
                     && *owner != pad
                 {
@@ -1712,50 +1806,96 @@ pub fn sideselect_input_system(
                     };
                     commands.entity(pad_entity).insert(SeatSelection {
                         hovered,
-                        confirmed: false,
+                        phase: SeatPhase::PickingSeat,
+                        nation: 0,
                     });
                 }
             }
-            Some(mut seat) => {
-                if seat.confirmed {
+            Some(mut seat) => match seat.phase {
+                SeatPhase::PickingSeat => {
+                    let locked = locked_by_other(pad_entity);
+                    if pad.just_pressed(GamepadButton::DPadLeft) {
+                        seat.hovered = move_seat(seat.hovered, SeatNav::Left, two_v_two, locked);
+                    }
+                    if pad.just_pressed(GamepadButton::DPadRight) {
+                        seat.hovered = move_seat(seat.hovered, SeatNav::Right, two_v_two, locked);
+                    }
+                    if two_v_two {
+                        if pad.just_pressed(GamepadButton::DPadUp) {
+                            seat.hovered = move_seat(seat.hovered, SeatNav::Up, two_v_two, locked);
+                        }
+                        if pad.just_pressed(GamepadButton::DPadDown) {
+                            seat.hovered =
+                                move_seat(seat.hovered, SeatNav::Down, two_v_two, locked);
+                        }
+                    }
+                    // Claim the seat and advance to nation pick (unless someone
+                    // else grabbed it this frame).
+                    if pad.just_pressed(GamepadButton::South) {
+                        let taken = claimed[seat.hovered.index()].is_some_and(|e| e != pad_entity);
+                        if !taken {
+                            seat.phase = SeatPhase::PickingNation;
+                        }
+                    }
+                    // Back out of the screen entirely.
                     if pad.just_pressed(GamepadButton::East) {
-                        seat.confirmed = false;
-                    }
-                    continue;
-                }
-                let locked = locked_by_other(pad_entity);
-                if pad.just_pressed(GamepadButton::DPadLeft) {
-                    seat.hovered = move_seat(seat.hovered, SeatNav::Left, two_v_two, locked);
-                }
-                if pad.just_pressed(GamepadButton::DPadRight) {
-                    seat.hovered = move_seat(seat.hovered, SeatNav::Right, two_v_two, locked);
-                }
-                if two_v_two {
-                    if pad.just_pressed(GamepadButton::DPadUp) {
-                        seat.hovered = move_seat(seat.hovered, SeatNav::Up, two_v_two, locked);
-                    }
-                    if pad.just_pressed(GamepadButton::DPadDown) {
-                        seat.hovered = move_seat(seat.hovered, SeatNav::Down, two_v_two, locked);
+                        commands.entity(pad_entity).remove::<SeatSelection>();
                     }
                 }
-                if pad.just_pressed(GamepadButton::South) {
-                    let already_taken =
-                        confirmed[seat.hovered.index()].is_some_and(|e| e != pad_entity);
-                    if !already_taken {
-                        seat.confirmed = true;
+                SeatPhase::PickingNation => {
+                    if pad.just_pressed(GamepadButton::DPadLeft) {
+                        seat.nation = (seat.nation + nation_count - 1) % nation_count;
+                    }
+                    if pad.just_pressed(GamepadButton::DPadRight) {
+                        seat.nation = (seat.nation + 1) % nation_count;
+                    }
+                    if pad.just_pressed(GamepadButton::South) {
+                        seat.phase = SeatPhase::Locked;
+                    }
+                    // Release the seat, back to choosing position.
+                    if pad.just_pressed(GamepadButton::East) {
+                        seat.phase = SeatPhase::PickingSeat;
                     }
                 }
-            }
+                SeatPhase::Locked => {
+                    // Reopen the nation choice.
+                    if pad.just_pressed(GamepadButton::East) {
+                        seat.phase = SeatPhase::PickingNation;
+                    }
+                }
+            },
         }
     }
 
-    if start_pressed && confirmed.iter().any(|c| c.is_some()) {
-        let mut next = PlayerControllers::default();
-        for &slot in &PlayerSlot::ALL {
-            next.set(slot, confirmed[slot.index()]);
+    // Launch once at least one pad is fully locked and none is still mid nation
+    // pick (so every joined-and-committed player has a nation).
+    if start_pressed {
+        let mut locked_ctrl: [Option<Entity>; 4] = [None; 4];
+        let mut locked_nat: [usize; 4] = [0; 4];
+        let mut locked_any = false;
+        let mut mid_nation = false;
+        for (e, _, s) in seats.iter() {
+            match s.map(|sel| (sel.phase, sel.hovered, sel.nation)) {
+                Some((SeatPhase::Locked, slot, nation)) => {
+                    locked_ctrl[slot.index()] = Some(e);
+                    locked_nat[slot.index()] = nation;
+                    locked_any = true;
+                }
+                Some((SeatPhase::PickingNation, _, _)) => mid_nation = true,
+                _ => {}
+            }
         }
-        *players = next;
-        *state = GameState::Playing;
+        if locked_any && !mid_nation {
+            let mut next_controllers = PlayerControllers::default();
+            let mut next_nations = PlayerNations::default();
+            for &slot in &PlayerSlot::ALL {
+                next_controllers.set(slot, locked_ctrl[slot.index()]);
+                next_nations.set(slot, Nation::ALL[locked_nat[slot.index()] % nation_count]);
+            }
+            *players = next_controllers;
+            *nations = next_nations;
+            *state = GameState::Playing;
+        }
     }
 }
 

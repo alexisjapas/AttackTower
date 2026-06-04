@@ -36,6 +36,9 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 | Archer  | 7  | 2      | 3    | 1.5   | 1.7 s    | 8.0   |
 | Miner   | 8  | 0      | 4    | 1.4   | mining 1.1 s | — |
 
+- Soldier and miner share a **procedural** body+head+limbs rig animated by transforms.
+- The archer is a **rigged glTF model** (Meshy export) with skinned animations (walk, shot, two hurt reactions, death-and-fall). It pivots to aim, releases the arrow partway through the shot clip (at the loose, not the end), and the arrow leaves from its bow (left) hand.
+
 ### Towers
 - **30 HP**, **3 damage**, **6 gold**, range **8.5**, cooldown **1.5 s**.
 - Placed inside the player's own zone (terrain is split into three strips by `ZONE_BOUNDARY`; the Z extent of the zone adapts to `GameMode`). A ghost preview at the cursor turns green on a legal spot, red otherwise.
@@ -53,9 +56,11 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 
 ### Camera & map
 - Horizontal map, bases aligned on the left/right axis.
-- **Fixed** 3/4 camera, ~45° above ground, framed to fit both bases.
+- **Fixed** 3/4 camera at a shallow (~13°) downward angle, set below the mountain ridge height so the peaks rise above the eye-level horizon and are silhouetted against the sky (the camera height is the knob for this — see `CAMERA_DEFAULT_POS`).
+- **Procedural sky** via Bevy's native `Atmosphere` (physical scattering, sun-coloured). A large ground plane plus distance fog dissolves the far terrain into the sky so there is no hard horizon line; a mountain ring frames the plain.
 - Designed for two-to-four players sharing the same screen (no split-screen).
 - Day/night cycle (90 s period) drives sun position and torch lighting (torches inside castles and on towers light up at night).
+- A **free-fly debug camera** (mouse + keyboard — otherwise unused since the game is gamepad-only) is available for development: hold RMB to look, WASD/Space/LShift to fly, LCtrl to boost, scroll to change speed, R to snap back to the default view. Active in every state.
 
 ### UI
 - Persistent HUD: clock at the top, one player panel in each bottom corner (and top corners in 2v2). Each panel lists the unit/tower buttons, the player's base HP, gold, and currently focused stats.
@@ -68,7 +73,34 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - Colorblind palette swaps the Right side from red to orange for deuteranopia / protanopia.
 
 ### Input
-- **Gamepad-only.** Two pads connect during the SideSelect screen, claim a side, and from then on all input flows through that pad: D-pad navigates slots, A confirms (spawn / arm tower placement), X arms tower placement directly. Sticks drive the tower placement cursor.
+- **Gamepad-only.** Two pads connect during the SideSelect screen, claim a side, then pick a nation, and from then on all input flows through that pad: D-pad navigates slots, A confirms (spawn / arm tower placement), X arms tower placement directly. Sticks drive the tower placement cursor.
+- **SideSelect** is a per-pad flow: choose a seat → choose a nation → lock in. Each card shows the controller's name, its status, and the chosen nation. The match launches once at least one player is locked in and nobody is still mid nation-pick.
+
+### Nations
+- Players pick a nation after claiming a seat. Today there is only one — **Ada'Ram** — so the picker is scaffolding; the data model (`Nation` enum, per-player `PlayerNations`) is in place for nation-specific units/stats/visuals later.
+
+## Roadmap
+
+### Done
+- 1v1 and 2v2 modes, shared-screen.
+- Soldier / miner (procedural rigs) and a rigged glTF archer with animated, hand-anchored shots.
+- Towers with ghost-preview placement, parabolic arrows, mining economy, queueing.
+- Day/night cycle with dynamic sun and torch lighting.
+- Native procedural-atmosphere sky with fog-blended horizon and mountain backdrop.
+- Raytraced lighting (Bevy Solari) with GPU auto-detection, plus a graphics-settings overlay (presets, per-parameter cost impact, colorblind palette) persisted to disk.
+- Music, gamepad-driven menus, SideSelect with side claim + nation pick (controller name shown per card).
+- Free-fly debug camera.
+
+### Planned / ideas
+- **More nations** with distinct units, stats and visuals (the nation pick is wired but only Ada'Ram exists).
+- **Avian3d colliders** for real collision/projectile physics — the plugin is loaded but no colliders are used yet.
+- Additional unit types and abilities; sound effects.
+- Possibly online or split-screen play (currently a single shared screen).
+- Automated tests (none today).
+
+### Known limitations
+- **Archers are not lit by raytracing.** Bevy Solari does not yet support skinned/animated meshes (planned upstream but not scheduled for 0.20; it needs per-frame BLAS refit). The archer uses the rasterized fallback lighting; static geometry gets full GI. See `CLAUDE.md` and the Solari tracking issue.
+- **Real DLSS is blocked.** The integration is wired but crashes inside the NVIDIA NGX SDK on Bevy 0.18, so it is mocked by default (`force_disable_dlss`); revisit on a Bevy upgrade.
 
 ## Cargo features
 

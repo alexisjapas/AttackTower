@@ -423,10 +423,8 @@ pub enum CombatantKind {
 }
 
 pub fn combat_tick(
-    mut commands: Commands,
     time: Res<Time>,
     state: Res<GameState>,
-    lib: Res<MatLibrary>,
     mut gold: ResMut<Gold>,
     // Reused across frames to avoid per-frame Vec allocations.
     mut combatants: Local<Vec<Combatant>>,
@@ -447,6 +445,7 @@ pub fn combat_tick(
                 Option<&mut MinerCarry>,
                 Option<&mut MinerPhase>,
                 Option<&MinerSlot>,
+                Option<&mut ArcherAnimState>,
             ),
             With<Unit>,
         >,
@@ -457,7 +456,7 @@ pub fn combat_tick(
     )>,
 ) {
     if *state != GameState::Playing {
-        for (_, _, _, _, _, _, _, _, mut anim, _, _, _) in sets.p0().iter_mut() {
+        for (_, _, _, _, _, _, _, _, mut anim, _, _, _, _) in sets.p0().iter_mut() {
             anim.walking = false;
             anim.attacking = false;
         }
@@ -468,7 +467,7 @@ pub fn combat_tick(
     combatants.clear();
     damage_events.clear();
     gold_events.clear();
-    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _) in sets.p0().iter() {
+    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _, _) in sets.p0().iter() {
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
@@ -526,6 +525,7 @@ pub fn combat_tick(
         mut carry_opt,
         mut phase_opt,
         slot_opt,
+        mut arch_state,
     ) in sets.p0().iter_mut()
     {
         if anim.dying {
@@ -707,30 +707,28 @@ pub fn combat_tick(
                 if let Some((target, dist)) = enemy
                     && dist <= ARCHER_RANGE
                 {
-                    // Pivot to face the target before/while shooting (the turn
-                    // is animated by animate_archer via Idle_Turn_*).
-                    anim.face_yaw = face_angle(target.pos.x - pos.x, target.pos.z - pos.z);
-                    if !anim.attacking {
-                        cooldown.0.reset();
-                    }
-                    cooldown.0.tick(time.delta());
+                    // Pivot so the archer's left faces the target: the shot clip
+                    // releases to the left, so this makes the arrow read as aimed
+                    // straight at the target. animate_archer smoothly turns toward
+                    // this yaw.
+                    anim.face_yaw = face_angle(target.pos.x - pos.x, target.pos.z - pos.z)
+                        + ARCHER_SHOT_YAW_OFFSET;
                     anim.attacking = true;
-                    anim.attack_phase = cooldown.0.fraction();
-                    if cooldown.0.just_finished() {
-                        // Arrow leaves the bow hand: ARCHER_HAND_OFFSET is in the
-                        // archer's own oriented frame (X forward toward the
-                        // target), so rotating it by the entity's facing puts the
-                        // start at the hands regardless of the aim angle.
-                        let start = pos + transform.rotation * ARCHER_HAND_OFFSET;
-                        spawn_arrow(
-                            &mut commands,
-                            &lib,
-                            *side,
-                            start,
-                            target.entity,
-                            target.pos,
-                            damage.0,
-                        );
+                    // Only queue a shot once the pivot is done (facing error
+                    // within ARCHER_TURN_EPS), so the first arrow waits for the
+                    // turn to finish. `animate_archer` releases the queued shot at
+                    // the end of the shot clip's cycle; the cadence is the clip
+                    // length (tuned to ARCHER_COOLDOWN). The kite/advance logic
+                    // below still runs while turning so melee can't sneak in.
+                    let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
+                    let aimed =
+                        shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= ARCHER_TURN_EPS;
+                    if let Some(arch_state) = arch_state.as_deref_mut() {
+                        arch_state.pending_shot = aimed.then_some(PendingShot {
+                            target: target.entity,
+                            target_pos: target.pos,
+                            damage: damage.0,
+                        });
                     }
                     // Kite: an enemy that closes inside ARCHER_KITE_RANGE in
                     // front of us pushes us back so the archer stays at range
@@ -747,8 +745,11 @@ pub fn combat_tick(
                 }
 
                 anim.attacking = false;
+                if let Some(arch_state) = arch_state.as_deref_mut() {
+                    arch_state.pending_shot = None;
+                }
                 // No target: face the advance direction so it turns back to the
-                // front (animate_archer plays Idle_Turn_* during the swing).
+                // front (animate_archer smoothly pivots toward this yaw).
                 anim.face_yaw = face_angle(walk_sign, 0.0);
 
                 if ally_blocking(
@@ -884,6 +885,17 @@ fn xz_distance(a: Vec3, b: Vec3) -> f32 {
 /// gives 0 (faces +X).
 fn face_angle(dx: f32, dz: f32) -> f32 {
     -dz.atan2(dx)
+}
+
+/// Shortest signed angular difference `target - current`, wrapped to
+/// `(-PI, PI]`. Shared by `combat_tick` (to know when the archer is aimed) and
+/// `animate_archer` (to step the pivot).
+fn shortest_yaw_diff(target: f32, current: f32) -> f32 {
+    let mut diff = (target - current).rem_euclid(std::f32::consts::TAU);
+    if diff > PI {
+        diff -= std::f32::consts::TAU;
+    }
+    diff
 }
 
 /// Translate toward an XZ target without touching rotation. The archer's facing
@@ -1203,15 +1215,52 @@ pub fn bind_archer_animation_player(
     }
 }
 
+/// The skeleton's bone entities (with their glTF `Name`s) are instanced
+/// asynchronously with the scene. When the bow hand (`ARCHER_BOW_HAND_BONE`)
+/// appears, walk up to the owning archer root and record it so `animate_archer`
+/// can read its world position as the arrow's muzzle.
+pub fn bind_archer_bow_hand(
+    bones: Query<(Entity, &Name), Added<Name>>,
+    parents: Query<&ChildOf>,
+    mut archers: Query<&mut ArcherAnimState, With<ArcherModel>>,
+) {
+    for (bone, name) in &bones {
+        if name.as_str() != ARCHER_BOW_HAND_BONE {
+            continue;
+        }
+        let mut current = bone;
+        let owner = loop {
+            if archers.contains(current) {
+                break Some(current);
+            }
+            match parents.get(current) {
+                Ok(child_of) => current = child_of.parent(),
+                Err(_) => break None,
+            }
+        };
+        let Some(owner) = owner else { continue };
+        if let Ok(mut state) = archers.get_mut(owner) {
+            state.left_hand = Some(bone);
+        }
+    }
+}
+
 /// Drives the glTF archer's `AnimationPlayer` from the same `UnitAnim` flags the
 /// procedural `animate_units` reads (walk / attack / hurt / death). Archers carry
 /// no `UnitRig`, so they are handled here instead of in `animate_units`; this
 /// also owns the `hurt_t`/`death_t` bookkeeping for them.
 pub fn animate_archer(
+    mut commands: Commands,
     time: Res<Time>,
     assets: Res<ArcherAssets>,
-    mut archers: Query<(&mut UnitAnim, &mut ArcherAnimState, &mut Transform), With<ArcherModel>>,
+    lib: Res<MatLibrary>,
+    mut archers: Query<
+        (&Side, &mut UnitAnim, &mut ArcherAnimState, &mut Transform),
+        With<ArcherModel>,
+    >,
     mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
+    // World transforms of skeleton bones (the bow hand the arrow leaves from).
+    bones: Query<&GlobalTransform>,
 ) {
     let dt = time.delta_secs();
     let Some(nodes) = assets.nodes else {
@@ -1220,7 +1269,7 @@ pub fn animate_archer(
     let hurt_count = nodes.hurts.len();
     let blend = Duration::from_secs_f32(0.15);
 
-    for (mut anim, mut state, mut transform) in archers.iter_mut() {
+    for (side, mut anim, mut state, mut transform) in archers.iter_mut() {
         if anim.hurt_t > 0.0 {
             anim.hurt_t = (anim.hurt_t - dt).max(0.0);
         }
@@ -1320,13 +1369,44 @@ pub fn animate_archer(
         if attacking {
             if state.current != ArcherClip::Attack {
                 // Loop the shot clip at a speed that fits one full draw-release
-                // into the attack cooldown, so the release reads near the moment
-                // combat_tick fires the arrow.
+                // into the attack cooldown. The clip length sets the firing
+                // cadence; the arrow leaves at the end of each cycle.
                 transitions
                     .play(&mut player, nodes.attack, enter)
                     .repeat()
                     .set_speed(nodes.attack_speed);
                 state.current = ArcherClip::Attack;
+                state.last_attack_seek = 0.0;
+            }
+            // Release one arrow per cycle, the moment playback crosses the release
+            // point (a bit before the clip ends, where the bow arm lowers), from
+            // the bow hand's world position. combat_tick leaves `pending_shot` set
+            // only while aimed, so the first arrow waits out the turn and there
+            // are no stray shots.
+            let seek = player
+                .animation(nodes.attack)
+                .map(|a| a.seek_time())
+                .unwrap_or(0.0);
+            let release_t = ARCHER_SHOT_RELEASE_FRACTION * nodes.attack_len;
+            let crossed = state.last_attack_seek < release_t && seek >= release_t;
+            state.last_attack_seek = seek;
+            if crossed && let Some(shot) = state.pending_shot {
+                let start = state
+                    .left_hand
+                    .and_then(|h| bones.get(h).ok())
+                    .map(|gt| gt.translation())
+                    .unwrap_or_else(|| {
+                        transform.translation + transform.rotation * ARCHER_HAND_OFFSET
+                    });
+                spawn_arrow(
+                    &mut commands,
+                    &lib,
+                    *side,
+                    start,
+                    shot.target,
+                    shot.target_pos,
+                    shot.damage,
+                );
             }
         } else if anim.walking {
             if state.current != ArcherClip::Walk {

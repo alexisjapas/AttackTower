@@ -56,6 +56,13 @@ pub const ARCHER_MODEL_SCALE: f32 = 0.7;
 /// The model faces +Z in its own space; the game's forward is +X. This yaw on
 /// the SceneRoot child maps model-forward onto the unit's facing direction.
 pub const ARCHER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+/// The Meshy `Archery_Shot` clip releases the arrow toward the model's left
+/// rather than straight ahead. To make the shot read as aimed at the target we
+/// rotate the whole archer by this offset when attacking, so its left side
+/// faces the target and the leftward release visually points at it. Derived:
+/// the model's left maps to the entity's `-Z`, so the entity yaw that puts `-Z`
+/// on the target is `target_angle - FRAC_PI_2`.
+pub const ARCHER_SHOT_YAW_OFFSET: f32 = -std::f32::consts::FRAC_PI_2;
 /// The archer plays a full "shot in the back and fall" clip on death, longer
 /// than the generic `DEATH_DURATION`; hold the corpse until it lands.
 pub const ARCHER_DEATH_DURATION: f32 = 1.8;
@@ -69,10 +76,18 @@ pub const ARCHER_TURN_EPS: f32 = 0.06;
 /// How long (s) the archer keeps playing the shot animation after its target
 /// briefly leaves range, so the pose doesn't flicker to idle between volleys.
 pub const ARCHER_ATTACK_HOLD: f32 = 0.6;
-/// Where arrows leave the archer, in its own oriented frame (X = forward toward
-/// the target, Y = up, Z = lateral): roughly the bow hand at chest height,
-/// rather than the body centre.
-pub const ARCHER_HAND_OFFSET: Vec3 = Vec3::new(0.4, 0.95, 0.2);
+/// Fraction through the `Archery_Shot` clip at which the arrow leaves the bow.
+/// The clip ends with the archer lowering the bow arm, so releasing slightly
+/// before the end (rather than at the cycle boundary) reads as the actual loose.
+pub const ARCHER_SHOT_RELEASE_FRACTION: f32 = 0.78;
+/// Name of the skeleton bone the arrow leaves from — the bow (left) hand. The
+/// Meshy rig keeps standard bone names even though it scrambles clip names.
+pub const ARCHER_BOW_HAND_BONE: &str = "LeftHand";
+/// Fallback arrow origin used only for the frame or two before the `LeftHand`
+/// bone is resolved, in the archer entity's local frame (model rigidly parented
+/// at `ARCHER_MODEL_YAW_OFFSET`). Negative Z = the model's left side, where the
+/// bow hand is; matches `ARCHER_SHOT_YAW_OFFSET`.
+pub const ARCHER_HAND_OFFSET: Vec3 = Vec3::new(0.3, 0.95, -0.35);
 
 // Tower
 pub const TOWER_HP: i32 = 30;
@@ -357,6 +372,29 @@ pub const TORCH_COLOR: Color = Color::srgb(1.0, 0.65, 0.30);
 pub const SUN_DAY_PERIOD: f32 = 90.0;
 pub const SUN_DISTANCE: f32 = 55.0;
 
+// Camera
+/// Eye position of the fixed 3/4 game view. Both `setup_world` and the debug
+/// camera's "reset" use this so they can't drift apart.
+///
+/// The height (Y) is the key knob for the skyline: the horizon always sits at
+/// the camera's eye level, so a mountain only has **sky directly behind it** if
+/// its top rises above this Y. The tallest peaks top out at ~13.9, so the eye
+/// must sit below that — hence 11. At 11 the tall ridge clears the horizon by
+/// ~2° (`atan((13.9-11)/80)`), silhouetting it against the sky instead of the
+/// camera looking down over it onto the ground beyond.
+pub const CAMERA_DEFAULT_POS: Vec3 = Vec3::new(0.0, 11.0, 30.0);
+/// Look-at point of the default view. Above the ground (not the origin) to tilt
+/// the view up so the horizon enters the frame (otherwise the sky is above the
+/// top edge and the area behind the peaks reads as dark "void"). Chosen with the
+/// eye height for a ~13° downward pitch (`atan((11-4)/30)`): horizon ~top fifth,
+/// battlefield just below centre. Raise its Y for more sky / a flatter view,
+/// lower it to centre the battlefield higher.
+pub const CAMERA_DEFAULT_TARGET: Vec3 = Vec3::new(0.0, 4.0, 0.0);
+/// Free-fly debug camera (mouse + keyboard). Base WASD/fly speed in units/s.
+pub const DEBUG_CAM_BASE_SPEED: f32 = 12.0;
+/// Radians of rotation per pixel of mouse motion while looking around.
+pub const DEBUG_CAM_SENSITIVITY: f32 = 0.003;
+
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub enum TimeOfDay {
     #[default]
@@ -439,10 +477,66 @@ pub struct MenuFocus {
     pub index: usize,
 }
 
+/// Playable nations. Only one exists today; the enum + `ALL` make adding more a
+/// one-line change and the SideSelect nation picker iterates `ALL`.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Nation {
+    #[default]
+    AdaRam,
+}
+
+impl Nation {
+    pub const ALL: &'static [Nation] = &[Nation::AdaRam];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Nation::AdaRam => "Ada'Ram",
+        }
+    }
+}
+
+/// Per-`PlayerSlot` nation chosen on the SideSelect screen, committed when the
+/// match starts (mirrors `PlayerControllers`/`Gold`).
+#[derive(Resource, Default)]
+pub struct PlayerNations {
+    nations: [Nation; 4],
+}
+
+impl PlayerNations {
+    // Read by gameplay once nations diverge; unused while only Ada'Ram exists.
+    #[allow(dead_code)]
+    pub fn get(&self, slot: PlayerSlot) -> Nation {
+        self.nations[slot.index()]
+    }
+
+    pub fn set(&mut self, slot: PlayerSlot, nation: Nation) {
+        self.nations[slot.index()] = nation;
+    }
+}
+
+/// Where a pad is in the SideSelect flow: hovering a seat, then (after claiming
+/// it) picking a nation, then fully locked in and counted for launch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SeatPhase {
+    PickingSeat,
+    PickingNation,
+    Locked,
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct SeatSelection {
     pub hovered: PlayerSlot,
-    pub confirmed: bool,
+    pub phase: SeatPhase,
+    /// Index into `Nation::ALL` for the nation step.
+    pub nation: usize,
+}
+
+impl SeatSelection {
+    /// The pad has taken the seat (no one else may hover/claim it): it's past
+    /// seat selection, choosing a nation or already locked.
+    pub fn claims_seat(self) -> bool {
+        matches!(self.phase, SeatPhase::PickingNation | SeatPhase::Locked)
+    }
 }
 
 #[derive(Component, Clone, Copy)]
@@ -502,9 +596,9 @@ pub struct UnitAnim {
     pub dying: bool,
     pub death_t: f32,
     /// Desired entity yaw (rotation around Y) for the archer, set by
-    /// `combat_tick` (toward the target when shooting, toward the advance
-    /// direction otherwise). `animate_archer` smoothly rotates to it and plays
-    /// the `Idle_Turn_*` clips while turning. Unused by procedural units.
+    /// `combat_tick` (target + `ARCHER_SHOT_YAW_OFFSET` when shooting, the
+    /// advance direction otherwise). `animate_archer` smoothly rotates to it.
+    /// Unused by procedural units.
     pub face_yaw: f32,
     /// Last observed `Health.current`. Lets `process_damage_effects` flash
     /// only when HP actually drops (a heal that leaves current<max should
@@ -540,12 +634,26 @@ pub enum ArcherClip {
     Death,
 }
 
+/// A shot queued by `combat_tick` and released by `animate_archer` when the
+/// shot clip reaches the end of its cycle. The target is snapshotted at queue
+/// time; the arrow's light homing (`arrow_flight_system`) corrects for movement
+/// during the short draw.
+#[derive(Clone, Copy)]
+pub struct PendingShot {
+    pub target: Entity,
+    pub target_pos: Vec3,
+    pub damage: i32,
+}
+
 /// Per-archer animation bookkeeping: the descendant `AnimationPlayer` entity
 /// (instanced asynchronously with the scene) plus the small state machine that
 /// `animate_archer` runs off `UnitAnim`.
 #[derive(Component, Default)]
 pub struct ArcherAnimState {
     pub player: Option<Entity>,
+    /// The skeleton's `LeftHand` bone (the bow hand), resolved once by
+    /// `bind_archer_bow_hand`. Arrows leave from its world position.
+    pub left_hand: Option<Entity>,
     pub current: ArcherClip,
     pub hurt_index: usize,
     pub oneshot_active: bool,
@@ -554,6 +662,12 @@ pub struct ArcherAnimState {
     /// Countdown that keeps the shot animation playing through brief target
     /// losses (see `ARCHER_ATTACK_HOLD`).
     pub attack_hold: f32,
+    /// Shot clip `seek_time()` last frame, so `animate_archer` can fire one
+    /// arrow per cycle the moment playback crosses `ARCHER_SHOT_RELEASE_FRACTION`.
+    pub last_attack_seek: f32,
+    /// Target snapshot to release on the next shot-cycle end; `None` when there
+    /// is nothing to shoot at (or the archer isn't yet aimed).
+    pub pending_shot: Option<PendingShot>,
 }
 
 /// Indices (and precomputed playback speeds) of the archer's clips inside its
@@ -566,6 +680,9 @@ pub struct ArcherAnimNodes {
     pub death: AnimationNodeIndex,
     /// Speed that makes one loop of the shot clip last `ARCHER_COOLDOWN`.
     pub attack_speed: f32,
+    /// Clip-local duration (s) of the shot clip, so `animate_archer` can release
+    /// the arrow at `ARCHER_SHOT_RELEASE_FRACTION` of the way through.
+    pub attack_len: f32,
     /// Speed that makes the fall clip finish within `ARCHER_DEATH_DURATION`.
     pub death_speed: f32,
 }

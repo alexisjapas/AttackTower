@@ -248,6 +248,10 @@ pub fn build_archer_graph(
     };
     let attack_speed = speed_for(&assets.attack, ARCHER_COOLDOWN);
     let death_speed = speed_for(&assets.death, ARCHER_DEATH_DURATION);
+    let attack_len = clips
+        .get(&assets.attack)
+        .map(|c| c.duration())
+        .unwrap_or(1.0);
 
     assets.graph = Some(graphs.add(graph));
     assets.nodes = Some(ArcherAnimNodes {
@@ -257,6 +261,7 @@ pub fn build_archer_graph(
         death,
         attack_speed,
         death_speed,
+        attack_len,
     });
 }
 
@@ -276,15 +281,20 @@ pub fn setup_world(
             // setting; starting with HDR on avoids a one-frame SDR fallback
             // when the persisted config has it enabled.
             bevy::render::view::Hdr,
-            Transform::from_xyz(0.0, 20.0, 24.0).looking_at(Vec3::ZERO, Vec3::Y),
+            Transform::from_translation(CAMERA_DEFAULT_POS)
+                .looking_at(CAMERA_DEFAULT_TARGET, Vec3::Y),
             Atmosphere::earthlike(medium),
             AtmosphereSettings::default(),
             Exposure { ev100: 13.0 },
             Tonemapping::AcesFitted,
             Bloom::NATURAL,
             DistanceFog {
-                color: Color::srgba(0.55, 0.70, 0.85, 1.0),
-                falloff: FogFalloff::ExponentialSquared { density: 0.012 },
+                // Tuned to the sky/horizon tone so the distant ground melts into
+                // the sky instead of ending on a hard horizon line. Denser than a
+                // pure mood fog: it must reach near-opacity before the (now large)
+                // ground plane's edge so that edge is never visible.
+                color: Color::srgba(0.60, 0.73, 0.86, 1.0),
+                falloff: FogFalloff::ExponentialSquared { density: 0.018 },
                 ..default()
             },
             VolumetricFog {
@@ -307,15 +317,25 @@ pub fn setup_world(
 
     spawn_sun(&mut commands);
 
-    // Fog volume that the sun shines through to produce subtle god rays.
+    // Map-wide haze the sun shines through (subtle god rays). Stretched out to
+    // the mountain ring and widened on the sides so the mist reaches the peaks
+    // instead of stopping mid-field; density is dropped accordingly so the
+    // larger volume stays a light haze rather than turning opaque.
     commands.spawn((
-        FogVolume::default(),
-        Transform::from_scale(Vec3::new(60.0, 6.0, 30.0))
-            .with_translation(Vec3::new(0.0, 3.0, 0.0)),
+        FogVolume {
+            density_factor: 0.012,
+            ..default()
+        },
+        Transform::from_scale(Vec3::new(150.0, 12.0, 130.0))
+            .with_translation(Vec3::new(0.0, 5.0, 0.0)),
     ));
 
+    // Grass plain. Made very large (±150) on purpose: with the flatter camera
+    // the horizon is in view, so the plane must extend far enough that the
+    // distance fog has fully saturated before its edge — the edge then dissolves
+    // into the sky tone and no hard horizon line shows behind the mountains.
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(80.0, 0.2, 40.0))),
+        Mesh3d(meshes.add(Cuboid::new(300.0, 0.2, 300.0))),
         MeshMaterial3d(lib.ground.clone()),
         Transform::from_xyz(0.0, -0.1, 0.0),
     ));
@@ -484,6 +504,83 @@ pub fn apply_raytracing_setting(
 #[cfg(not(feature = "raytracing"))]
 pub fn apply_raytracing_setting() {}
 
+/// Free-fly debug camera, driven by mouse + keyboard (the shipped game is
+/// gamepad-only, so these inputs are otherwise unused and won't clash). Hold the
+/// **right mouse button** to look around; **WASD** moves in the view plane,
+/// **Space**/**Left Shift** fly up/down, **Left Ctrl** boosts, the **scroll
+/// wheel** changes fly speed, and **R** snaps back to the default 3/4 view.
+/// Runs in every `GameState` so the scene can be inspected while paused.
+pub fn debug_camera_control(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    scroll: Res<bevy::input::mouse::AccumulatedMouseScroll>,
+    mut speed: Local<f32>,
+    mut camera: Query<&mut Transform, With<Camera3d>>,
+) {
+    let Ok(mut transform) = camera.single_mut() else {
+        return;
+    };
+
+    // R resets to the canonical game view and bails for the frame.
+    if keys.just_pressed(KeyCode::KeyR) {
+        *transform = Transform::from_translation(CAMERA_DEFAULT_POS)
+            .looking_at(CAMERA_DEFAULT_TARGET, Vec3::Y);
+        return;
+    }
+
+    if *speed <= 0.0 {
+        *speed = DEBUG_CAM_BASE_SPEED;
+    }
+    // Scroll multiplies the fly speed (exponential feel), clamped to a sane band.
+    if scroll.delta.y != 0.0 {
+        *speed = (*speed * (1.0 + scroll.delta.y * 0.1)).clamp(1.0, 200.0);
+    }
+
+    // Mouse look only while RMB is held, so the cursor stays free for menus.
+    if mouse_buttons.pressed(MouseButton::Right) && motion.delta != Vec2::ZERO {
+        let (mut yaw, mut pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
+        yaw -= motion.delta.x * DEBUG_CAM_SENSITIVITY;
+        pitch -= motion.delta.y * DEBUG_CAM_SENSITIVITY;
+        // Clamp just shy of straight up/down to avoid gimbal flip.
+        let limit = std::f32::consts::FRAC_PI_2 - 0.01;
+        pitch = pitch.clamp(-limit, limit);
+        transform.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+    }
+
+    // WASD in the view plane + vertical fly, relative to current orientation.
+    let mut dir = Vec3::ZERO;
+    let forward = *transform.forward();
+    let right = *transform.right();
+    if keys.pressed(KeyCode::KeyW) {
+        dir += forward;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        dir -= forward;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        dir += right;
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        dir -= right;
+    }
+    if keys.pressed(KeyCode::Space) {
+        dir += Vec3::Y;
+    }
+    if keys.pressed(KeyCode::ShiftLeft) {
+        dir -= Vec3::Y;
+    }
+    if dir != Vec3::ZERO {
+        let boost = if keys.pressed(KeyCode::ControlLeft) {
+            3.0
+        } else {
+            1.0
+        };
+        transform.translation += dir.normalize() * *speed * boost * time.delta_secs();
+    }
+}
+
 /// Probes the default adapter for the wgpu features AND limits Solari needs.
 /// Run once before `App::new()` so we can skip loading `SolariPlugins` (and
 /// stop requesting its features) on machines that would crash at first frame.
@@ -648,20 +745,33 @@ fn spawn_mountains(
     });
     let cone = meshes.add(Cone::new(1.0, 1.0));
 
-    // (x, z, width, height)
+    // (x, z, width, height). The front row (negative z, the one the camera
+    // faces) is widened out to ±60 so it frames the enlarged plain across the
+    // whole horizon instead of leaving flat gaps on the sides; a few taller
+    // peaks sit farther back (z ~ -48) for layered depth.
     let peaks: &[(f32, f32, f32, f32)] = &[
-        (-28.0, -34.0, 7.0, 7.0),
-        (-19.0, -37.0, 9.0, 9.5),
-        (-11.0, -33.0, 6.0, 6.5),
+        // Front row, left to right.
+        (-58.0, -35.0, 9.0, 8.0),
+        (-49.0, -33.0, 8.0, 7.0),
+        (-40.0, -36.0, 9.0, 9.0),
+        (-31.0, -34.0, 7.0, 7.5),
+        (-22.0, -37.0, 9.0, 9.5),
+        (-13.0, -33.0, 6.0, 6.5),
         (-3.0, -38.0, 10.0, 11.0),
-        (5.0, -34.0, 8.0, 8.5),
-        (14.0, -36.0, 9.0, 9.0),
-        (24.0, -33.0, 7.0, 7.5),
-        (-26.0, 35.0, 8.0, 7.5),
+        (6.0, -34.0, 8.0, 8.5),
+        (15.0, -36.0, 9.0, 9.0),
+        (25.0, -33.0, 7.0, 7.5),
+        (35.0, -36.0, 9.0, 9.0),
+        (44.0, -34.0, 8.0, 7.5),
+        (54.0, -36.0, 10.0, 9.0),
+        // Taller layer set farther back for depth.
+        (-35.0, -48.0, 12.0, 13.0),
+        (-10.0, -50.0, 13.0, 14.0),
+        (18.0, -49.0, 12.0, 13.0),
+        (42.0, -50.0, 13.0, 13.5),
+        // Back row (positive z) — off-camera now, kept minimal.
         (-15.0, 37.0, 7.0, 7.0),
-        (-5.0, 34.0, 9.0, 8.5),
         (6.0, 36.0, 6.0, 6.0),
-        (16.0, 35.0, 9.0, 9.5),
         (26.0, 37.0, 7.0, 8.0),
     ];
     for &(x, z, w, h) in peaks {
@@ -689,12 +799,16 @@ fn spawn_sky(
         ..default()
     });
     let cloud_mesh = meshes.add(Sphere::new(1.0));
+    // High and well beyond the mountain ring (z < -45) so they sit in the sky
+    // above the peaks now that the flatter camera reveals the horizon, rather
+    // than drifting low across the field. Flattened (low sy) to read as clouds.
     for &(x, y, z, sx, sy, sz) in &[
-        (-12.0, 14.0, -18.0, 2.4, 1.2, 1.6),
-        (8.0, 16.0, -22.0, 3.0, 1.4, 2.0),
-        (18.0, 13.0, -12.0, 2.2, 1.0, 1.5),
-        (-22.0, 15.0, -8.0, 2.8, 1.3, 1.7),
-        (2.0, 18.0, -28.0, 3.4, 1.5, 2.1),
+        (-30.0, 30.0, -58.0, 6.0, 1.8, 3.5),
+        (14.0, 34.0, -66.0, 7.5, 2.2, 4.0),
+        (34.0, 28.0, -52.0, 5.5, 1.6, 3.0),
+        (-46.0, 32.0, -48.0, 6.5, 2.0, 3.2),
+        (4.0, 38.0, -72.0, 8.5, 2.4, 4.5),
+        (48.0, 35.0, -62.0, 6.0, 1.8, 3.4),
     ] {
         commands.spawn((
             Mesh3d(cloud_mesh.clone()),

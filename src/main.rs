@@ -78,6 +78,7 @@ fn main() {
         .init_resource::<GameState>()
         .init_resource::<PlacementMode>()
         .init_resource::<PlayerControllers>()
+        .init_resource::<PlayerNations>()
         .init_resource::<MenuFocus>()
         .insert_resource(settings)
         .init_resource::<GraphicsPreset>()
@@ -137,6 +138,7 @@ fn main() {
                 spawn_initial_miners,
                 build_archer_graph,
                 bind_archer_animation_player,
+                bind_archer_bow_hand,
                 (
                     (combat_tick, tower_attack_tick, arrow_flight_system),
                     process_damage_effects,
@@ -198,6 +200,7 @@ fn main() {
                 update_focus_stats_text,
                 update_clock_text,
                 update_health_bars,
+                debug_camera_control,
             )
                 .in_set(AppSet::Visual),
         )

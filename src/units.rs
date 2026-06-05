@@ -1246,6 +1246,17 @@ pub fn bind_archer_bow_hand(
             commands.entity(bone).with_child((
                 SceneRoot(assets.bow.clone()),
                 Transform::from_translation(ARCHER_BOW_OFFSET)
+                    .with_rotation(
+                        // Placement in the bone frame, then a spin about the bow's
+                        // own vertical axis (right-multiply) so "self-flip" turns
+                        // the mesh on itself rather than around the hand bone.
+                        Quat::from_euler(
+                            EulerRot::XYZ,
+                            ARCHER_BOW_ROTATION.x,
+                            ARCHER_BOW_ROTATION.y,
+                            ARCHER_BOW_ROTATION.z,
+                        ) * Quat::from_rotation_y(ARCHER_BOW_SELF_FLIP),
+                    )
                     .with_scale(Vec3::splat(ARCHER_BOW_SCALE)),
                 ArcherBow,
             ));
@@ -1395,7 +1406,12 @@ pub fn animate_archer(
                 .animation(nodes.attack)
                 .map(|a| a.seek_time())
                 .unwrap_or(0.0);
-            let release_t = ARCHER_SHOT_RELEASE_FRACTION * nodes.attack_len;
+            // Lead is in real seconds; the clip plays at `attack_speed`, so seek
+            // (clip-time) advances `attack_speed` per real second — convert before
+            // subtracting from the clip-time release point.
+            let release_t = (ARCHER_SHOT_RELEASE_FRACTION * nodes.attack_len
+                - ARCHER_SHOT_RELEASE_LEAD * nodes.attack_speed)
+                .max(0.0);
             let crossed = state.last_attack_seek < release_t && seek >= release_t;
             state.last_attack_seek = seek;
             if crossed && let Some(shot) = state.pending_shot {

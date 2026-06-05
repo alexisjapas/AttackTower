@@ -80,6 +80,10 @@ pub const ARCHER_ATTACK_HOLD: f32 = 0.6;
 /// The clip ends with the archer lowering the bow arm, so releasing slightly
 /// before the end (rather than at the cycle boundary) reads as the actual loose.
 pub const ARCHER_SHOT_RELEASE_FRACTION: f32 = 0.78;
+/// Extra lead (real seconds) before the release point, so the arrow leaves a
+/// touch earlier than the pose would suggest. Converted into clip-time with the
+/// clip's playback speed where it is applied (`animate_archer`).
+pub const ARCHER_SHOT_RELEASE_LEAD: f32 = 0.1;
 /// Name of the skeleton bone the arrow leaves from — the bow (left) hand. The
 /// Meshy rig keeps standard bone names even though it scrambles clip names.
 pub const ARCHER_BOW_HAND_BONE: &str = "LeftHand";
@@ -96,7 +100,19 @@ pub const ARCHER_BOW_PATH: &str = "models/adamar/weapons/adamar_bow.glb";
 /// ~1.9 m tall in its own glTF space, so at scale 1.0 it would render at ~1.3 cm
 /// (invisible). This factor cancels that shrink and sizes the bow to the archer.
 /// Tune if the bow sits slightly off once the real rig is visible.
-pub const ARCHER_BOW_SCALE: f32 = 90.0;
+pub const ARCHER_BOW_SCALE: f32 = 63.0;
+/// Local rotation of the bow within the `LeftHand` bone frame, as Euler XYZ in
+/// radians (applied `Quat::from_euler(EulerRot::XYZ, x, y, z)`). The Meshy hand
+/// bone's axes don't line up with the bow mesh, so without this the bow lies flat
+/// against the forearm instead of standing perpendicular with the limbs vertical.
+/// Tune these three angles visually — they are the bow's own orientation in hand.
+pub const ARCHER_BOW_ROTATION: Vec3 =
+    Vec3::new(0.0, std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+/// Extra 180°-style spin about the bow's *own* long (vertical) axis, applied as a
+/// right-multiply after `ARCHER_BOW_ROTATION`. Use this — not the placement Euler
+/// — to flip the bow when it reads "à l'envers" (belly/back or tips reversed),
+/// since it rotates the mesh on itself rather than around the hand-bone frame.
+pub const ARCHER_BOW_SELF_FLIP: f32 = std::f32::consts::PI;
 pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
 
 // Tower

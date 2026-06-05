@@ -2101,6 +2101,7 @@ pub fn placement_system(
     state: Res<GameState>,
     mode: Res<GameMode>,
     lib: Res<MatLibrary>,
+    env: Res<EnvAssets>,
     mut placement: ResMut<PlacementMode>,
     mut gold: ResMut<Gold>,
     players: Res<PlayerControllers>,
@@ -2196,7 +2197,13 @@ pub fn placement_system(
 
         // Place on A.
         if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(slot, TOWER_COST) {
-            spawn_tower(&mut commands, &lib, slot, Vec3::new(pos.x, 0.0, pos.z));
+            spawn_tower(
+                &mut commands,
+                &lib,
+                &env,
+                slot,
+                Vec3::new(pos.x, 0.0, pos.z),
+            );
             placement.clear(slot);
             continue;
         }

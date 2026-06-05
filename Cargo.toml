@@ -21,7 +21,8 @@ force_disable_dlss = ["bevy/force_disable_dlss"]
 
 [dependencies]
 avian3d = "0.6.1"
-bevy = { version = "0.18.1", features = ["mp3"] }
+# `jpeg`: the Meshy-exported building/prop glTFs embed JPEG textures.
+bevy = { version = "0.18.1", features = ["mp3", "jpeg"] }
 # Used at startup to probe whether the adapter actually supports the BLAS/TLAS
 # limits Solari needs — without this, GPUs that advertise the raytracing
 # feature flag but report `max_blas_geometry_count = 0` (e.g. AMD Vega) crash

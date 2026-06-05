@@ -3,13 +3,14 @@ use bevy::prelude::*;
 use crate::common::*;
 use crate::units::spawn_arrow;
 
-pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, position: Vec3) {
+pub fn spawn_tower(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    env: &EnvAssets,
+    slot: PlayerSlot,
+    position: Vec3,
+) {
     let side = slot.side();
-    let main_mat = match side {
-        Side::Left => lib.left.clone(),
-        Side::Right => lib.right.clone(),
-    };
-    let flag_mesh_size = 0.30;
 
     let tower_entity = commands
         .spawn((
@@ -23,82 +24,23 @@ pub fn spawn_tower(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, 
             AttackCooldown::ready(TOWER_COOLDOWN),
         ))
         .with_children(|p| {
-            // Foundation
+            // The tower building model. Faces the center: side mirroring +
+            // model yaw offset (the entity itself stays unrotated so aiming and
+            // arrow spawns are unaffected).
             p.spawn((
-                Mesh3d(lib.tower_foundation.clone()),
-                MeshMaterial3d(lib.stone_dark.clone()),
-                Transform::from_xyz(0.0, 0.15, 0.0),
+                SceneRoot(env.tower.clone()),
+                Transform::from_xyz(0.0, TOWER_MODEL_LIFT, 0.0)
+                    .with_rotation(
+                        side.base_rotation() * Quat::from_rotation_y(TOWER_MODEL_YAW_OFFSET),
+                    )
+                    .with_scale(Vec3::splat(TOWER_MODEL_SCALE)),
             ));
-            // Shaft
-            p.spawn((
-                Mesh3d(lib.tower_shaft.clone()),
-                MeshMaterial3d(lib.stone_light.clone()),
-                Transform::from_xyz(0.0, 1.1, 0.0),
-            ));
-            // Battlement slab
-            p.spawn((
-                Mesh3d(lib.tower_top_slab.clone()),
-                MeshMaterial3d(lib.stone_dark.clone()),
-                Transform::from_xyz(0.0, 1.98, 0.0),
-            ));
-            // Crenellations around the slab edge
-            let crenel_y = 2.17;
-            for &(cx, cz) in &[
-                (0.48, 0.0),
-                (-0.48, 0.0),
-                (0.0, 0.48),
-                (0.0, -0.48),
-                (0.36, 0.36),
-                (-0.36, 0.36),
-                (0.36, -0.36),
-                (-0.36, -0.36),
-            ] {
-                p.spawn((
-                    Mesh3d(lib.tower_crenel.clone()),
-                    MeshMaterial3d(lib.stone_light.clone()),
-                    Transform::from_xyz(cx, crenel_y, cz),
-                ));
-            }
-            // Colored conical roof on top
-            p.spawn((
-                Mesh3d(lib.tower_roof.clone()),
-                MeshMaterial3d(main_mat.clone()),
-                Transform::from_xyz(0.0, 2.55, 0.0),
-            ));
-            // Small flag at the very top
-            p.spawn((
-                Mesh3d(lib.tower_crenel.clone()),
-                MeshMaterial3d(main_mat),
-                Transform {
-                    translation: Vec3::new(0.0, 2.95, 0.0),
-                    scale: Vec3::new(flag_mesh_size, flag_mesh_size, flag_mesh_size),
-                    ..default()
-                },
-            ));
-            // Torch on the battlement (one). Lit only at night by update_torches.
-            p.spawn((
-                Mesh3d(lib.torch_pole_mesh.clone()),
-                MeshMaterial3d(lib.wood_mat.clone()),
-                Transform::from_xyz(0.0, 2.40, 0.42),
-            ));
-            p.spawn((
-                Mesh3d(lib.flame_mesh.clone()),
-                MeshMaterial3d(lib.flame_mat.clone()),
-                Transform::from_xyz(0.0, 2.62, 0.42),
-                Visibility::Hidden,
-                TorchFlame,
-            ));
-            p.spawn((
-                PointLight {
-                    color: TORCH_COLOR,
-                    intensity: 0.0,
-                    range: TORCH_RANGE,
-                    shadows_enabled: false,
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 2.65, 0.42),
-                TorchLight,
-            ));
+            // One torch on the battlement; lit only at night by `update_torches`.
+            crate::setup::spawn_torch(
+                p,
+                lib,
+                Vec3::new(0.0, TOWER_TORCH_POLE_Y, TOWER_TORCH_FORWARD),
+            );
         })
         .id();
     crate::healthbar::spawn_health_bar_for_tower(commands, tower_entity);

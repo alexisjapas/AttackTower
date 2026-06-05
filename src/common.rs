@@ -106,14 +106,107 @@ pub const ARCHER_BOW_SCALE: f32 = 63.0;
 /// bone's axes don't line up with the bow mesh, so without this the bow lies flat
 /// against the forearm instead of standing perpendicular with the limbs vertical.
 /// Tune these three angles visually — they are the bow's own orientation in hand.
-pub const ARCHER_BOW_ROTATION: Vec3 =
-    Vec3::new(0.0, std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+pub const ARCHER_BOW_ROTATION: Vec3 = Vec3::new(
+    0.0,
+    std::f32::consts::FRAC_PI_2,
+    std::f32::consts::FRAC_PI_2,
+);
 /// Extra 180°-style spin about the bow's *own* long (vertical) axis, applied as a
 /// right-multiply after `ARCHER_BOW_ROTATION`. Use this — not the placement Euler
 /// — to flip the bow when it reads "à l'envers" (belly/back or tips reversed),
 /// since it rotates the mesh on itself rather than around the hand-bone frame.
 pub const ARCHER_BOW_SELF_FLIP: f32 = std::f32::consts::PI;
 pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Environment glTF assets (buildings + desert props). Every Meshy export is
+// normalized to a ~1.9-unit box centered at the origin, so each kind gets a
+// SCALE (multiplier on that ~1.9-unit model) and a LIFT (Y offset ≈ SCALE×|min_y|
+// that seats the model's base on the ground). Tune visually if anything floats
+// or sinks. Loaded into `EnvAssets` by `setup::load_env_assets`.
+// ─────────────────────────────────────────────────────────────────────────────
+pub const BASE_MODEL_PATH: &str = "models/adamar/buildings/adamar_base.glb";
+pub const TOWER_MODEL_PATH: &str = "models/adamar/buildings/adamar_tower.glb";
+pub const PROP_CACTUS_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_cactus_1.glb",
+    "models/adamar/props/irrhakur_cactus_2.glb",
+];
+pub const PROP_DEAD_TREE_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_dead_tree_1.glb",
+    "models/adamar/props/irrhakur_dead_tree_2.glb",
+];
+pub const PROP_RUINS_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_ruins_1.glb",
+    "models/adamar/props/irrhakur_ruins_2.glb",
+];
+pub const PROP_SKULL_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_skull_1.glb",
+    "models/adamar/props/irrhakur_skull_2.glb",
+];
+pub const PROP_STONE_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_stone_1.glb",
+    "models/adamar/props/irrhakur_stone_2.glb",
+];
+pub const PROP_STONE_ARCH_PATHS: [&str; 2] = [
+    "models/adamar/props/irrhakur_stone_arch_1.glb",
+    "models/adamar/props/irrhakur_stone_arch_2.glb",
+];
+
+// Building scale + ground-lift.
+pub const BASE_MODEL_SCALE: f32 = 2.73;
+pub const BASE_MODEL_LIFT: f32 = 2.61;
+/// Yaw applied to the base model within the (already side-rotated) entity frame,
+/// so its front faces the center: left bases turn toward the right, right bases
+/// (mirrored by `Side::base_rotation`) toward the left. Tune by ±90° if off.
+pub const BASE_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+pub const TOWER_MODEL_SCALE: f32 = 1.4;
+pub const TOWER_MODEL_LIFT: f32 = 1.34;
+/// Yaw applied to the tower model so it also faces the center, combined with the
+/// side mirroring (`Side::base_rotation`) in `spawn_tower`. Tune by ±90° if off.
+pub const TOWER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+/// The mining rock now reuses the desert stone prop (variant 0).
+pub const ROCK_MODEL_SCALE: f32 = 1.0;
+pub const ROCK_MODEL_LIFT: f32 = 0.70;
+
+// Desert prop scale + ground-lift, per kind.
+pub const PROP_CACTUS_SCALE: f32 = 1.1;
+pub const PROP_CACTUS_LIFT: f32 = 1.0;
+pub const PROP_DEAD_TREE_SCALE: f32 = 1.6;
+pub const PROP_DEAD_TREE_LIFT: f32 = 1.5;
+pub const PROP_RUINS_SCALE: f32 = 1.4;
+pub const PROP_RUINS_LIFT: f32 = 1.3;
+pub const PROP_SKULL_SCALE: f32 = 0.7;
+pub const PROP_SKULL_LIFT: f32 = 0.27;
+pub const PROP_STONE_SCALE: f32 = 0.8;
+pub const PROP_STONE_LIFT: f32 = 0.55;
+pub const PROP_STONE_ARCH_SCALE: f32 = 1.8;
+pub const PROP_STONE_ARCH_LIFT: f32 = 1.35;
+
+// Procedural scenery scatter: a jittered grid of desert props filling the
+// background from just outside the play zone out to the mountains. Density comes
+// from the grid step; per-kind frequency is weighted in `DesertProp::weight`.
+pub const SCENERY_GRID_STEP: f32 = 5.0;
+pub const SCENERY_JITTER: f32 = 2.6;
+/// Scatter spans x ∈ [−RANGE, RANGE], z ∈ [Z_MIN, Z_MAX] (Z_MIN stops short of
+/// the front mountain row at z ≈ −33; +z is capped near the camera).
+pub const SCENERY_X_RANGE: f32 = 52.0;
+pub const SCENERY_Z_MIN: f32 = -30.0;
+pub const SCENERY_Z_MAX: f32 = 12.0;
+/// Keep-clear gameplay rectangle (no props): |x| < CLEAR_X and z ∈ [CLEAR_Z_MIN,
+/// CLEAR_Z_MAX] — covers the bases, lanes and tower zones.
+pub const SCENERY_CLEAR_X: f32 = 23.0;
+pub const SCENERY_CLEAR_Z_MIN: f32 = -7.0;
+pub const SCENERY_CLEAR_Z_MAX: f32 = 9.0;
+/// Per-instance random scale spread applied on top of each kind's base scale.
+pub const SCENERY_SCALE_MIN: f32 = 0.8;
+pub const SCENERY_SCALE_MAX: f32 = 1.25;
+
+// Torch placement on the new building models (torches stay procedural so the
+// day/night system can light them; tune to sit them on the art).
+pub const BASE_TORCH_RADIUS: f32 = 0.85;
+pub const BASE_TORCH_POLE_Y: f32 = 1.7;
+pub const TOWER_TORCH_POLE_Y: f32 = 1.9;
+pub const TOWER_TORCH_FORWARD: f32 = 0.5;
 
 // Tower
 pub const TOWER_HP: i32 = 30;
@@ -408,7 +501,7 @@ pub const SUN_DISTANCE: f32 = 55.0;
 /// must sit below that — hence 11. At 11 the tall ridge clears the horizon by
 /// ~2° (`atan((13.9-11)/80)`), silhouetting it against the sky instead of the
 /// camera looking down over it onto the ground beyond.
-pub const CAMERA_DEFAULT_POS: Vec3 = Vec3::new(0.0, 11.0, 30.0);
+pub const CAMERA_DEFAULT_POS: Vec3 = Vec3::new(0.0, 13.0, 30.0);
 /// Look-at point of the default view. Above the ground (not the origin) to tilt
 /// the view up so the horizon enters the frame (otherwise the sky is above the
 /// top edge and the area behind the peaks reads as dark "void"). Chosen with the
@@ -897,9 +990,6 @@ pub struct MatLibrary {
     pub ground: Handle<StandardMaterial>,
     pub wood_mat: Handle<StandardMaterial>,
     pub metal_mat: Handle<StandardMaterial>,
-    pub stone_light: Handle<StandardMaterial>,
-    pub stone_dark: Handle<StandardMaterial>,
-    pub rock_mat: Handle<StandardMaterial>,
     // Character meshes
     pub body_mesh: Handle<Mesh>,
     pub head_mesh: Handle<Mesh>,
@@ -910,30 +1000,13 @@ pub struct MatLibrary {
     pub spear_tip: Handle<Mesh>,
     pub pickaxe_handle: Handle<Mesh>,
     pub pickaxe_head: Handle<Mesh>,
-    pub bow_limb: Handle<Mesh>,
-    pub bow_string: Handle<Mesh>,
     pub arrow_shaft: Handle<Mesh>,
     pub arrow_tip: Handle<Mesh>,
     pub arrow_fletch: Handle<Mesh>,
-    // Scenery
-    pub grass_blade: Handle<Mesh>,
-    pub bush_mesh: Handle<Mesh>,
-    pub plant_stem: Handle<Mesh>,
-    pub plant_flower: Handle<Mesh>,
-    pub grass_mat: Handle<StandardMaterial>,
-    pub bush_mat: Handle<StandardMaterial>,
-    pub flower_red_mat: Handle<StandardMaterial>,
-    pub flower_yellow_mat: Handle<StandardMaterial>,
-    pub flower_violet_mat: Handle<StandardMaterial>,
+    // Torches (still procedural — lit at night on bases/towers).
     pub flame_mat: Handle<StandardMaterial>,
     pub flame_mesh: Handle<Mesh>,
     pub torch_pole_mesh: Handle<Mesh>,
-    // Tower meshes
-    pub tower_foundation: Handle<Mesh>,
-    pub tower_shaft: Handle<Mesh>,
-    pub tower_top_slab: Handle<Mesh>,
-    pub tower_crenel: Handle<Mesh>,
-    pub tower_roof: Handle<Mesh>,
     // Tower ghost (placement preview)
     pub tower_ghost_mesh: Handle<Mesh>,
     pub ghost_valid_mat: Handle<StandardMaterial>,
@@ -941,20 +1014,22 @@ pub struct MatLibrary {
     // Zone boundary marker
     pub zone_marker_mesh: Handle<Mesh>,
     pub zone_marker_mat: Handle<StandardMaterial>,
-    // Castle (shared across both 1v1 bases and all four 2v2 bases).
-    pub castle_foundation: Handle<Mesh>,
-    pub castle_keep: Handle<Mesh>,
-    pub castle_top_slab: Handle<Mesh>,
-    pub castle_crenel: Handle<Mesh>,
-    pub castle_tower: Handle<Mesh>,
-    pub castle_roof: Handle<Mesh>,
-    pub castle_door: Handle<Mesh>,
-    pub castle_pole: Handle<Mesh>,
-    pub castle_flag: Handle<Mesh>,
-    // Rock (mining target).
-    pub rock_large: Handle<Mesh>,
-    pub rock_medium: Handle<Mesh>,
-    pub rock_small: Handle<Mesh>,
+}
+
+/// Handles for the glTF environment scenes (buildings + desert props), loaded
+/// once at startup by `load_env_assets`. Each Meshy export is normalized to a
+/// ~1.9-unit box centered at the origin, so a per-kind scale + ground-lift
+/// (see the `*_SCALE` / `*_LIFT` consts) sizes and seats them on the ground.
+#[derive(Resource, Default)]
+pub struct EnvAssets {
+    pub base: Handle<Scene>,
+    pub tower: Handle<Scene>,
+    pub cactus: [Handle<Scene>; 2],
+    pub dead_tree: [Handle<Scene>; 2],
+    pub ruins: [Handle<Scene>; 2],
+    pub skull: [Handle<Scene>; 2],
+    pub stone: [Handle<Scene>; 2],
+    pub stone_arch: [Handle<Scene>; 2],
 }
 
 #[cfg(test)]

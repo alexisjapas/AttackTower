@@ -89,10 +89,12 @@ fn main() {
         .init_resource::<GameTime>()
         .init_resource::<GameMode>()
         .init_resource::<ArcherAssets>()
+        .init_resource::<EnvAssets>()
         .add_systems(
             Startup,
             (
                 init_mat_library,
+                load_env_assets,
                 setup_world,
                 setup_ui,
                 setup_music,

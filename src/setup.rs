@@ -43,8 +43,9 @@ pub fn init_mat_library(
         ..default()
     });
     lib.ground = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.18, 0.45, 0.20),
-        perceptual_roughness: 0.95,
+        // Desert sand — Adamar fights in the Irrhakur desert.
+        base_color: Color::srgb(0.78, 0.66, 0.45),
+        perceptual_roughness: 1.0,
         ..default()
     });
     lib.wood_mat = materials.add(StandardMaterial {
@@ -56,46 +57,6 @@ pub fn init_mat_library(
         base_color: Color::srgb(0.72, 0.74, 0.78),
         metallic: 0.4,
         perceptual_roughness: 0.4,
-        ..default()
-    });
-    lib.stone_light = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.76, 0.70),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    lib.stone_dark = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.55, 0.52, 0.48),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    lib.rock_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.45, 0.43, 0.40),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    lib.grass_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.28, 0.62, 0.24),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    lib.bush_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.20, 0.48, 0.20),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    lib.flower_red_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.92, 0.30, 0.30),
-        perceptual_roughness: 0.85,
-        ..default()
-    });
-    lib.flower_yellow_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.98, 0.85, 0.25),
-        perceptual_roughness: 0.85,
-        ..default()
-    });
-    lib.flower_violet_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.62, 0.40, 0.85),
-        perceptual_roughness: 0.85,
         ..default()
     });
     lib.flame_mat = materials.add(StandardMaterial {
@@ -130,23 +91,9 @@ pub fn init_mat_library(
     lib.spear_tip = meshes.add(Cone::new(0.06, 0.18));
     lib.pickaxe_handle = meshes.add(Cylinder::new(0.025, 0.55));
     lib.pickaxe_head = meshes.add(Cuboid::new(0.34, 0.07, 0.07));
-    lib.bow_limb = meshes.add(Cylinder::new(0.035, 0.36));
-    lib.bow_string = meshes.add(Cylinder::new(0.010, 0.66));
     lib.arrow_shaft = meshes.add(Cylinder::new(0.014, 0.55));
     lib.arrow_tip = meshes.add(Cone::new(0.040, 0.10));
     lib.arrow_fletch = meshes.add(Cuboid::new(0.01, 0.08, 0.07));
-
-    lib.grass_blade = meshes.add(Cone::new(0.045, 0.22));
-    lib.bush_mesh = meshes.add(Sphere::new(0.22));
-    lib.plant_stem = meshes.add(Cylinder::new(0.012, 0.28));
-    lib.plant_flower = meshes.add(Sphere::new(0.065));
-
-    // Tower (assembled from stacked stone primitives).
-    lib.tower_foundation = meshes.add(Cuboid::new(1.05, 0.3, 1.05));
-    lib.tower_shaft = meshes.add(Cylinder::new(0.42, 1.6));
-    lib.tower_top_slab = meshes.add(Cuboid::new(1.15, 0.16, 1.15));
-    lib.tower_crenel = meshes.add(Cuboid::new(0.2, 0.22, 0.2));
-    lib.tower_roof = meshes.add(Cone::new(0.55, 0.55));
 
     // Ghost preview: vertical cylinder shown at the cursor during placement.
     lib.tower_ghost_mesh = meshes.add(Cylinder::new(0.55, TOWER_HEIGHT));
@@ -173,22 +120,23 @@ pub fn init_mat_library(
         unlit: true,
         ..default()
     });
+}
 
-    // Castle pieces — shared across all bases (1v1 and 2v2).
-    lib.castle_foundation = meshes.add(Cuboid::new(2.0, 0.4, 2.0));
-    lib.castle_keep = meshes.add(Cuboid::new(1.1, 1.2, 1.1));
-    lib.castle_top_slab = meshes.add(Cuboid::new(1.3, 0.12, 1.3));
-    lib.castle_crenel = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
-    lib.castle_tower = meshes.add(Cuboid::new(0.45, 1.6, 0.45));
-    lib.castle_roof = meshes.add(Cone::new(0.36, 0.55));
-    lib.castle_door = meshes.add(Cuboid::new(0.08, 0.55, 0.36));
-    lib.castle_pole = meshes.add(Cylinder::new(0.03, 0.9));
-    lib.castle_flag = meshes.add(Cuboid::new(0.34, 0.22, 0.02));
-
-    // Rock — three sphere sizes reused per side.
-    lib.rock_large = meshes.add(Sphere::new(0.65));
-    lib.rock_medium = meshes.add(Sphere::new(0.42));
-    lib.rock_small = meshes.add(Sphere::new(0.36));
+/// Startup: kick off the async load of the glTF building + desert prop scenes.
+/// Must run before `setup_world` (which spawns the scenery) and `spawn_arena`
+/// (bases/rocks) so the handles exist; the scenes themselves instance lazily.
+pub fn load_env_assets(asset_server: Res<AssetServer>, mut env: ResMut<EnvAssets>) {
+    let scn = |p: &'static str| -> Handle<Scene> {
+        asset_server.load(GltfAssetLabel::Scene(0).from_asset(p))
+    };
+    env.base = scn(BASE_MODEL_PATH);
+    env.tower = scn(TOWER_MODEL_PATH);
+    env.cactus = [scn(PROP_CACTUS_PATHS[0]), scn(PROP_CACTUS_PATHS[1])];
+    env.dead_tree = [scn(PROP_DEAD_TREE_PATHS[0]), scn(PROP_DEAD_TREE_PATHS[1])];
+    env.ruins = [scn(PROP_RUINS_PATHS[0]), scn(PROP_RUINS_PATHS[1])];
+    env.skull = [scn(PROP_SKULL_PATHS[0]), scn(PROP_SKULL_PATHS[1])];
+    env.stone = [scn(PROP_STONE_PATHS[0]), scn(PROP_STONE_PATHS[1])];
+    env.stone_arch = [scn(PROP_STONE_ARCH_PATHS[0]), scn(PROP_STONE_ARCH_PATHS[1])];
 }
 
 /// Startup: kick off the async load of the archer scene (mesh + skeleton, from
@@ -272,6 +220,7 @@ pub fn setup_world(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut scattering_mediums: ResMut<Assets<ScatteringMedium>>,
     lib: Res<MatLibrary>,
+    env: Res<EnvAssets>,
 ) {
     let medium = scattering_mediums.add(ScatteringMedium::default());
     commands.insert_resource(AtmosphereHandle(medium.clone()));
@@ -345,7 +294,7 @@ pub fn setup_world(
     spawn_mountains(&mut commands, &mut meshes, &mut materials);
 
     spawn_zone_markers(&mut commands, &lib);
-    spawn_scenery(&mut commands, &mut meshes, &lib);
+    spawn_scenery(&mut commands, &env);
 }
 
 /// Build bases + rocks for the active GameMode when entering Playing with an
@@ -355,6 +304,7 @@ pub fn setup_world(
 pub fn spawn_arena(
     mut commands: Commands,
     lib: Res<MatLibrary>,
+    env: Res<EnvAssets>,
     state: Res<GameState>,
     mode: Res<GameMode>,
     bases: Query<Entity, With<Base>>,
@@ -368,8 +318,8 @@ pub fn spawn_arena(
     }
     for &slot in mode.active_slots() {
         let z = slot.base_z(*mode);
-        spawn_castle(&mut commands, &lib, slot, z);
-        spawn_rock(&mut commands, &lib, slot, z);
+        spawn_castle(&mut commands, &lib, &env, slot, z);
+        spawn_rock(&mut commands, &env, slot, z);
     }
 }
 
@@ -824,200 +774,148 @@ fn spawn_sky(
     }
 }
 
-fn spawn_scenery(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary) {
-    spawn_trees(commands, meshes, lib);
-    // Grass tufts: cone clusters. Placed outside the central walking strip
-    // (|z| > 1.4) and away from base/rock footprints.
-    let grass_spots: &[(f32, f32)] = &[
-        (-13.0, 2.0),
-        (-11.5, 3.4),
-        (-9.0, -2.6),
-        (-6.5, 2.8),
-        (-4.0, -3.2),
-        (-2.0, 3.1),
-        (0.5, -2.4),
-        (3.0, 2.7),
-        (5.5, -3.5),
-        (7.0, 2.2),
-        (9.5, -2.5),
-        (11.5, 3.0),
-        (13.5, -3.2),
-        (-15.5, -4.5),
-        (-7.5, -4.8),
-        (1.5, -5.0),
-        (10.0, 4.6),
-        (-3.5, 5.4),
-        (6.0, 5.2),
-        (15.0, 4.0),
-    ];
-    for &(x, z) in grass_spots {
-        spawn_grass_tuft(commands, lib, x, z);
+/// Desert prop kinds scattered around the arena. Each maps to a pair of glTF
+/// variants in `EnvAssets` and a scale / ground-lift from the `PROP_*` consts.
+#[derive(Clone, Copy)]
+enum DesertProp {
+    Cactus,
+    DeadTree,
+    Ruins,
+    Skull,
+    Stone,
+    StoneArch,
+}
+
+/// Every kind, in a fixed order, for the weighted random pick.
+const ALL_DESERT_PROPS: [DesertProp; 6] = [
+    DesertProp::Cactus,
+    DesertProp::DeadTree,
+    DesertProp::Ruins,
+    DesertProp::Skull,
+    DesertProp::Stone,
+    DesertProp::StoneArch,
+];
+
+impl DesertProp {
+    /// (scale, ground-lift) for this kind.
+    fn dims(self) -> (f32, f32) {
+        match self {
+            DesertProp::Cactus => (PROP_CACTUS_SCALE, PROP_CACTUS_LIFT),
+            DesertProp::DeadTree => (PROP_DEAD_TREE_SCALE, PROP_DEAD_TREE_LIFT),
+            DesertProp::Ruins => (PROP_RUINS_SCALE, PROP_RUINS_LIFT),
+            DesertProp::Skull => (PROP_SKULL_SCALE, PROP_SKULL_LIFT),
+            DesertProp::Stone => (PROP_STONE_SCALE, PROP_STONE_LIFT),
+            DesertProp::StoneArch => (PROP_STONE_ARCH_SCALE, PROP_STONE_ARCH_LIFT),
+        }
     }
 
-    // Bushes (slightly larger filler).
-    let bush_spots: &[(f32, f32)] = &[
-        (-14.5, -2.6),
-        (-10.0, 4.2),
-        (-5.0, -4.5),
-        (4.5, 4.4),
-        (12.5, -4.5),
-        (16.0, 2.5),
-        (-16.5, 3.5),
-        (8.5, -5.2),
-    ];
-    for &(x, z) in bush_spots {
-        commands.spawn((
-            Mesh3d(lib.bush_mesh.clone()),
-            MeshMaterial3d(lib.bush_mat.clone()),
-            Transform {
-                translation: Vec3::new(x, 0.18, z),
-                scale: Vec3::new(1.0, 0.85, 1.0),
-                ..default()
-            },
-        ));
+    /// Relative spawn frequency. Rocks/cacti/dead trees are common; ruins and
+    /// arches are landmarks and stay rare.
+    fn weight(self) -> f32 {
+        match self {
+            DesertProp::Stone => 5.0,
+            DesertProp::Cactus => 4.0,
+            DesertProp::DeadTree => 4.0,
+            DesertProp::Skull => 2.0,
+            DesertProp::Ruins => 1.0,
+            DesertProp::StoneArch => 1.0,
+        }
     }
 
-    // Flowers: stem + colored top.
-    let flower_spots: &[(f32, f32, u8)] = &[
-        (-12.5, -3.4, 0),
-        (-8.0, 3.6, 1),
-        (-2.5, -2.2, 2),
-        (2.5, 3.6, 0),
-        (5.0, -2.2, 1),
-        (11.0, 2.5, 2),
-        (14.0, -2.0, 0),
-        (-5.5, 3.8, 2),
-        (-15.0, 2.4, 1),
-        (15.5, 3.2, 0),
-    ];
-    for &(x, z, color_idx) in flower_spots {
-        let petal_mat = match color_idx {
-            0 => lib.flower_red_mat.clone(),
-            1 => lib.flower_yellow_mat.clone(),
-            _ => lib.flower_violet_mat.clone(),
-        };
-        commands
-            .spawn((Transform::from_xyz(x, 0.0, z), Visibility::default()))
-            .with_children(|f| {
-                f.spawn((
-                    Mesh3d(lib.plant_stem.clone()),
-                    MeshMaterial3d(lib.bush_mat.clone()),
-                    Transform::from_xyz(0.0, 0.14, 0.0),
-                ));
-                f.spawn((
-                    Mesh3d(lib.plant_flower.clone()),
-                    MeshMaterial3d(petal_mat),
-                    Transform::from_xyz(0.0, 0.30, 0.0),
-                ));
-            });
+    fn scene(self, env: &EnvAssets, variant: usize) -> Handle<Scene> {
+        let v = variant & 1;
+        match self {
+            DesertProp::Cactus => env.cactus[v].clone(),
+            DesertProp::DeadTree => env.dead_tree[v].clone(),
+            DesertProp::Ruins => env.ruins[v].clone(),
+            DesertProp::Skull => env.skull[v].clone(),
+            DesertProp::Stone => env.stone[v].clone(),
+            DesertProp::StoneArch => env.stone_arch[v].clone(),
+        }
     }
 }
 
-fn spawn_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, lib: &MatLibrary) {
-    let trunk_mat = lib.wood_mat.clone();
-    let foliage_mat = lib.bush_mat.clone();
-    let trunk_mesh = meshes.add(Cylinder::new(0.10, 1.0));
-    let foliage_low = meshes.add(Cone::new(0.55, 1.0));
-    let foliage_high = meshes.add(Cone::new(0.40, 0.9));
+/// Tiny deterministic xorshift RNG so the scatter is varied but reproducible
+/// across runs (no `rand` dependency, no per-frame state).
+struct Rng(u64);
 
-    // (x, z, height_scale)
-    let trees: &[(f32, f32, f32)] = &[
-        (-16.0, -6.5, 1.2),
-        (-13.5, -8.0, 0.9),
-        (-10.0, -7.5, 1.1),
-        (-6.5, -6.0, 1.0),
-        (-4.0, -7.5, 1.3),
-        (2.5, -6.5, 0.95),
-        (5.5, -7.5, 1.15),
-        (9.0, -6.2, 1.05),
-        (12.5, -7.0, 0.9),
-        (16.0, -7.5, 1.2),
-        (-15.0, 6.5, 1.1),
-        (-11.0, 7.5, 0.95),
-        (-7.5, 6.0, 1.25),
-        (-3.5, 7.5, 0.9),
-        (3.5, 6.5, 1.1),
-        (8.0, 7.5, 1.0),
-        (12.0, 6.5, 1.2),
-        (15.5, 7.5, 0.95),
-    ];
-    for &(x, z, h) in trees {
-        let trunk_h = 0.7 * h;
-        let foliage1_h = 1.1 * h;
-        let foliage2_h = 0.9 * h;
-        commands
-            .spawn((Transform::from_xyz(x, 0.0, z), Visibility::default()))
-            .with_children(|t| {
-                t.spawn((
-                    Mesh3d(trunk_mesh.clone()),
-                    MeshMaterial3d(trunk_mat.clone()),
-                    Transform {
-                        translation: Vec3::new(0.0, trunk_h * 0.5, 0.0),
-                        scale: Vec3::new(1.0, trunk_h, 1.0),
-                        ..default()
-                    },
-                ));
-                t.spawn((
-                    Mesh3d(foliage_low.clone()),
-                    MeshMaterial3d(foliage_mat.clone()),
-                    Transform {
-                        translation: Vec3::new(0.0, trunk_h + foliage1_h * 0.5 - 0.05, 0.0),
-                        scale: Vec3::new(1.0, foliage1_h, 1.0),
-                        ..default()
-                    },
-                ));
-                t.spawn((
-                    Mesh3d(foliage_high.clone()),
-                    MeshMaterial3d(foliage_mat.clone()),
-                    Transform {
-                        translation: Vec3::new(
-                            0.0,
-                            trunk_h + foliage1_h * 0.85 + foliage2_h * 0.5 - 0.1,
-                            0.0,
-                        ),
-                        scale: Vec3::new(1.0, foliage2_h, 1.0),
-                        ..default()
-                    },
-                ));
-            });
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed | 1)
     }
-}
-
-fn spawn_grass_tuft(commands: &mut Commands, lib: &MatLibrary, x: f32, z: f32) {
-    // Three small cones leaning slightly outward form a grass tuft.
-    let blades = [
-        (0.0, 0.0, 0.0_f32),
-        (0.07, 0.04, 0.15),
-        (-0.06, -0.05, -0.18),
-        (0.04, -0.07, 0.10),
-    ];
-    commands
-        .spawn((Transform::from_xyz(x, 0.0, z), Visibility::default()))
-        .with_children(|t| {
-            for (i, &(dx, dz, tilt)) in blades.iter().enumerate() {
-                let height_scale = 0.75 + 0.25 * ((i as f32) * 0.7).sin().abs();
-                t.spawn((
-                    Mesh3d(lib.grass_blade.clone()),
-                    MeshMaterial3d(lib.grass_mat.clone()),
-                    Transform {
-                        translation: Vec3::new(dx, 0.10, dz),
-                        rotation: Quat::from_rotation_z(tilt),
-                        scale: Vec3::new(1.0, height_scale, 1.0),
-                    },
-                ));
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x >> 32) as u32
+    }
+    /// Uniform in [0, 1).
+    fn unit(&mut self) -> f32 {
+        self.next_u32() as f32 / (u32::MAX as f32 + 1.0)
+    }
+    /// Uniform in [a, b).
+    fn range(&mut self, a: f32, b: f32) -> f32 {
+        a + (b - a) * self.unit()
+    }
+    fn pick_prop(&mut self) -> DesertProp {
+        let total: f32 = ALL_DESERT_PROPS.iter().map(|k| k.weight()).sum();
+        let mut r = self.unit() * total;
+        for &k in &ALL_DESERT_PROPS {
+            if r < k.weight() {
+                return k;
             }
-        });
+            r -= k.weight();
+        }
+        DesertProp::Stone
+    }
 }
 
-fn spawn_castle(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: f32) {
+/// Fill the background with desert props: a jittered grid spanning from just
+/// outside the play zone out to the mountains, each cell holding one prop whose
+/// kind is drawn by `DesertProp::weight` (rocks/trees common, ruins/arches rare)
+/// at a random yaw and slightly randomized scale.
+fn spawn_scenery(commands: &mut Commands, env: &EnvAssets) {
+    let mut rng = Rng::new(0x5F3A_C0FF_EE15_600D);
+    let mut gx = -SCENERY_X_RANGE;
+    while gx <= SCENERY_X_RANGE {
+        let mut gz = SCENERY_Z_MIN;
+        while gz <= SCENERY_Z_MAX {
+            let x = gx + rng.range(-SCENERY_JITTER, SCENERY_JITTER);
+            let z = gz + rng.range(-SCENERY_JITTER, SCENERY_JITTER);
+            gz += SCENERY_GRID_STEP;
+            // Keep the bases, lanes and tower zones clear.
+            if x.abs() < SCENERY_CLEAR_X && z > SCENERY_CLEAR_Z_MIN && z < SCENERY_CLEAR_Z_MAX {
+                continue;
+            }
+            let kind = rng.pick_prop();
+            let variant = (rng.next_u32() & 1) as usize;
+            let (base_scale, base_lift) = kind.dims();
+            let s = rng.range(SCENERY_SCALE_MIN, SCENERY_SCALE_MAX);
+            let yaw = rng.range(0.0, std::f32::consts::TAU);
+            commands.spawn((
+                SceneRoot(kind.scene(env, variant)),
+                Transform::from_xyz(x, base_lift * s, z)
+                    .with_rotation(Quat::from_rotation_y(yaw))
+                    .with_scale(Vec3::splat(base_scale * s)),
+            ));
+        }
+        gx += SCENERY_GRID_STEP;
+    }
+}
+
+fn spawn_castle(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    env: &EnvAssets,
+    slot: PlayerSlot,
+    z: f32,
+) {
     let side = slot.side();
     let x = match side {
         Side::Left => LEFT_BASE_X,
         Side::Right => RIGHT_BASE_X,
-    };
-    let main = match side {
-        Side::Left => lib.left.clone(),
-        Side::Right => lib.right.clone(),
     };
 
     let base_entity = commands
@@ -1034,102 +932,24 @@ fn spawn_castle(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: 
             Health::new(BASE_HP),
         ))
         .with_children(|p| {
-            // Foundation
+            // The base building model.
             p.spawn((
-                Mesh3d(lib.castle_foundation.clone()),
-                MeshMaterial3d(lib.stone_dark.clone()),
-                Transform::from_xyz(0.0, 0.2, 0.0),
+                SceneRoot(env.base.clone()),
+                Transform::from_xyz(0.0, BASE_MODEL_LIFT, 0.0)
+                    .with_rotation(Quat::from_rotation_y(BASE_MODEL_YAW_OFFSET))
+                    .with_scale(Vec3::splat(BASE_MODEL_SCALE)),
             ));
-            // Central keep
-            p.spawn((
-                Mesh3d(lib.castle_keep.clone()),
-                MeshMaterial3d(lib.stone_light.clone()),
-                Transform::from_xyz(0.0, 1.0, 0.0),
-            ));
-            // Battlement slab
-            p.spawn((
-                Mesh3d(lib.castle_top_slab.clone()),
-                MeshMaterial3d(lib.stone_dark.clone()),
-                Transform::from_xyz(0.0, 1.66, 0.0),
-            ));
-            // Crenellations around the slab edge
-            let crenel_y = 1.83;
-            for &(cx, cz) in &[
-                (0.55, 0.0),
-                (-0.55, 0.0),
-                (0.0, 0.55),
-                (0.0, -0.55),
-                (0.40, 0.40),
-                (-0.40, 0.40),
-                (0.40, -0.40),
-                (-0.40, -0.40),
-            ] {
-                p.spawn((
-                    Mesh3d(lib.castle_crenel.clone()),
-                    MeshMaterial3d(lib.stone_light.clone()),
-                    Transform::from_xyz(cx, crenel_y, cz),
-                ));
+            // Corner torches — doused by default; lit at night by `update_torches`.
+            let r = BASE_TORCH_RADIUS;
+            for &(tx, tz) in &[(r, r), (-r, r), (r, -r), (-r, -r)] {
+                spawn_torch(p, lib, Vec3::new(tx, BASE_TORCH_POLE_Y, tz));
             }
-            // Four corner towers with cone roofs (roofs use side color).
-            for &(tx, tz) in &[(0.78, 0.78), (-0.78, 0.78), (0.78, -0.78), (-0.78, -0.78)] {
-                p.spawn((
-                    Mesh3d(lib.castle_tower.clone()),
-                    MeshMaterial3d(lib.stone_light.clone()),
-                    Transform::from_xyz(tx, 1.2, tz),
-                ));
-                p.spawn((
-                    Mesh3d(lib.castle_roof.clone()),
-                    MeshMaterial3d(main.clone()),
-                    Transform::from_xyz(tx, 2.28, tz),
-                ));
-                // Torch at the corner top, doused by default (intensity set by night system).
-                p.spawn((
-                    Mesh3d(lib.torch_pole_mesh.clone()),
-                    MeshMaterial3d(lib.wood_mat.clone()),
-                    Transform::from_xyz(tx, 1.95, tz),
-                ));
-                p.spawn((
-                    Mesh3d(lib.flame_mesh.clone()),
-                    MeshMaterial3d(lib.flame_mat.clone()),
-                    Transform::from_xyz(tx, 2.18, tz),
-                    Visibility::Hidden,
-                    TorchFlame,
-                ));
-                p.spawn((
-                    PointLight {
-                        color: TORCH_COLOR,
-                        intensity: 0.0,
-                        range: TORCH_RANGE,
-                        shadows_enabled: false,
-                        ..default()
-                    },
-                    Transform::from_xyz(tx, 2.20, tz),
-                    TorchLight,
-                ));
-            }
-            // Door at the back (toward this side's miners).
-            p.spawn((
-                Mesh3d(lib.castle_door.clone()),
-                MeshMaterial3d(lib.wood_mat.clone()),
-                Transform::from_xyz(-1.0 + 0.04, 0.67, 0.0),
-            ));
-            // Flag pole + flag on top of the keep.
-            p.spawn((
-                Mesh3d(lib.castle_pole.clone()),
-                MeshMaterial3d(lib.wood_mat.clone()),
-                Transform::from_xyz(0.0, 2.3, 0.0),
-            ));
-            p.spawn((
-                Mesh3d(lib.castle_flag.clone()),
-                MeshMaterial3d(main.clone()),
-                Transform::from_xyz(0.18, 2.65, 0.0),
-            ));
         })
         .id();
     crate::healthbar::spawn_health_bar_for_base(commands, base_entity);
 }
 
-fn spawn_rock(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: f32) {
+fn spawn_rock(commands: &mut Commands, env: &EnvAssets, slot: PlayerSlot, z: f32) {
     let side = slot.side();
     let base_x = match side {
         Side::Left => LEFT_BASE_X,
@@ -1147,24 +967,40 @@ fn spawn_rock(commands: &mut Commands, lib: &MatLibrary, slot: PlayerSlot, z: f3
             slot,
         ))
         .with_children(|p| {
+            // The mining rock reuses the desert stone prop.
             p.spawn((
-                Mesh3d(lib.rock_large.clone()),
-                MeshMaterial3d(lib.rock_mat.clone()),
-                Transform::from_xyz(0.0, 0.45, 0.0),
-            ));
-            p.spawn((
-                Mesh3d(lib.rock_medium.clone()),
-                MeshMaterial3d(lib.rock_mat.clone()),
-                Transform {
-                    translation: Vec3::new(0.32, 0.28, 0.30),
-                    rotation: Quat::from_rotation_y(0.6),
-                    scale: Vec3::ONE,
-                },
-            ));
-            p.spawn((
-                Mesh3d(lib.rock_small.clone()),
-                MeshMaterial3d(lib.rock_mat.clone()),
-                Transform::from_xyz(-0.38, 0.22, -0.28),
+                SceneRoot(env.stone[0].clone()),
+                Transform::from_xyz(0.0, ROCK_MODEL_LIFT, 0.0)
+                    .with_scale(Vec3::splat(ROCK_MODEL_SCALE)),
             ));
         });
+}
+
+/// Spawn one procedural torch (pole + hidden flame + doused light) as a child,
+/// with the pole base at `pole`. Shared by bases and towers; the flame/light sit
+/// just above the pole. `update_torches` reveals and brightens them at night.
+pub fn spawn_torch(p: &mut ChildSpawnerCommands, lib: &MatLibrary, pole: Vec3) {
+    p.spawn((
+        Mesh3d(lib.torch_pole_mesh.clone()),
+        MeshMaterial3d(lib.wood_mat.clone()),
+        Transform::from_translation(pole),
+    ));
+    p.spawn((
+        Mesh3d(lib.flame_mesh.clone()),
+        MeshMaterial3d(lib.flame_mat.clone()),
+        Transform::from_translation(pole + Vec3::new(0.0, 0.23, 0.0)),
+        Visibility::Hidden,
+        TorchFlame,
+    ));
+    p.spawn((
+        PointLight {
+            color: TORCH_COLOR,
+            intensity: 0.0,
+            range: TORCH_RANGE,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_translation(pole + Vec3::new(0.0, 0.25, 0.0)),
+        TorchLight,
+    ));
 }

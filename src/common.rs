@@ -91,8 +91,12 @@ pub const ARCHER_HAND_OFFSET: Vec3 = Vec3::new(0.3, 0.95, -0.35);
 /// Path of the bow mesh attached to the archer's left hand.
 pub const ARCHER_BOW_PATH: &str = "models/adamar/weapons/adamar_bow.glb";
 /// Local transform applied to the bow scene once parented to the `LeftHand` bone.
-/// Tune these if the bow sits slightly off once the real rig is visible.
-pub const ARCHER_BOW_SCALE: f32 = 1.0;
+/// The `LeftHand` bone inherits the skeleton root's cm→m scale (`0.01`) times
+/// `ARCHER_MODEL_SCALE` (`0.7`), i.e. a world scale of ~0.007. The bow mesh is
+/// ~1.9 m tall in its own glTF space, so at scale 1.0 it would render at ~1.3 cm
+/// (invisible). This factor cancels that shrink and sizes the bow to the archer.
+/// Tune if the bow sits slightly off once the real rig is visible.
+pub const ARCHER_BOW_SCALE: f32 = 90.0;
 pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
 
 // Tower

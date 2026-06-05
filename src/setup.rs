@@ -131,6 +131,7 @@ pub fn load_env_assets(asset_server: Res<AssetServer>, mut env: ResMut<EnvAssets
     };
     env.base = scn(BASE_MODEL_PATH);
     env.tower = scn(TOWER_MODEL_PATH);
+    env.mountain = scn(MOUNTAIN_MODEL_PATH);
     env.cactus = [scn(PROP_CACTUS_PATHS[0]), scn(PROP_CACTUS_PATHS[1])];
     env.dead_tree = [scn(PROP_DEAD_TREE_PATHS[0]), scn(PROP_DEAD_TREE_PATHS[1])];
     env.ruins = [scn(PROP_RUINS_PATHS[0]), scn(PROP_RUINS_PATHS[1])];
@@ -291,7 +292,7 @@ pub fn setup_world(
     ));
 
     spawn_sky(&mut commands, &mut meshes, &mut materials);
-    spawn_mountains(&mut commands, &mut meshes, &mut materials);
+    spawn_mountains(&mut commands, &env);
 
     spawn_zone_markers(&mut commands, &lib);
     spawn_scenery(&mut commands, &env);
@@ -684,17 +685,14 @@ pub fn update_torches(
     }
 }
 
-fn spawn_mountains(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    let rock_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.40, 0.44, 0.50),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    let cone = meshes.add(Cone::new(1.0, 1.0));
+fn spawn_mountains(commands: &mut Commands, env: &EnvAssets) {
+    // The mountain glTF is a single ridge normalized (like the props) to a
+    // ~1.9-unit box: half-width ~0.95 on X, ~0.467 tall on Y, base at -0.234.
+    // Each peak's `w` (old cone radius) maps to a horizontal scale and `h` to a
+    // vertical scale, with the base seated on the ground.
+    const MODEL_HALF_X: f32 = 0.95;
+    const MODEL_HEIGHT: f32 = 0.467;
+    const MODEL_BASE: f32 = 0.234;
 
     // (x, z, width, height). The front row (negative z, the one the camera
     // faces) is widened out to ±60 so it frames the enlarged plain across the
@@ -725,14 +723,25 @@ fn spawn_mountains(
         (6.0, 36.0, 6.0, 6.0),
         (26.0, 37.0, 7.0, 8.0),
     ];
+    // Deterministic per-peak yaw jitter (plus an occasional 180° flip) so the
+    // instanced ridge doesn't read as the same silhouette repeated; kept near
+    // 0/π so the wide axis stays roughly parallel to the horizon.
+    let mut rng = Rng::new(0xB165_CA1E_5EED_0001);
     for &(x, z, w, h) in peaks {
+        let s_h = w / MODEL_HALF_X;
+        let s_y = h / MODEL_HEIGHT;
+        let flip = if rng.next_u32() & 1 == 0 {
+            0.0
+        } else {
+            std::f32::consts::PI
+        };
+        let yaw = flip + rng.range(-0.35, 0.35);
         commands.spawn((
-            Mesh3d(cone.clone()),
-            MeshMaterial3d(rock_mat.clone()),
+            SceneRoot(env.mountain.clone()),
             Transform {
-                translation: Vec3::new(x, h * 0.5 - 0.1, z),
-                scale: Vec3::new(w, h, w),
-                ..default()
+                translation: Vec3::new(x, MODEL_BASE * s_y, z),
+                rotation: Quat::from_rotation_y(yaw),
+                scale: Vec3::new(s_h, s_y, s_h),
             },
         ));
     }

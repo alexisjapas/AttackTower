@@ -127,6 +127,9 @@ pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
 // ─────────────────────────────────────────────────────────────────────────────
 pub const BASE_MODEL_PATH: &str = "models/adamar/buildings/adamar_base.glb";
 pub const TOWER_MODEL_PATH: &str = "models/adamar/buildings/adamar_tower.glb";
+/// A single ridge mesh instanced into the background mountain ring (replaces the
+/// old procedural cones). Normalized like the props to a ~1.9-unit box.
+pub const MOUNTAIN_MODEL_PATH: &str = "models/mountains.glb";
 pub const PROP_CACTUS_PATHS: [&str; 2] = [
     "models/adamar/props/irrhakur_cactus_1.glb",
     "models/adamar/props/irrhakur_cactus_2.glb",
@@ -1024,6 +1027,7 @@ pub struct MatLibrary {
 pub struct EnvAssets {
     pub base: Handle<Scene>,
     pub tower: Handle<Scene>,
+    pub mountain: Handle<Scene>,
     pub cactus: [Handle<Scene>; 2],
     pub dead_tree: [Handle<Scene>; 2],
     pub ruins: [Handle<Scene>; 2],

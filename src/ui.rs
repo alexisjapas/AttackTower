@@ -20,7 +20,7 @@ use crate::graphics::{
     slot_count, tab_slots,
 };
 use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
-use crate::units::{spawn_archer, spawn_miner, spawn_soldier};
+use crate::units::{spawn_archer, spawn_miner, spawn_priest, spawn_soldier};
 
 #[derive(Component, Clone, Copy)]
 pub struct PanelSlot {
@@ -262,8 +262,9 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
             spawn_category_header(panel, "Combat");
             spawn_slot(panel, slot, 1, &format!("Soldier ({}g)", SOLDIER_COST));
             spawn_slot(panel, slot, 2, &format!("Archer ({}g)", ARCHER_COST));
+            spawn_slot(panel, slot, 3, &format!("Priest ({}g)", PRIEST_COST));
             spawn_category_header(panel, "Resources");
-            spawn_slot(panel, slot, 3, &format!("Miner ({}g)", MINER_COST));
+            spawn_slot(panel, slot, 4, &format!("Miner ({}g)", MINER_COST));
             panel.spawn((
                 Node {
                     margin: UiRect::top(Val::Px(8.0)),
@@ -1433,7 +1434,7 @@ pub fn apply_player_focus_visual(
     for (panel, mut node, mut bg, mut border) in &mut panels {
         let defeated = !alive[panel.slot.index()];
         let hidden =
-            panel.index == 3 && miners_per_slot[panel.slot.index()] >= MAX_MINERS_PER_PLAYER;
+            panel.index == 4 && miners_per_slot[panel.slot.index()] >= MAX_MINERS_PER_PLAYER;
         let new_display = if hidden { Display::None } else { Display::Flex };
         if node.display != new_display {
             node.display = new_display;
@@ -1981,10 +1982,9 @@ pub fn gameplay_input_system(
     mut commands: Commands,
     mut state: ResMut<GameState>,
     mode: Res<GameMode>,
-    lib: Res<MatLibrary>,
+    models: Res<UnitModels>,
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
-    archer_assets: Res<ArcherAssets>,
     mut focuses: Query<(Entity, &mut PlayerFocus)>,
     gamepads: Query<&Gamepad>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
@@ -2033,8 +2033,8 @@ pub fn gameplay_input_system(
             .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
             .count();
         // Slot indices match the vertical HUD order: 0 Tower, 1 Soldier,
-        // 2 Archer, 3 Miner. Miner slot hides when the cap is reached.
-        let slot_hidden = |idx: usize| idx == 3 && miner_count >= MAX_MINERS_PER_PLAYER;
+        // 2 Archer, 3 Priest, 4 Miner. Miner slot hides when the cap is reached.
+        let slot_hidden = |idx: usize| idx == 4 && miner_count >= MAX_MINERS_PER_PLAYER;
         if slot_hidden(focus.index) {
             focus.index = next_visible_slot(focus.index, 1, &slot_hidden);
         }
@@ -2059,7 +2059,13 @@ pub fn gameplay_input_system(
                         .iter()
                         .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Soldier)
                         .count();
-                    spawn_soldier(&mut commands, &lib, focus.slot, *mode, count % LANE_COUNT);
+                    spawn_soldier(
+                        &mut commands,
+                        &models,
+                        focus.slot,
+                        *mode,
+                        count % LANE_COUNT,
+                    );
                 }
                 2 if gold.try_spend(focus.slot, ARCHER_COST) => {
                     let count = units
@@ -2068,21 +2074,33 @@ pub fn gameplay_input_system(
                         .count();
                     spawn_archer(
                         &mut commands,
-                        &lib,
-                        &archer_assets,
+                        &models,
                         focus.slot,
                         *mode,
                         count % LANE_COUNT,
                     );
                 }
-                3 => {
+                3 if gold.try_spend(focus.slot, PRIEST_COST) => {
+                    let count = units
+                        .iter()
+                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Priest)
+                        .count();
+                    spawn_priest(
+                        &mut commands,
+                        &models,
+                        focus.slot,
+                        *mode,
+                        count % LANE_COUNT,
+                    );
+                }
+                4 => {
                     let miner_count = units
                         .iter()
                         .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
                         .count();
                     if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(focus.slot, MINER_COST)
                     {
-                        spawn_miner(&mut commands, &lib, focus.slot, *mode, miner_count);
+                        spawn_miner(&mut commands, &models, focus.slot, *mode, miner_count);
                     }
                 }
                 _ => {}

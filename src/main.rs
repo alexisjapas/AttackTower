@@ -88,7 +88,7 @@ fn main() {
         .init_resource::<DlssAvailable>()
         .init_resource::<GameTime>()
         .init_resource::<GameMode>()
-        .init_resource::<ArcherAssets>()
+        .init_resource::<UnitModels>()
         .init_resource::<EnvAssets>()
         .add_systems(
             Startup,
@@ -98,7 +98,7 @@ fn main() {
                 setup_world,
                 setup_ui,
                 setup_music,
-                load_archer_assets,
+                load_unit_models,
             )
                 .chain(),
         )
@@ -138,13 +138,14 @@ fn main() {
                 animate_sun,
                 spawn_arena,
                 spawn_initial_miners,
-                build_archer_graph,
-                bind_archer_animation_player,
-                bind_archer_bow_hand,
+                build_unit_graphs,
+                bind_unit_animation_player,
+                bind_unit_weapon_hand,
+                tick_armor_buffs,
                 (
                     (combat_tick, tower_attack_tick, arrow_flight_system),
                     process_damage_effects,
-                    (animate_units, animate_archer),
+                    animate_unit_model,
                     (cleanup_dead_units, cleanup_dead_towers),
                 )
                     .chain(),

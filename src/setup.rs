@@ -37,11 +37,6 @@ pub fn init_mat_library(
         perceptual_roughness: 0.85,
         ..default()
     });
-    lib.eye_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.04, 0.04, 0.06),
-        perceptual_roughness: 0.4,
-        ..default()
-    });
     lib.ground = materials.add(StandardMaterial {
         // Desert sand — Adamar fights in the Irrhakur desert.
         base_color: Color::srgb(0.78, 0.66, 0.45),
@@ -82,15 +77,6 @@ pub fn init_mat_library(
     lib.flame_mesh = meshes.add(Cone::new(0.14, 0.32));
     lib.torch_pole_mesh = meshes.add(Cylinder::new(0.025, 0.30));
 
-    lib.body_mesh = meshes.add(Capsule3d::new(0.20, 0.28));
-    lib.head_mesh = meshes.add(Sphere::new(0.17));
-    lib.limb_mesh = meshes.add(Cylinder::new(0.085, 0.36));
-    lib.eye_mesh = meshes.add(Sphere::new(0.035));
-
-    lib.spear_shaft = meshes.add(Cylinder::new(0.025, 0.85));
-    lib.spear_tip = meshes.add(Cone::new(0.06, 0.18));
-    lib.pickaxe_handle = meshes.add(Cylinder::new(0.025, 0.55));
-    lib.pickaxe_head = meshes.add(Cuboid::new(0.34, 0.07, 0.07));
     lib.arrow_shaft = meshes.add(Cylinder::new(0.014, 0.55));
     lib.arrow_tip = meshes.add(Cone::new(0.040, 0.10));
     lib.arrow_fletch = meshes.add(Cuboid::new(0.01, 0.08, 0.07));
@@ -140,79 +126,186 @@ pub fn load_env_assets(asset_server: Res<AssetServer>, mut env: ResMut<EnvAssets
     env.stone_arch = [scn(PROP_STONE_ARCH_PATHS[0]), scn(PROP_STONE_ARCH_PATHS[1])];
 }
 
-/// Startup: kick off the async load of the archer scene (mesh + skeleton, from
-/// the Walking file) and one `AnimationClip` per action, each from its own
-/// single-animation file. The scene is instanced per-archer in `spawn_unit`; the
-/// animation graph is built once the clips decode (see `build_archer_graph`).
-pub fn load_archer_assets(asset_server: Res<AssetServer>, mut assets: ResMut<ArcherAssets>) {
-    let clip =
-        |path: &'static str| asset_server.load(GltfAssetLabel::Animation(0).from_asset(path));
-    assets.scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset(ARCHER_SCENE_PATH));
-    assets.walk = clip(ARCHER_WALK_PATH);
-    assets.attack = clip(ARCHER_SHOT_PATH);
-    assets.hurts = [clip(ARCHER_HURT_PATHS[0]), clip(ARCHER_HURT_PATHS[1])];
-    assets.death = clip(ARCHER_DEATH_PATH);
-    assets.bow = asset_server.load(GltfAssetLabel::Scene(0).from_asset(ARCHER_BOW_PATH));
+/// Startup: kick off the async load of every unit kind's glTF model — the scene
+/// (mesh + skeleton, from the Walking file) plus one `AnimationClip` per action
+/// (each from its own single-animation file; the path is the source of truth as
+/// Meshy scrambles the internal names) and the hand weapon. Scenes instance
+/// per-unit in `spawn_unit`; graphs are built once the clips decode (see
+/// `build_unit_graphs`).
+pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitModels>) {
+    let scn = |p: &str| asset_server.load(GltfAssetLabel::Scene(0).from_asset(p.to_string()));
+    let clip = |p: &str| asset_server.load(GltfAssetLabel::Animation(0).from_asset(p.to_string()));
+    let weapon = |path: &str,
+                  bone: &'static str,
+                  offset: Vec3,
+                  rotation: Vec3,
+                  self_flip: f32,
+                  scale: f32,
+                  grip: f32| WeaponDef {
+        scene: scn(path),
+        bone,
+        offset,
+        rotation,
+        self_flip,
+        scale,
+        grip,
+    };
+
+    *models.get_mut(UnitKind::Soldier) = UnitModel {
+        scene: scn(SOLDIER_SCENE_PATH),
+        walk: clip(SOLDIER_WALK_PATH),
+        attack: Some(clip(SOLDIER_ATTACK_PATH)),
+        hurts: vec![clip(SOLDIER_HURT_PATHS[0])],
+        death: Some(clip(SOLDIER_DEATH_PATH)),
+        weapon: Some(weapon(
+            SWORD_PATH,
+            SWORD_BONE,
+            SWORD_OFFSET,
+            SWORD_ROTATION,
+            SWORD_SELF_FLIP,
+            SWORD_SCALE,
+            SWORD_GRIP,
+        )),
+        scale: SOLDIER_MODEL_SCALE,
+        yaw_offset: SOLDIER_MODEL_YAW_OFFSET,
+        cooldown: SOLDIER_COOLDOWN,
+        death_duration: SOLDIER_DEATH_DURATION,
+        ..default()
+    };
+
+    *models.get_mut(UnitKind::Miner) = UnitModel {
+        scene: scn(MINER_SCENE_PATH),
+        walk: clip(MINER_WALK_PATH),
+        // The miner's only action clip is the mining swing; no hurt/death clips.
+        attack: Some(clip(MINER_ATTACK_PATH)),
+        hurts: vec![],
+        death: None,
+        weapon: Some(weapon(
+            PICKAXE_PATH,
+            PICKAXE_BONE,
+            PICKAXE_OFFSET,
+            PICKAXE_ROTATION,
+            PICKAXE_SELF_FLIP,
+            PICKAXE_SCALE,
+            PICKAXE_GRIP,
+        )),
+        scale: MINER_MODEL_SCALE,
+        yaw_offset: MINER_MODEL_YAW_OFFSET,
+        cooldown: MINER_COOLDOWN,
+        death_duration: DEATH_DURATION,
+        ..default()
+    };
+
+    *models.get_mut(UnitKind::Archer) = UnitModel {
+        scene: scn(ARCHER_SCENE_PATH),
+        walk: clip(ARCHER_WALK_PATH),
+        attack: Some(clip(ARCHER_SHOT_PATH)),
+        hurts: vec![clip(ARCHER_HURT_PATHS[0]), clip(ARCHER_HURT_PATHS[1])],
+        death: Some(clip(ARCHER_DEATH_PATH)),
+        weapon: Some(weapon(
+            ARCHER_BOW_PATH,
+            ARCHER_BOW_HAND_BONE,
+            ARCHER_BOW_OFFSET,
+            ARCHER_BOW_ROTATION,
+            ARCHER_BOW_SELF_FLIP,
+            ARCHER_BOW_SCALE,
+            ARCHER_BOW_GRIP,
+        )),
+        scale: ARCHER_MODEL_SCALE,
+        yaw_offset: ARCHER_MODEL_YAW_OFFSET,
+        cooldown: ARCHER_COOLDOWN,
+        death_duration: ARCHER_DEATH_DURATION,
+        ..default()
+    };
+
+    *models.get_mut(UnitKind::Priest) = UnitModel {
+        scene: scn(PRIEST_SCENE_PATH),
+        walk: clip(PRIEST_WALK_PATH),
+        attack: Some(clip(PRIEST_ATTACK_PATH)),
+        hurts: vec![clip(PRIEST_HURT_PATHS[0])],
+        death: Some(clip(PRIEST_DEATH_PATH)),
+        weapon: Some(weapon(
+            STAFF_PATH,
+            STAFF_BONE,
+            STAFF_OFFSET,
+            STAFF_ROTATION,
+            STAFF_SELF_FLIP,
+            STAFF_SCALE,
+            STAFF_GRIP,
+        )),
+        scale: PRIEST_MODEL_SCALE,
+        yaw_offset: PRIEST_MODEL_YAW_OFFSET,
+        cooldown: PRIEST_COOLDOWN,
+        death_duration: PRIEST_DEATH_DURATION,
+        ..default()
+    };
 }
 
-/// Update: once every archer clip has decoded, build the `AnimationGraph` and
-/// cache the node indices. Waits for the clips so the playback speeds can be
-/// derived from their real durations. Runs each frame until built, then no-ops.
-pub fn build_archer_graph(
-    mut assets: ResMut<ArcherAssets>,
+/// Update: for each unit kind, once all its clips have decoded, build the
+/// `AnimationGraph` and cache node indices + playback speeds derived from the
+/// clip durations. Tolerates kinds with no attack/hurt/death clips (the miner).
+/// Runs each frame until every kind is built, then no-ops.
+pub fn build_unit_graphs(
+    mut models: ResMut<UnitModels>,
     clips: Res<Assets<AnimationClip>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    if assets.nodes.is_some() {
-        return;
+    for kind in UNIT_KINDS {
+        {
+            let m = models.get(kind);
+            if m.nodes.is_some() {
+                continue;
+            }
+            let ready = clips.get(&m.walk).is_some()
+                && m.attack.as_ref().is_none_or(|a| clips.get(a).is_some())
+                && m.hurts.iter().all(|h| clips.get(h).is_some())
+                && m.death.as_ref().is_none_or(|d| clips.get(d).is_some());
+            if !ready {
+                continue;
+            }
+        }
+
+        let m = models.get(kind).clone();
+        let mut graph = AnimationGraph::new();
+        let root = graph.root;
+        let walk = graph.add_clip(m.walk.clone(), 1.0, root);
+        let attack = m
+            .attack
+            .as_ref()
+            .map(|a| graph.add_clip(a.clone(), 1.0, root));
+        let hurts: Vec<_> = m
+            .hurts
+            .iter()
+            .map(|h| graph.add_clip(h.clone(), 1.0, root))
+            .collect();
+        let death = m
+            .death
+            .as_ref()
+            .map(|d| graph.add_clip(d.clone(), 1.0, root));
+
+        let dur = |h: &Handle<AnimationClip>| clips.get(h).map(|c| c.duration()).unwrap_or(1.0);
+        let attack_len = m.attack.as_ref().map(&dur).unwrap_or(1.0);
+        // Play one attack cycle per cooldown, and the fall within the death window.
+        let attack_speed = (attack_len / m.cooldown).max(0.01);
+        let death_speed = m
+            .death
+            .as_ref()
+            .map(|d| (dur(d) / m.death_duration).max(0.01))
+            .unwrap_or(1.0);
+
+        let handle = graphs.add(graph);
+        let mm = models.get_mut(kind);
+        mm.graph = Some(handle);
+        mm.nodes = Some(ModelAnimNodes {
+            walk,
+            attack,
+            hurts,
+            death,
+            attack_speed,
+            attack_len,
+            death_speed,
+        });
     }
-    // Bail (retry next frame) until all clips are loaded.
-    let handles = [
-        &assets.walk,
-        &assets.attack,
-        &assets.hurts[0],
-        &assets.hurts[1],
-        &assets.death,
-    ];
-    if handles.iter().any(|h| clips.get(*h).is_none()) {
-        return;
-    }
-
-    let mut graph = AnimationGraph::new();
-    let root = graph.root;
-    let walk = graph.add_clip(assets.walk.clone(), 1.0, root);
-    let attack = graph.add_clip(assets.attack.clone(), 1.0, root);
-    let hurts = [
-        graph.add_clip(assets.hurts[0].clone(), 1.0, root),
-        graph.add_clip(assets.hurts[1].clone(), 1.0, root),
-    ];
-    let death = graph.add_clip(assets.death.clone(), 1.0, root);
-
-    // Match clip playback to gameplay timing: one shot loop per cooldown, and
-    // the fall finishing within the archer's death window.
-    let speed_for = |h: &Handle<AnimationClip>, target: f32| {
-        clips
-            .get(h)
-            .map(|c| (c.duration() / target).max(0.01))
-            .unwrap_or(1.0)
-    };
-    let attack_speed = speed_for(&assets.attack, ARCHER_COOLDOWN);
-    let death_speed = speed_for(&assets.death, ARCHER_DEATH_DURATION);
-    let attack_len = clips
-        .get(&assets.attack)
-        .map(|c| c.duration())
-        .unwrap_or(1.0);
-
-    assets.graph = Some(graphs.add(graph));
-    assets.nodes = Some(ArcherAnimNodes {
-        walk,
-        attack,
-        hurts,
-        death,
-        attack_speed,
-        death_speed,
-        attack_len,
-    });
 }
 
 pub fn setup_world(
@@ -718,10 +811,6 @@ fn spawn_mountains(commands: &mut Commands, env: &EnvAssets) {
         (-10.0, -50.0, 13.0, 14.0),
         (18.0, -49.0, 12.0, 13.0),
         (42.0, -50.0, 13.0, 13.5),
-        // Back row (positive z) — off-camera now, kept minimal.
-        (-15.0, 37.0, 7.0, 7.0),
-        (6.0, 36.0, 6.0, 6.0),
-        (26.0, 37.0, 7.0, 8.0),
     ];
     // Deterministic per-peak yaw jitter (plus an occasional 180° flip) so the
     // instanced ridge doesn't read as the same silhouette repeated; kept near

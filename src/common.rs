@@ -20,6 +20,24 @@ pub const MINER_CAPACITY: u32 = 4;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 
+// Priest — support unit: no attack, heals and armors a nearby ally.
+pub const PRIEST_HP: i32 = 9;
+pub const PRIEST_COST: u32 = 5;
+pub const PRIEST_SPEED: f32 = 1.5;
+/// Seconds between casts (one cast clip per cooldown).
+pub const PRIEST_COOLDOWN: f32 = 2.0;
+/// The priest stops and supports the nearest ally ahead within this range.
+pub const PRIEST_RANGE: f32 = 3.0;
+pub const PRIEST_SPAWN_OFFSET: f32 = 1.5;
+/// HP restored to the target ally per cast (clamped to its max).
+pub const PRIEST_HEAL: i32 = 3;
+/// Flat damage reduction granted to the target ally per cast.
+pub const PRIEST_ARMOR: i32 = 2;
+/// Seconds the armor buff lasts (refreshed on every cast).
+pub const PRIEST_ARMOR_DURATION: f32 = 5.0;
+/// Floor so armor never makes a unit invincible: every hit deals at least this.
+pub const MIN_DAMAGE: i32 = 1;
+
 // Archer
 pub const ARCHER_HP: i32 = 7;
 pub const ARCHER_DAMAGE: i32 = 2;
@@ -82,7 +100,7 @@ pub const ARCHER_ATTACK_HOLD: f32 = 0.6;
 pub const ARCHER_SHOT_RELEASE_FRACTION: f32 = 0.78;
 /// Extra lead (real seconds) before the release point, so the arrow leaves a
 /// touch earlier than the pose would suggest. Converted into clip-time with the
-/// clip's playback speed where it is applied (`animate_archer`).
+/// clip's playback speed where it is applied (`animate_unit_model`).
 pub const ARCHER_SHOT_RELEASE_LEAD: f32 = 0.1;
 /// Name of the skeleton bone the arrow leaves from — the bow (left) hand. The
 /// Meshy rig keeps standard bone names even though it scrambles clip names.
@@ -117,6 +135,107 @@ pub const ARCHER_BOW_ROTATION: Vec3 = Vec3::new(
 /// since it rotates the mesh on itself rather than around the hand-bone frame.
 pub const ARCHER_BOW_SELF_FLIP: f32 = std::f32::consts::PI;
 pub const ARCHER_BOW_OFFSET: Vec3 = Vec3::ZERO;
+/// The bow is gripped at its middle, so no shift along its long axis.
+pub const ARCHER_BOW_GRIP: f32 = 0.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Soldier / Miner / Priest glTF models. Same Meshy convention as the archer
+// (0.01 cm→m baked at the Armature root, +Z model-forward → game +X via a yaw
+// offset). One AnimationClip per file; the file path is the source of truth
+// (Meshy scrambles internal clip names). Loaded into `UnitModels` by
+// `setup::load_unit_models`; clip→graph built by `setup::build_unit_graphs`.
+// ─────────────────────────────────────────────────────────────────────────────
+pub const SOLDIER_SCENE_PATH: &str =
+    "models/adamar/characters/adamar_soldier_biped_Animation_Walking_withSkin.glb";
+pub const SOLDIER_WALK_PATH: &str = SOLDIER_SCENE_PATH;
+pub const SOLDIER_ATTACK_PATH: &str =
+    "models/adamar/characters/adamar_soldier_biped_Animation_Left_Slash_withSkin.glb";
+pub const SOLDIER_HURT_PATHS: [&str; 1] =
+    ["models/adamar/characters/adamar_soldier_biped_Animation_Hit_Reaction_1_withSkin.glb"];
+pub const SOLDIER_DEATH_PATH: &str = "models/adamar/characters/adamar_soldier_biped_Animation_Fall_Dead_from_Abdominal_Injury_withSkin.glb";
+pub const SOLDIER_MODEL_SCALE: f32 = 0.7;
+pub const SOLDIER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+pub const SOLDIER_DEATH_DURATION: f32 = 1.4;
+
+pub const MINER_SCENE_PATH: &str =
+    "models/adamar/characters/adamar_miner_biped_Animation_Walking_withSkin.glb";
+pub const MINER_WALK_PATH: &str = MINER_SCENE_PATH;
+/// The miner's "attack" clip is the mining swing (no enemy combat).
+pub const MINER_ATTACK_PATH: &str =
+    "models/adamar/characters/adamar_miner_biped_Animation_Heavy_Hammer_Swing_withSkin.glb";
+pub const MINER_MODEL_SCALE: f32 = 0.7;
+pub const MINER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+
+pub const PRIEST_SCENE_PATH: &str =
+    "models/adamar/characters/adamar_priest_biped_Animation_Walking_withSkin.glb";
+pub const PRIEST_WALK_PATH: &str = PRIEST_SCENE_PATH;
+/// The priest's "attack" clip is the spell cast (heal + armor, no damage).
+pub const PRIEST_ATTACK_PATH: &str =
+    "models/adamar/characters/adamar_priest_biped_Animation_mage_spell_cast_1_withSkin.glb";
+pub const PRIEST_HURT_PATHS: [&str; 1] =
+    ["models/adamar/characters/adamar_priest_biped_Animation_Slap_Reaction_withSkin.glb"];
+pub const PRIEST_DEATH_PATH: &str =
+    "models/adamar/characters/adamar_priest_biped_Animation_Shot_and_Fall_Backward_withSkin.glb";
+pub const PRIEST_MODEL_SCALE: f32 = 0.7;
+pub const PRIEST_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
+pub const PRIEST_DEATH_DURATION: f32 = 1.8;
+
+// Hand weapons/tools. Each attaches to a skeleton hand bone whose world scale is
+// ~0.007 (0.7 model × 0.01 armature), so weapon `SCALE` is large like the bow.
+// `ROTATION`/`SELF_FLIP` follow the bow's semantics (Euler in the bone frame,
+// then a spin about the weapon's own long axis); all need visual tuning.
+// `ROTATION` = `(0, π/2, π/2)` mirrors the (working) bow placement — two 90°
+// axes that stand the weapon upright in the hand instead of lying horizontal.
+// `SELF_FLIP` spins it about its own long axis (which face/end points out).
+// `GRIP` (~0.85) slides the handle into the hand so the blade/head doesn't pass
+// through the wrist. All still need visual tuning per weapon.
+// `ROTATION.x = π` flips the weapon to point up/forward (it pointed down/back at
+// x = 0). `ROTATION.{y,z} = π/2` is the bow-style two-axis upright placement.
+// `SELF_FLIP` rolls it about its own long axis. `GRIP`: which mesh end sits in
+// the hand (sword's handle is the opposite end from the pickaxe/staff → negative;
+// 0 = held at the centre, e.g. the staff).
+// `OFFSET` nudges the weapon along the hand bone (≈ +Y → toward the fingers) so
+// it sits in the hand instead of anchored at the wrist (bone-local units: the
+// bone's world scale is ~0.007, so ~10 ≈ 7 cm).
+pub const HAND_OFFSET: Vec3 = Vec3::new(0.0, 10.0, 0.0);
+
+pub const SWORD_PATH: &str = "models/adamar/weapons/adamar_sword.glb";
+pub const SWORD_BONE: &str = "RightHand";
+pub const SWORD_SCALE: f32 = 63.0;
+pub const SWORD_OFFSET: Vec3 = HAND_OFFSET;
+// x = 0 (not π): the sword grips the opposite mesh end (negative GRIP) which
+// reverses its extension, so it points up/forward like the others without the flip.
+pub const SWORD_ROTATION: Vec3 = Vec3::new(
+    0.0,
+    std::f32::consts::FRAC_PI_2,
+    std::f32::consts::FRAC_PI_2,
+);
+pub const SWORD_SELF_FLIP: f32 = std::f32::consts::PI;
+pub const SWORD_GRIP: f32 = -0.55;
+
+pub const PICKAXE_PATH: &str = "models/adamar/weapons/adamar_pickaxe.glb";
+pub const PICKAXE_BONE: &str = "RightHand";
+pub const PICKAXE_SCALE: f32 = 35.3;
+pub const PICKAXE_OFFSET: Vec3 = HAND_OFFSET;
+pub const PICKAXE_ROTATION: Vec3 = Vec3::new(
+    std::f32::consts::PI,
+    std::f32::consts::FRAC_PI_2,
+    std::f32::consts::FRAC_PI_2,
+);
+pub const PICKAXE_SELF_FLIP: f32 = std::f32::consts::PI;
+pub const PICKAXE_GRIP: f32 = 0.65;
+
+pub const STAFF_PATH: &str = "models/adamar/weapons/adamar_staff.glb";
+pub const STAFF_BONE: &str = "RightHand";
+pub const STAFF_SCALE: f32 = 63.0;
+pub const STAFF_OFFSET: Vec3 = HAND_OFFSET;
+pub const STAFF_ROTATION: Vec3 = Vec3::new(
+    std::f32::consts::PI,
+    std::f32::consts::FRAC_PI_2,
+    std::f32::consts::FRAC_PI_2,
+);
+pub const STAFF_SELF_FLIP: f32 = std::f32::consts::PI + std::f32::consts::FRAC_PI_2;
+pub const STAFF_GRIP: f32 = 0.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment glTF assets (buildings + desert props). Every Meshy export is
@@ -246,7 +365,7 @@ pub const TOWER_PLACEMENT_Z_LIMIT_2V2: f32 = BASE_Z_OFFSET + LANE_HALF_WIDTH_2V2
 
 pub const GAMEPAD_STICK_DEADZONE: f32 = 0.25;
 pub const GAMEPAD_CURSOR_SPEED: f32 = 6.0;
-pub const PLAYER_PANEL_SLOTS: usize = 4;
+pub const PLAYER_PANEL_SLOTS: usize = 5;
 
 pub const UNIT_RADIUS: f32 = 0.35;
 pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
@@ -267,36 +386,14 @@ pub const ROCK_OFFSET: f32 = 5.5;
 pub const SPAWN_Z_JITTER: f32 = 0.6;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Character rig geometry (units assemble themselves from primitives; these
-// constants describe the local-space placement of the limbs/bob node).
-//
-//   bob (Y = BOB_BASE_Y) ──── body + head + arms
-//      └─ limbs pivot at hip/shoulder, mesh hangs LEG_PIVOT_OFFSET below.
-//
-//   Y axis up; X is the unit's facing direction.
+// Unit animation timing. All units are now rigged glTF models driven by
+// `animate_unit_model`; these are the shared timing values it reads.
 // ─────────────────────────────────────────────────────────────────────────────
-/// Local Y of the body/head/arms "bob" node above the unit's root.
-pub const BOB_BASE_Y: f32 = 0.55;
-/// Local Y of the leg pivot.
-pub const HIP_Y: f32 = 0.40;
-/// Y distance from the pivot to the mesh centre — lets the limb rotate around
-/// its top end instead of its midpoint.
-pub const LEG_PIVOT_OFFSET: f32 = 0.18;
-pub const LEG_SPREAD_Z: f32 = 0.13;
-pub const ARM_PIVOT_OFFSET: f32 = 0.18;
-pub const ARM_SPREAD_Z: f32 = 0.27;
-pub const ARM_SHOULDER_Y: f32 = 0.10;
-
-/// Walk cycle frequency (rad/s).
-pub const WALK_FREQUENCY: f32 = 10.0;
-pub const LEG_SWING: f32 = 0.55;
-pub const ARM_SWING: f32 = 0.40;
-pub const BOB_AMPLITUDE: f32 = 0.05;
-pub const ATTACK_SWING_AMPLITUDE: f32 = 1.2;
-/// Seconds the "hurt flash" / tilt lasts after a damage event.
+/// Seconds the "hurt" reaction window lasts after a damage event (drives the
+/// rising-edge hit detection in the model animator).
 pub const HURT_DURATION: f32 = 0.18;
-pub const HURT_TILT: f32 = 0.28;
-/// Seconds the death animation takes before the unit is despawned.
+/// Generic seconds a corpse is held before despawn, for kinds without a longer
+/// dedicated fall clip duration (see per-kind `*_DEATH_DURATION`).
 pub const DEATH_DURATION: f32 = 0.6;
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -449,6 +546,28 @@ pub enum UnitKind {
     Soldier,
     Miner,
     Archer,
+    Priest,
+}
+
+/// All unit kinds, in `index()` order — used to build/iterate the per-kind
+/// `UnitModels` table.
+pub const UNIT_KINDS: [UnitKind; 4] = [
+    UnitKind::Soldier,
+    UnitKind::Miner,
+    UnitKind::Archer,
+    UnitKind::Priest,
+];
+
+impl UnitKind {
+    /// Stable index into `UnitModels.models`.
+    pub fn index(self) -> usize {
+        match self {
+            UnitKind::Soldier => 0,
+            UnitKind::Miner => 1,
+            UnitKind::Archer => 2,
+            UnitKind::Priest => 3,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -710,17 +829,14 @@ impl AttackCooldown {
 #[derive(Component, Default)]
 pub struct UnitAnim {
     pub walking: bool,
-    pub walk_phase: f32,
-    pub walk_amp: f32,
     pub attacking: bool,
-    pub attack_phase: f32,
     pub hurt_t: f32,
     pub dying: bool,
     pub death_t: f32,
-    /// Desired entity yaw (rotation around Y) for the archer, set by
+    /// Desired entity yaw (rotation around Y) for aiming kinds, set by
     /// `combat_tick` (target + `ARCHER_SHOT_YAW_OFFSET` when shooting, the
-    /// advance direction otherwise). `animate_archer` smoothly rotates to it.
-    /// Unused by procedural units.
+    /// advance direction otherwise; the priest faces its ally). `animate_unit_model`
+    /// smoothly rotates to it for kinds where `uses_face_yaw` is true.
     pub face_yaw: f32,
     /// Last observed `Health.current`. Lets `process_damage_effects` flash
     /// only when HP actually drops (a heal that leaves current<max should
@@ -728,25 +844,44 @@ pub struct UnitAnim {
     pub last_hp: Option<i32>,
 }
 
+/// Marker on the root of a unit rendered from a glTF model (now every unit).
+/// Drives `animate_unit_model` through a descendant `AnimationPlayer`.
 #[derive(Component)]
-pub struct UnitRig {
-    pub bob: Entity,
-    pub leg_left: Entity,
-    pub leg_right: Entity,
-    pub arm_left: Entity,
-    pub arm_right: Entity,
+pub struct ModeledUnit;
+
+/// Temporary flat damage reduction granted by the priest. Present on every unit
+/// (amount 0 when unbuffed); `tick_armor_buffs` zeroes `amount` when `timer`
+/// finishes. Damage sites subtract `amount` (with a `MIN_DAMAGE` floor).
+#[derive(Component)]
+pub struct Armor {
+    pub amount: i32,
+    pub timer: Timer,
 }
 
-/// Marker on the root of an archer rendered from the glTF model. Such units
-/// carry no `UnitRig` (so `animate_units` skips them) and are driven instead by
-/// `animate_archer` through a descendant `AnimationPlayer`.
-#[derive(Component)]
-pub struct ArcherModel;
+impl Default for Armor {
+    fn default() -> Self {
+        // Start expired so unbuffed units have no armor.
+        let mut timer = Timer::from_seconds(1.0, TimerMode::Once);
+        timer.tick(timer.duration());
+        Self { amount: 0, timer }
+    }
+}
 
-/// Which logical clip an archer is currently playing. Lets `animate_archer`
-/// avoid re-issuing `play` every frame.
+impl Armor {
+    /// Effective reduction right now (0 once the buff has expired).
+    pub fn active(&self) -> i32 {
+        if self.timer.is_finished() {
+            0
+        } else {
+            self.amount
+        }
+    }
+}
+
+/// Which logical clip a modeled unit is currently playing. Lets
+/// `animate_unit_model` avoid re-issuing `play` every frame.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ArcherClip {
+pub enum ModelClip {
     #[default]
     None,
     Idle,
@@ -756,10 +891,9 @@ pub enum ArcherClip {
     Death,
 }
 
-/// A shot queued by `combat_tick` and released by `animate_archer` when the
-/// shot clip reaches the end of its cycle. The target is snapshotted at queue
-/// time; the arrow's light homing (`arrow_flight_system`) corrects for movement
-/// during the short draw.
+/// A shot queued by `combat_tick` and released by `animate_unit_model` (archer
+/// only) when the shot clip reaches the end of its cycle. The target is
+/// snapshotted at queue time; the arrow's light homing corrects for movement.
 #[derive(Clone, Copy)]
 pub struct PendingShot {
     pub target: Entity,
@@ -767,66 +901,105 @@ pub struct PendingShot {
     pub damage: i32,
 }
 
-/// Per-archer animation bookkeeping: the descendant `AnimationPlayer` entity
+/// Per-unit animation bookkeeping: the descendant `AnimationPlayer` entity
 /// (instanced asynchronously with the scene) plus the small state machine that
-/// `animate_archer` runs off `UnitAnim`.
+/// `animate_unit_model` runs off `UnitAnim`.
 #[derive(Component, Default)]
-pub struct ArcherAnimState {
+pub struct UnitAnimState {
     pub player: Option<Entity>,
-    /// The skeleton's `LeftHand` bone (the bow hand), resolved once by
-    /// `bind_archer_bow_hand`. Arrows leave from its world position.
-    pub left_hand: Option<Entity>,
-    pub current: ArcherClip,
+    /// The skeleton hand bone the weapon is parented to (and, for the archer,
+    /// the world position arrows leave from). Resolved by `bind_unit_weapon_hand`.
+    pub weapon_hand: Option<Entity>,
+    pub current: ModelClip,
     pub hurt_index: usize,
     pub oneshot_active: bool,
     /// Previous-frame `UnitAnim.hurt_t`, to detect a fresh hit (rising edge).
     pub last_hurt_t: f32,
-    /// Countdown that keeps the shot animation playing through brief target
+    /// Countdown that keeps the attack animation playing through brief target
     /// losses (see `ARCHER_ATTACK_HOLD`).
     pub attack_hold: f32,
-    /// Shot clip `seek_time()` last frame, so `animate_archer` can fire one
-    /// arrow per cycle the moment playback crosses `ARCHER_SHOT_RELEASE_FRACTION`.
+    /// Attack clip `seek_time()` last frame, so the archer fires one arrow per
+    /// cycle the moment playback crosses `ARCHER_SHOT_RELEASE_FRACTION`.
     pub last_attack_seek: f32,
-    /// Target snapshot to release on the next shot-cycle end; `None` when there
-    /// is nothing to shoot at (or the archer isn't yet aimed).
+    /// Archer-only: target snapshot to release on the next shot-cycle end.
     pub pending_shot: Option<PendingShot>,
 }
 
-/// Indices (and precomputed playback speeds) of the archer's clips inside its
-/// shared `AnimationGraph`.
-#[derive(Clone, Copy)]
-pub struct ArcherAnimNodes {
+/// Indices (and precomputed playback speeds) of one unit kind's clips inside its
+/// shared `AnimationGraph`. `attack`/`death` are optional and `hurts` may be
+/// empty (e.g. the miner has only walk + mining clips).
+#[derive(Clone)]
+pub struct ModelAnimNodes {
     pub walk: AnimationNodeIndex,
-    pub attack: AnimationNodeIndex,
-    pub hurts: [AnimationNodeIndex; 2],
-    pub death: AnimationNodeIndex,
-    /// Speed that makes one loop of the shot clip last `ARCHER_COOLDOWN`.
+    pub attack: Option<AnimationNodeIndex>,
+    pub hurts: Vec<AnimationNodeIndex>,
+    pub death: Option<AnimationNodeIndex>,
+    /// Speed that makes one loop of the attack clip last the unit's cooldown.
     pub attack_speed: f32,
-    /// Clip-local duration (s) of the shot clip, so `animate_archer` can release
-    /// the arrow at `ARCHER_SHOT_RELEASE_FRACTION` of the way through.
+    /// Clip-local duration (s) of the attack clip (archer release timing).
     pub attack_len: f32,
-    /// Speed that makes the fall clip finish within `ARCHER_DEATH_DURATION`.
+    /// Speed that makes the fall clip finish within the kind's death duration.
     pub death_speed: f32,
 }
 
-/// Handles for the shared archer model: the scene (mesh + skeleton) plus one
-/// `AnimationClip` per action loaded from its own file. `graph`/`nodes` stay
-/// `None` until `build_archer_graph` has seen all clips finish loading.
-#[derive(Resource, Default)]
-pub struct ArcherAssets {
+/// How a weapon/tool scene is parented to a unit's hand bone. Same semantics as
+/// the bow: an Euler placement in the bone frame, then a spin about the weapon's
+/// own long axis, plus a (large) scale to cancel the hand bone's tiny world scale.
+#[derive(Clone)]
+pub struct WeaponDef {
     pub scene: Handle<Scene>,
-    pub walk: Handle<AnimationClip>,
-    pub attack: Handle<AnimationClip>,
-    pub hurts: [Handle<AnimationClip>; 2],
-    pub death: Handle<AnimationClip>,
-    pub graph: Option<Handle<AnimationGraph>>,
-    pub nodes: Option<ArcherAnimNodes>,
-    pub bow: Handle<Scene>,
+    pub bone: &'static str,
+    pub offset: Vec3,
+    pub rotation: Vec3,
+    pub self_flip: f32,
+    pub scale: f32,
+    /// Shift along the weapon's own long axis (its local Y, in mesh units ≈ ±0.95)
+    /// applied *after* rotation, so the hand grips an end instead of the centre.
+    /// 0 = held at the middle (the bow); ~0.9 lifts the lower end to the hand.
+    pub grip: f32,
 }
 
-/// Marker on the bow scene entity parented to the archer's `LeftHand` bone.
+/// All glTF data for one unit kind: the scene (mesh + skeleton), one clip per
+/// action (the file path is the source of truth), the hand weapon, and — once
+/// the clips decode — the built graph + cached nodes. `attack`/`death`/`hurts`
+/// are optional so kinds with fewer clips (miner) are handled.
+#[derive(Default, Clone)]
+pub struct UnitModel {
+    pub scene: Handle<Scene>,
+    pub walk: Handle<AnimationClip>,
+    pub attack: Option<Handle<AnimationClip>>,
+    pub hurts: Vec<Handle<AnimationClip>>,
+    pub death: Option<Handle<AnimationClip>>,
+    pub weapon: Option<WeaponDef>,
+    pub graph: Option<Handle<AnimationGraph>>,
+    pub nodes: Option<ModelAnimNodes>,
+    /// Uniform model scale and the +Z→facing yaw offset applied to the SceneRoot.
+    pub scale: f32,
+    pub yaw_offset: f32,
+    /// Gameplay cooldown (drives `attack_speed`) and corpse-hold duration.
+    pub cooldown: f32,
+    pub death_duration: f32,
+}
+
+/// Per-`UnitKind` glTF models, indexed by `UnitKind::index`. Populated by
+/// `setup::load_unit_models`; graphs/nodes filled in by `build_unit_graphs`.
+#[derive(Resource, Default)]
+pub struct UnitModels {
+    pub models: [UnitModel; 4],
+}
+
+impl UnitModels {
+    pub fn get(&self, kind: UnitKind) -> &UnitModel {
+        &self.models[kind.index()]
+    }
+    pub fn get_mut(&mut self, kind: UnitKind) -> &mut UnitModel {
+        &mut self.models[kind.index()]
+    }
+}
+
+/// Marker on a weapon scene entity parented to a unit's hand bone.
 #[derive(Component)]
-pub struct ArcherBow;
+pub struct UnitWeapon;
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
@@ -989,20 +1162,10 @@ pub struct MatLibrary {
     pub left_dark: Handle<StandardMaterial>,
     pub right_dark: Handle<StandardMaterial>,
     // Misc materials
-    pub eye_mat: Handle<StandardMaterial>,
     pub ground: Handle<StandardMaterial>,
     pub wood_mat: Handle<StandardMaterial>,
     pub metal_mat: Handle<StandardMaterial>,
-    // Character meshes
-    pub body_mesh: Handle<Mesh>,
-    pub head_mesh: Handle<Mesh>,
-    pub limb_mesh: Handle<Mesh>,
-    pub eye_mesh: Handle<Mesh>,
-    // Weapons
-    pub spear_shaft: Handle<Mesh>,
-    pub spear_tip: Handle<Mesh>,
-    pub pickaxe_handle: Handle<Mesh>,
-    pub pickaxe_head: Handle<Mesh>,
+    // Arrow meshes (the archer's projectile is still procedural).
     pub arrow_shaft: Handle<Mesh>,
     pub arrow_tip: Handle<Mesh>,
     pub arrow_fletch: Handle<Mesh>,

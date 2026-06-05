@@ -28,6 +28,19 @@ bevy = { version = "0.18.1", features = ["mp3"] }
 # the renderer on the first frame.
 wgpu = { version = "27.0.1", optional = true }
 
+[profile.dev]
+# Keep our own code unoptimized (fastest recompiles). Slim debuginfo to
+# line-tables-only: panic backtraces still resolve to file:line, but linking is
+# faster because there is far less debug data to emit and link.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Optimize dependencies (Bevy, Avian, wgpu...) even in debug. They are compiled
+# once and rarely change, so this is a one-time cost, and it makes the debug
+# build actually playable (unoptimized Bevy runs at single-digit FPS). It does
+# not slow down iteration, which only recompiles our own crate.
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

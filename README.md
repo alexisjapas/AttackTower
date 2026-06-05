@@ -121,6 +121,7 @@ cargo run --release --no-default-features --features raytracing,dlss
 # Inside the Nix dev shell (auto via direnv).
 cargo run             # debug
 cargo run --release   # release
+cargo runf            # fast debug iteration (Bevy dynamic_linking; never for release)
 ```
 
 See `CLAUDE.md` for an architectural tour.

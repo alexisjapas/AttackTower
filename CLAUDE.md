@@ -20,6 +20,25 @@ cargo fmt
 cargo clippy
 ```
 
+For day-to-day debug iteration, prefer the aliases in `.cargo/config.toml`:
+
+```sh
+cargo runf                # debug run with Bevy dynamic_linking (much faster relinks)
+cargo checkf              # check counterpart
+```
+
+`runf`/`checkf` enable `bevy/dynamic_linking` so editing our crate only relinks
+our code, not the whole engine. **Never use them for release** — dynamic linking
+must not ship in a distributed build, which is why it is a CLI-only alias and not
+a default feature. The first `runf` is slow (it recompiles all dependencies at
+`opt-level = 3`, see below); subsequent iterations are fast. Linker speed (mold +
+clang) comes from `RUSTFLAGS` in `flake.nix`.
+
+The dev profile in `Cargo.toml` is tuned for iteration: `[profile.dev.package."*"]
+opt-level = 3` optimizes dependencies once (so debug Bevy is actually playable)
+without slowing our own recompiles, and `debug = "line-tables-only"` trims
+debuginfo to speed linking while keeping `file:line` in panic backtraces.
+
 No tests in this repository.
 
 The Nix dev shell exports `LD_LIBRARY_PATH` for Vulkan/Wayland/X11. Running outside the shell will fail to find dynamic libraries — always run from within `nix develop` (or with direnv active).

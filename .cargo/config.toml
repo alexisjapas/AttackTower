@@ -1,0 +1,13 @@
+# Faster debug iteration aliases.
+#
+# `cargo runf` (run-fast) builds with Bevy compiled as a shared library
+# (`dynamic_linking`), so editing our own code only relinks our crate instead
+# of the whole engine — the single biggest win for iteration time. It is kept
+# out of `cargo run`/`cargo build` so it never leaks into release or the
+# checked-in default features (dynamic_linking must NOT ship in a release build).
+#
+# Linker (mold/clang) is set via RUSTFLAGS in flake.nix, so it is intentionally
+# not duplicated here to avoid the two RUSTFLAGS sources clobbering each other.
+[alias]
+runf = "run --features bevy/dynamic_linking"
+checkf = "check --features bevy/dynamic_linking"

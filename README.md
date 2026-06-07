@@ -97,7 +97,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - **Deeper physics use** — units, buildings and arrows already run on Avian (dynamic capsules, static colliders, `SpatialQuery` arrow hits); ragdoll deaths, debris or knockback could build on it.
 - Additional unit types and abilities; sound effects.
 - Possibly online or split-screen play (currently a single shared screen).
-- Automated tests (none today).
+- Broader automated-test coverage (a handful of unit tests exist today).
 
 ### Known limitations
 - **Archers are not lit by raytracing.** Bevy Solari does not yet support skinned/animated meshes (planned upstream but not scheduled for 0.20; it needs per-frame BLAS refit). The archer uses the rasterized fallback lighting; static geometry gets full GI. See `CLAUDE.md` and the Solari tracking issue.

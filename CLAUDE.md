@@ -39,7 +39,7 @@ opt-level = 3` optimizes dependencies once (so debug Bevy is actually playable)
 without slowing our own recompiles, and `debug = "line-tables-only"` trims
 debuginfo to speed linking while keeping `file:line` in panic backtraces.
 
-No tests in this repository.
+Unit tests live in `#[cfg(test)]` modules (pure logic/helpers — geometry, settings, seat navigation); run them with `cargo test`.
 
 The Nix dev shell exports `LD_LIBRARY_PATH` for Vulkan/Wayland/X11. Running outside the shell will fail to find dynamic libraries — always run from within `nix develop` (or with direnv active).
 

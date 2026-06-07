@@ -1,6 +1,6 @@
 [package]
 name = "attack_tower"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "POC of a bilateral 3D tower defense game (Rust + Bevy + Avian3d)."
 license = "MIT OR Apache-2.0"

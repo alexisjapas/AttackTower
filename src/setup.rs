@@ -1,6 +1,8 @@
 use avian3d::prelude::*;
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::image::Image;
 use bevy::light::light_consts::lux;
 use bevy::light::{
     CascadeShadowConfigBuilder, FogVolume, NotShadowCaster, VolumetricFog, VolumetricLight,
@@ -8,6 +10,7 @@ use bevy::light::{
 use bevy::pbr::{Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScatteringMedium};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 #[cfg(feature = "raytracing")]
 use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 
@@ -17,6 +20,7 @@ pub fn init_mat_library(
     mut lib: ResMut<MatLibrary>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     lib.left = materials.add(StandardMaterial {
         base_color: Side::Left.color(),
@@ -38,12 +42,18 @@ pub fn init_mat_library(
         perceptual_roughness: 0.85,
         ..default()
     });
+    // Procedural three-region ground texture: sand play field, blue no-man's-land,
+    // cooler decor outside — with quick fades (see `generate_ground_texture`).
+    // Built with the 1v1 zone here; `spawn_arena` regenerates it in place for the
+    // active GameMode at match start (the Z extent tracks the tower z-limit).
+    let ground_tex = images.add(generate_ground_texture(TOWER_PLACEMENT_Z_LIMIT_1V1));
     lib.ground = materials.add(StandardMaterial {
-        // Desert sand — Adamar fights in the Irrhakur desert.
-        base_color: Color::srgb(0.78, 0.66, 0.45),
+        base_color: Color::WHITE,
+        base_color_texture: Some(ground_tex.clone()),
         perceptual_roughness: 1.0,
         ..default()
     });
+    lib.ground_tex = ground_tex;
     lib.wood_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.42, 0.26, 0.13),
         perceptual_roughness: 0.95,
@@ -98,15 +108,6 @@ pub fn init_mat_library(
         cull_mode: None,
         ..default()
     });
-
-    // Thin marker strip painted on the ground at each zone boundary.
-    lib.zone_marker_mesh = meshes.add(Cuboid::new(0.12, 0.02, 12.0));
-    lib.zone_marker_mat = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.95, 0.95, 0.95, 0.55),
-        alpha_mode: AlphaMode::Blend,
-        unlit: true,
-        ..default()
-    });
 }
 
 /// Startup: kick off the async load of the glTF building + desert prop scenes.
@@ -156,7 +157,6 @@ pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitM
         scene: scn(SOLDIER_SCENE_PATH),
         walk: clip(SOLDIER_WALK_PATH),
         attack: Some(clip(SOLDIER_ATTACK_PATH)),
-        hurts: vec![clip(SOLDIER_HURT_PATHS[0])],
         death: Some(clip(SOLDIER_DEATH_PATH)),
         weapon: Some(weapon(
             SWORD_PATH,
@@ -177,9 +177,8 @@ pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitM
     *models.get_mut(UnitKind::Miner) = UnitModel {
         scene: scn(MINER_SCENE_PATH),
         walk: clip(MINER_WALK_PATH),
-        // The miner's only action clip is the mining swing; no hurt/death clips.
+        // The miner's only action clip is the mining swing; no death clip.
         attack: Some(clip(MINER_ATTACK_PATH)),
-        hurts: vec![],
         death: None,
         weapon: Some(weapon(
             PICKAXE_PATH,
@@ -201,7 +200,6 @@ pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitM
         scene: scn(ARCHER_SCENE_PATH),
         walk: clip(ARCHER_WALK_PATH),
         attack: Some(clip(ARCHER_SHOT_PATH)),
-        hurts: vec![clip(ARCHER_HURT_PATHS[0]), clip(ARCHER_HURT_PATHS[1])],
         death: Some(clip(ARCHER_DEATH_PATH)),
         weapon: Some(weapon(
             ARCHER_BOW_PATH,
@@ -223,7 +221,6 @@ pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitM
         scene: scn(PRIEST_SCENE_PATH),
         walk: clip(PRIEST_WALK_PATH),
         attack: Some(clip(PRIEST_ATTACK_PATH)),
-        hurts: vec![clip(PRIEST_HURT_PATHS[0])],
         death: Some(clip(PRIEST_DEATH_PATH)),
         weapon: Some(weapon(
             STAFF_PATH,
@@ -244,7 +241,7 @@ pub fn load_unit_models(asset_server: Res<AssetServer>, mut models: ResMut<UnitM
 
 /// Update: for each unit kind, once all its clips have decoded, build the
 /// `AnimationGraph` and cache node indices + playback speeds derived from the
-/// clip durations. Tolerates kinds with no attack/hurt/death clips (the miner).
+/// clip durations. Tolerates kinds with no attack/death clips (the miner).
 /// Runs each frame until every kind is built, then no-ops.
 pub fn build_unit_graphs(
     mut models: ResMut<UnitModels>,
@@ -259,7 +256,6 @@ pub fn build_unit_graphs(
             }
             let ready = clips.get(&m.walk).is_some()
                 && m.attack.as_ref().is_none_or(|a| clips.get(a).is_some())
-                && m.hurts.iter().all(|h| clips.get(h).is_some())
                 && m.death.as_ref().is_none_or(|d| clips.get(d).is_some());
             if !ready {
                 continue;
@@ -274,11 +270,6 @@ pub fn build_unit_graphs(
             .attack
             .as_ref()
             .map(|a| graph.add_clip(a.clone(), 1.0, root));
-        let hurts: Vec<_> = m
-            .hurts
-            .iter()
-            .map(|h| graph.add_clip(h.clone(), 1.0, root))
-            .collect();
         let death = m
             .death
             .as_ref()
@@ -300,7 +291,6 @@ pub fn build_unit_graphs(
         mm.nodes = Some(ModelAnimNodes {
             walk,
             attack,
-            hurts,
             death,
             attack_speed,
             attack_len,
@@ -380,7 +370,7 @@ pub fn setup_world(
     // distance fog has fully saturated before its edge — the edge then dissolves
     // into the sky tone and no hard horizon line shows behind the mountains.
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(300.0, 0.2, 300.0))),
+        Mesh3d(meshes.add(Cuboid::new(GROUND_PLANE_SIZE, 0.2, GROUND_PLANE_SIZE))),
         MeshMaterial3d(lib.ground.clone()),
         Transform::from_xyz(0.0, -0.1, 0.0),
     ));
@@ -388,7 +378,6 @@ pub fn setup_world(
     spawn_sky(&mut commands, &mut meshes, &mut materials);
     spawn_mountains(&mut commands, &env);
 
-    spawn_zone_markers(&mut commands, &lib);
     spawn_scenery(&mut commands, &env);
 }
 
@@ -402,6 +391,7 @@ pub fn spawn_arena(
     env: Res<EnvAssets>,
     state: Res<GameState>,
     mode: Res<GameMode>,
+    mut images: ResMut<Assets<Image>>,
     bases: Query<Entity, With<Base>>,
 ) {
     if !state.is_changed() || *state != GameState::Playing {
@@ -411,6 +401,11 @@ pub fn spawn_arena(
     if bases.iter().next().is_some() {
         return;
     }
+    // Repaint the ground for the active mode: the sand band's Z extent tracks the
+    // mode's tower z-limit, so the visible play field equals the buildable zone.
+    if let Some(img) = images.get_mut(&lib.ground_tex) {
+        *img = generate_ground_texture(mode.tower_z_limit());
+    }
     for &slot in mode.active_slots() {
         let z = slot.base_z(*mode);
         spawn_castle(&mut commands, &lib, &env, slot, z);
@@ -418,14 +413,71 @@ pub fn spawn_arena(
     }
 }
 
-fn spawn_zone_markers(commands: &mut Commands, lib: &MatLibrary) {
-    for x in [-ZONE_BOUNDARY, ZONE_BOUNDARY] {
-        commands.spawn((
-            Mesh3d(lib.zone_marker_mesh.clone()),
-            MeshMaterial3d(lib.zone_marker_mat.clone()),
-            Transform::from_xyz(x, 0.02, 0.0),
-        ));
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 1 inside the play-field rectangle, 0 outside, with a `GROUND_COLOR_FADE` ramp.
+/// `half_z` is the active mode's tower z-limit so the sand matches the buildable zone.
+fn ground_play_mask(x: f32, z: f32, half_z: f32) -> f32 {
+    let f = GROUND_COLOR_FADE;
+    let in_x = 1.0 - smoothstep(GROUND_PLAY_HALF_X - f, GROUND_PLAY_HALF_X, x.abs());
+    let in_z = 1.0 - smoothstep(half_z - f, half_z, z.abs());
+    in_x * in_z
+}
+
+/// 1 in the central no-man's-land (|x| < ZONE_BOUNDARY), fading to 0 at its edge.
+fn ground_nomans_mask(x: f32) -> f32 {
+    1.0 - smoothstep(ZONE_BOUNDARY - GROUND_COLOR_FADE, ZONE_BOUNDARY, x.abs())
+}
+
+fn lerp_srgba(a: Srgba, b: Srgba, t: f32) -> Srgba {
+    Srgba::new(
+        a.red + (b.red - a.red) * t,
+        a.green + (b.green - a.green) * t,
+        a.blue + (b.blue - a.blue) * t,
+        1.0,
+    )
+}
+
+/// Build the ground's base-color texture: decor outside the play rectangle, sand
+/// inside, with the central no-man's-land tinted blue — all blended with quick
+/// smoothstep fades. `half_z` is the active mode's tower z-limit so the sand band
+/// matches the buildable zone. Mapped to the ground cuboid's top face, whose
+/// UV 0..1 spans ±`GROUND_PLANE_SIZE`/2 in world XZ.
+fn generate_ground_texture(half_z: f32) -> Image {
+    let n = GROUND_TEX_SIZE;
+    let sand = GROUND_SAND.to_srgba();
+    let decor = GROUND_DECOR.to_srgba();
+    let blue = GROUND_NOMANS.to_srgba();
+    let mut data = vec![0u8; (n * n * 4) as usize];
+    for j in 0..n {
+        let z = ((j as f32 + 0.5) / n as f32 - 0.5) * GROUND_PLANE_SIZE;
+        for i in 0..n {
+            let x = ((i as f32 + 0.5) / n as f32 - 0.5) * GROUND_PLANE_SIZE;
+            // Inside the play field: sand, turning blue toward the centre line.
+            let field = lerp_srgba(sand, blue, ground_nomans_mask(x));
+            // Then blend the whole field over the decor at the play-rect edge.
+            let c = lerp_srgba(decor, field, ground_play_mask(x, z, half_z));
+            let o = ((j * n + i) * 4) as usize;
+            data[o] = (c.red * 255.0) as u8;
+            data[o + 1] = (c.green * 255.0) as u8;
+            data[o + 2] = (c.blue * 255.0) as u8;
+            data[o + 3] = 255;
+        }
     }
+    Image::new(
+        Extent3d {
+            width: n,
+            height: n,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 fn spawn_sun(commands: &mut Commands) {

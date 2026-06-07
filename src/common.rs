@@ -67,10 +67,6 @@ pub const ARCHER_SCENE_PATH: &str =
 pub const ARCHER_WALK_PATH: &str = ARCHER_SCENE_PATH;
 pub const ARCHER_SHOT_PATH: &str =
     "models/adamar/characters/adamar_archer_biped_Animation_Archery_Shot_withSkin.glb";
-pub const ARCHER_HURT_PATHS: [&str; 2] = [
-    "models/adamar/characters/adamar_archer_biped_Animation_Face_Punch_Reaction_withSkin.glb",
-    "models/adamar/characters/adamar_archer_biped_Animation_Slap_Reaction_withSkin.glb",
-];
 pub const ARCHER_DEATH_PATH: &str =
     "models/adamar/characters/adamar_archer_biped_Animation_Shot_in_the_Back_and_Fall_withSkin.glb";
 /// The glTF already bakes the Mixamo cm→m 0.01 at its Armature root, so the
@@ -156,8 +152,6 @@ pub const SOLDIER_SCENE_PATH: &str =
 pub const SOLDIER_WALK_PATH: &str = SOLDIER_SCENE_PATH;
 pub const SOLDIER_ATTACK_PATH: &str =
     "models/adamar/characters/adamar_soldier_biped_Animation_Left_Slash_withSkin.glb";
-pub const SOLDIER_HURT_PATHS: [&str; 1] =
-    ["models/adamar/characters/adamar_soldier_biped_Animation_Hit_Reaction_1_withSkin.glb"];
 pub const SOLDIER_DEATH_PATH: &str = "models/adamar/characters/adamar_soldier_biped_Animation_Fall_Dead_from_Abdominal_Injury_withSkin.glb";
 pub const SOLDIER_MODEL_SCALE: f32 = 0.7;
 pub const SOLDIER_MODEL_YAW_OFFSET: f32 = std::f32::consts::FRAC_PI_2;
@@ -178,8 +172,6 @@ pub const PRIEST_WALK_PATH: &str = PRIEST_SCENE_PATH;
 /// The priest's "attack" clip is the spell cast (heal + armor, no damage).
 pub const PRIEST_ATTACK_PATH: &str =
     "models/adamar/characters/adamar_priest_biped_Animation_mage_spell_cast_1_withSkin.glb";
-pub const PRIEST_HURT_PATHS: [&str; 1] =
-    ["models/adamar/characters/adamar_priest_biped_Animation_Slap_Reaction_withSkin.glb"];
 pub const PRIEST_DEATH_PATH: &str =
     "models/adamar/characters/adamar_priest_biped_Animation_Shot_and_Fall_Backward_withSkin.glb";
 pub const PRIEST_MODEL_SCALE: f32 = 0.7;
@@ -329,6 +321,27 @@ pub const SCENERY_CLEAR_Z_MAX: f32 = 9.0;
 pub const SCENERY_SCALE_MIN: f32 = 0.8;
 pub const SCENERY_SCALE_MAX: f32 = 1.25;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Ground coloring. A procedural texture (built in `init_mat_library`) paints the
+// ground in three regions with quick smoothstep fades: the play field (sand),
+// the surrounding decor (a cooler tone), and the central no-man's-land (blue).
+// ─────────────────────────────────────────────────────────────────────────────
+/// XZ extent of the ground cuboid — the texture's UV 0..1 maps to ±half this.
+pub const GROUND_PLANE_SIZE: f32 = 300.0;
+/// Resolution of the generated ground texture (square).
+pub const GROUND_TEX_SIZE: u32 = 1024;
+/// Width (world units) of the fade between adjacent ground regions ("fondu rapide").
+pub const GROUND_COLOR_FADE: f32 = 1.0;
+/// The sand play field is the actual tower-buildable strip, so the visible sand
+/// matches where you can build. In X it runs from the centre no-man's-land out to
+/// the base minus the placement margin; in Z it uses the active mode's tower
+/// z-limit (passed to `generate_ground_texture` at match start). Bases, mining
+/// rocks and the far field read as decor.
+pub const GROUND_PLAY_HALF_X: f32 = RIGHT_BASE_X - TOWER_PLACEMENT_MARGIN;
+pub const GROUND_SAND: Color = Color::srgb(0.78, 0.66, 0.45);
+pub const GROUND_DECOR: Color = Color::srgb(0.50, 0.44, 0.36);
+pub const GROUND_NOMANS: Color = Color::srgb(0.20, 0.33, 0.55);
+
 // Torch placement on the new building models (torches stay procedural so the
 // day/night system can light them; tune to sit them on the art).
 pub const BASE_TORCH_RADIUS: f32 = 0.85;
@@ -373,6 +386,10 @@ pub const RETALIATE_LEASH: f32 = 8.0;
 /// While marching with no enemy target, a unit goes dead-straight until it comes
 /// within this distance of the enemy base, then steers onto it to attack.
 pub const BASE_SEEK_RANGE: f32 = 6.0;
+/// When attacking, a soldier closes only to this distance — just past body
+/// contact (`2·UNIT_RADIUS`) — so it strikes a target instead of shoving it,
+/// while still creeping in to follow a kiting target and stay in reach.
+pub const MELEE_STANDOFF: f32 = UNIT_RADIUS * 2.0 + 0.25;
 
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;
@@ -428,9 +445,6 @@ pub const ROCK_COLLIDER_HEIGHT: f32 = 2.0;
 // Unit animation timing. All units are now rigged glTF models driven by
 // `animate_unit_model`; these are the shared timing values it reads.
 // ─────────────────────────────────────────────────────────────────────────────
-/// Seconds the "hurt" reaction window lasts after a damage event (drives the
-/// rising-edge hit detection in the model animator).
-pub const HURT_DURATION: f32 = 0.18;
 /// Generic seconds a corpse is held before despawn, for kinds without a longer
 /// dedicated fall clip duration (see per-kind `*_DEATH_DURATION`).
 pub const DEATH_DURATION: f32 = 0.6;
@@ -934,7 +948,6 @@ impl AttackCooldown {
 pub struct UnitAnim {
     pub walking: bool,
     pub attacking: bool,
-    pub hurt_t: f32,
     pub dying: bool,
     pub death_t: f32,
     /// Desired entity yaw (rotation around Y) for aiming kinds, set by
@@ -942,10 +955,6 @@ pub struct UnitAnim {
     /// advance direction otherwise; the priest faces its ally). `animate_unit_model`
     /// smoothly rotates to it for kinds where `uses_face_yaw` is true.
     pub face_yaw: f32,
-    /// Last observed `Health.current`. Lets `process_damage_effects` flash
-    /// only when HP actually drops (a heal that leaves current<max should
-    /// not look like a hit).
-    pub last_hp: Option<i32>,
 }
 
 /// Marker on the root of a unit rendered from a glTF model (now every unit).
@@ -991,7 +1000,6 @@ pub enum ModelClip {
     Idle,
     Walk,
     Attack,
-    Hurt,
     Death,
 }
 
@@ -1015,10 +1023,6 @@ pub struct UnitAnimState {
     /// the world position arrows leave from). Resolved by `bind_unit_weapon_hand`.
     pub weapon_hand: Option<Entity>,
     pub current: ModelClip,
-    pub hurt_index: usize,
-    pub oneshot_active: bool,
-    /// Previous-frame `UnitAnim.hurt_t`, to detect a fresh hit (rising edge).
-    pub last_hurt_t: f32,
     /// Countdown that keeps the attack animation playing through brief target
     /// losses (see `ARCHER_ATTACK_HOLD`).
     pub attack_hold: f32,
@@ -1030,13 +1034,12 @@ pub struct UnitAnimState {
 }
 
 /// Indices (and precomputed playback speeds) of one unit kind's clips inside its
-/// shared `AnimationGraph`. `attack`/`death` are optional and `hurts` may be
-/// empty (e.g. the miner has only walk + mining clips).
+/// shared `AnimationGraph`. `attack`/`death` are optional (e.g. the miner has
+/// only walk + mining clips).
 #[derive(Clone)]
 pub struct ModelAnimNodes {
     pub walk: AnimationNodeIndex,
     pub attack: Option<AnimationNodeIndex>,
-    pub hurts: Vec<AnimationNodeIndex>,
     pub death: Option<AnimationNodeIndex>,
     /// Speed that makes one loop of the attack clip last the unit's cooldown.
     pub attack_speed: f32,
@@ -1065,14 +1068,13 @@ pub struct WeaponDef {
 
 /// All glTF data for one unit kind: the scene (mesh + skeleton), one clip per
 /// action (the file path is the source of truth), the hand weapon, and — once
-/// the clips decode — the built graph + cached nodes. `attack`/`death`/`hurts`
-/// are optional so kinds with fewer clips (miner) are handled.
+/// the clips decode — the built graph + cached nodes. `attack`/`death` are
+/// optional so kinds with fewer clips (miner) are handled.
 #[derive(Default, Clone)]
 pub struct UnitModel {
     pub scene: Handle<Scene>,
     pub walk: Handle<AnimationClip>,
     pub attack: Option<Handle<AnimationClip>>,
-    pub hurts: Vec<Handle<AnimationClip>>,
     pub death: Option<Handle<AnimationClip>>,
     pub weapon: Option<WeaponDef>,
     pub graph: Option<Handle<AnimationGraph>>,
@@ -1267,6 +1269,8 @@ pub struct MatLibrary {
     pub right_dark: Handle<StandardMaterial>,
     // Misc materials
     pub ground: Handle<StandardMaterial>,
+    /// Base-color texture of the ground; regenerated per `GameMode` at match start.
+    pub ground_tex: Handle<Image>,
     pub wood_mat: Handle<StandardMaterial>,
     pub metal_mat: Handle<StandardMaterial>,
     // Arrow meshes (the archer's projectile is still procedural).
@@ -1281,9 +1285,6 @@ pub struct MatLibrary {
     pub tower_ghost_mesh: Handle<Mesh>,
     pub ghost_valid_mat: Handle<StandardMaterial>,
     pub ghost_invalid_mat: Handle<StandardMaterial>,
-    // Zone boundary marker
-    pub zone_marker_mesh: Handle<Mesh>,
-    pub zone_marker_mat: Handle<StandardMaterial>,
 }
 
 /// Handles for the glTF environment scenes (buildings + desert props), loaded

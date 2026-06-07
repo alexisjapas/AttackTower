@@ -424,15 +424,41 @@ pub fn combat_tick(
             UnitKind::Soldier => {
                 let walk_sign = side.forward();
                 let mut ct = targets.get_mut(entity).expect("unit has CombatTarget");
+
+                // Melee: hit the nearest enemy within reach — unit, tower or base
+                // — even if it isn't the committed target, so a soldier never
+                // bulldozes through an enemy it is touching. The cooldown is NOT
+                // reset on (re-)entry, so a kiting target that slips in and out of
+                // reach still accumulates hits (resetting it is why soldiers used
+                // to shove archers without ever landing a blow).
+                if let Some(t) = nearest_enemy_in_reach(&combatants, *side, pos, ENGAGE_RANGE) {
+                    ct.current = Some(t.entity);
+                    cooldown.0.tick(time.delta());
+                    anim.attacking = true;
+                    anim.walking = false;
+                    if cooldown.0.just_finished() {
+                        damage_events.push((t.entity, damage.0, Some(entity)));
+                    }
+                    face_dir(&mut transform, t.pos - pos);
+                    // Creep in to follow a kiting target and stay in reach, but
+                    // never past the standoff, so we strike instead of shove.
+                    if xz_distance(t.pos, pos) > MELEE_STANDOFF {
+                        drive(&mut lin_vel, &mut transform, t.pos - pos, speed.0, false);
+                    } else {
+                        lin_vel.0 = Vec3::ZERO;
+                    }
+                    continue;
+                }
+
+                anim.attacking = false;
+
+                // Nothing in reach: decide where to move. Acquire/switch to the
+                // nearest enemy within the short aggro radius (re-evaluated each
+                // frame); keep chasing a committed target out to the leash; else
+                // charge the last attacker; else march to the enemy base.
                 let committed_id = ct.current;
                 let last_attacker = ct.last_attacker;
-
-                // Acquire / switch: nearest enemy unit or tower within the short
-                // aggro radius wins, re-evaluated every frame, so the soldier
-                // redirects to a closer threat that crosses its path.
                 let aggro = nearest_enemy_combatant(&combatants, *side, pos, AGGRO_RADIUS);
-                // Keep chasing the committed target while it lives and stays
-                // within the larger leash, even after it leaves the aggro ring.
                 let committed = committed_id.and_then(|e| {
                     combatants.iter().find(|c| {
                         c.entity == e
@@ -441,8 +467,6 @@ pub fn combat_tick(
                             && xz_distance(c.pos, pos) <= TARGET_LEASH
                     })
                 });
-                // Retaliate: with no target in sight, charge the last attacker if
-                // it is alive and within reach (answers ranged fire too).
                 let retaliation = || {
                     last_attacker.and_then(|e| {
                         combatants.iter().find(|c| {
@@ -456,47 +480,19 @@ pub fn combat_tick(
                 let target = aggro.or(committed).or_else(retaliation);
                 ct.current = target.map(|c| c.entity);
 
-                // Fallback objective: the enemy base. Marched toward straight,
-                // then attacked on arrival.
                 let enemy_base = combatants
                     .iter()
                     .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
-
-                // What to engage (entity + pos) and which way to move this frame.
-                let (engage, move_dir) = match target {
-                    Some(t) => (Some((t.entity, t.pos)), t.pos - pos),
+                let move_dir = match target {
+                    Some(t) => t.pos - pos,
                     None => match enemy_base {
-                        Some(base) => (
-                            Some((base.entity, base.pos)),
-                            march_dir(pos, base.pos, walk_sign),
-                        ),
-                        None => (None, Vec3::new(walk_sign, 0.0, 0.0)),
+                        Some(base) => march_dir(pos, base.pos, walk_sign),
+                        None => Vec3::new(walk_sign, 0.0, 0.0),
                     },
                 };
-
-                if let Some((target_entity, target_pos)) = engage
-                    && xz_distance(target_pos, pos) <= ENGAGE_RANGE
-                {
-                    if !anim.attacking {
-                        // First frame in melee: restart the swing so it doesn't
-                        // pick up at a random fraction from a previous fight.
-                        cooldown.0.reset();
-                    }
-                    cooldown.0.tick(time.delta());
-                    anim.attacking = true;
-                    if cooldown.0.just_finished() {
-                        damage_events.push((target_entity, damage.0, Some(entity)));
-                    }
-                    lin_vel.0 = Vec3::ZERO;
-                    face_dir(&mut transform, target_pos - pos);
-                    anim.walking = false;
-                    continue;
-                }
-
-                anim.attacking = false;
                 drive(&mut lin_vel, &mut transform, move_dir, speed.0, true);
                 anim.walking = true;
             }
@@ -796,6 +792,29 @@ fn nearest_enemy_combatant(
         .map(|(c, _)| c)
 }
 
+/// Nearest enemy the soldier can hit in melee — unit, tower OR base — within
+/// `radius`. Used for the "always attack what you're touching" rule so a soldier
+/// never bulldozes an enemy instead of fighting it.
+fn nearest_enemy_in_reach(
+    combatants: &[Combatant],
+    self_side: Side,
+    pos: Vec3,
+    radius: f32,
+) -> Option<&Combatant> {
+    combatants
+        .iter()
+        .filter(|c| {
+            c.side != self_side
+                && (c.kind.is_unit()
+                    || c.kind == CombatantKind::Tower
+                    || c.kind == CombatantKind::Base)
+        })
+        .map(|c| (c, xz_distance(c.pos, pos)))
+        .filter(|(_, d)| *d <= radius)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(c, _)| c)
+}
+
 /// Direction for a unit marching with no enemy target: dead-straight along its
 /// forward axis until within `BASE_SEEK_RANGE` of the enemy base, then steer onto
 /// the base so it actually reaches and hits it (instead of converging on the
@@ -834,16 +853,9 @@ pub fn process_damage_effects(
     mut query: Query<(&Health, &mut UnitAnim), (With<Unit>, Changed<Health>)>,
 ) {
     for (hp, mut anim) in query.iter_mut() {
-        let prev = anim.last_hp.replace(hp.current);
-        if hp.current <= 0 {
-            if !anim.dying {
-                anim.dying = true;
-                anim.death_t = 0.0;
-            }
-        } else if let Some(prev_hp) = prev
-            && hp.current < prev_hp
-        {
-            anim.hurt_t = HURT_DURATION;
+        if hp.current <= 0 && !anim.dying {
+            anim.dying = true;
+            anim.death_t = 0.0;
         }
     }
 }
@@ -1125,10 +1137,6 @@ pub fn animate_unit_model(
         let Some(nodes) = model.nodes.as_ref() else {
             continue;
         };
-        let hurt_count = nodes.hurts.len();
-        if anim.hurt_t > 0.0 {
-            anim.hurt_t = (anim.hurt_t - dt).max(0.0);
-        }
         if anim.dying {
             anim.death_t += dt;
         }
@@ -1150,10 +1158,6 @@ pub fn animate_unit_model(
             }
         }
 
-        // Rising edge of hurt_t = a fresh hit this frame.
-        let fresh_hit = anim.hurt_t > state.last_hurt_t + 1e-4;
-        state.last_hurt_t = anim.hurt_t;
-
         // Keep "attacking" latched for a moment after the target leaves range so
         // the shot pose doesn't flicker back to idle between volleys.
         if anim.attacking {
@@ -1170,24 +1174,8 @@ pub fn animate_unit_model(
             continue;
         };
 
-        // Has the current one-shot (a hurt reaction) finished playing? When it
-        // does, `snap` makes the return to the next clip a hard cut so the
-        // reaction never blends on top of the shot/walk pose.
-        let mut snap = false;
-        if state.oneshot_active {
-            let finished = transitions
-                .get_main_animation()
-                .and_then(|n| player.animation(n))
-                .map(|a| a.is_finished())
-                .unwrap_or(true);
-            if finished {
-                state.oneshot_active = false;
-                snap = true;
-            }
-        }
-
-        // Priority: death > fresh hit (only when stationary, so it never breaks
-        // the walk) > finish current hurt > attack > walk > idle.
+        // Priority: death > attack > walk > idle. (Hit-reaction clips were
+        // removed — they read poorly and broke the walk/attack flow.)
         if anim.dying {
             // Kinds with no death clip (miner) just hold; cleanup despawns them.
             if let Some(death) = nodes.death
@@ -1198,30 +1186,12 @@ pub fn animate_unit_model(
                     .set_repeat(RepeatAnimation::Never)
                     .set_speed(nodes.death_speed);
                 state.current = ModelClip::Death;
-                state.oneshot_active = false;
             }
             continue;
         }
 
-        if fresh_hit && !anim.walking && hurt_count > 0 {
-            // Reactions hard-cut in (Duration::ZERO) so the flinch replaces the
-            // action pose instead of blending over it.
-            let node = nodes.hurts[state.hurt_index % hurt_count];
-            state.hurt_index = (state.hurt_index + 1) % hurt_count;
-            transitions
-                .play(&mut player, node, Duration::ZERO)
-                .set_repeat(RepeatAnimation::Never);
-            state.current = ModelClip::Hurt;
-            state.oneshot_active = true;
-            continue;
-        }
-
-        if state.oneshot_active {
-            continue;
-        }
-
-        // Hard cut when leaving a reaction; short crossfade otherwise.
-        let enter = if snap { Duration::ZERO } else { blend };
+        // Short crossfade between clips.
+        let enter = blend;
 
         if attacking && let Some(attack_node) = nodes.attack {
             if state.current != ModelClip::Attack {

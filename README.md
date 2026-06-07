@@ -37,7 +37,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 | Miner   | 8  | 0      | 4    | 1.4   | mining 1.1 s | — |
 
 - Soldier and miner share a **procedural** body+head+limbs rig animated by transforms.
-- The archer is a **rigged glTF model** (Meshy export) with skinned animations (walk, shot, two hurt reactions, death-and-fall). It pivots to aim, releases the arrow partway through the shot clip (at the loose, not the end), and the arrow leaves from its bow (left) hand.
+- The archer is a **rigged glTF model** (Meshy export) with skinned animations (walk, shot, death-and-fall). It pivots to aim, releases the arrow partway through the shot clip (at the loose, not the end), and the arrow leaves from its bow (left) hand.
 
 ### Towers
 - **30 HP**, **3 damage**, **6 gold**, range **8.5**, cooldown **1.5 s**.
@@ -58,6 +58,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - Horizontal map, bases aligned on the left/right axis.
 - **Fixed** 3/4 camera at a shallow (~13°) downward angle, set below the mountain ridge height so the peaks rise above the eye-level horizon and are silhouetted against the sky (the camera height is the knob for this — see `CAMERA_DEFAULT_POS`).
 - **Procedural sky** via Bevy's native `Atmosphere` (physical scattering, sun-coloured). A large ground plane plus distance fog dissolves the far terrain into the sky so there is no hard horizon line; a mountain ring frames the plain.
+- The ground is painted in three regions (a generated base-color texture, quick fades between them): the **sand play field**, a **blue central no-man's-land**, and a **cooler decor tone** outside the play area.
 - Designed for two-to-four players sharing the same screen (no split-screen).
 - Day/night cycle (90 s period) drives sun position and torch lighting (torches inside castles and on towers light up at night).
 - A **free-fly debug camera** (mouse + keyboard — otherwise unused since the game is gamepad-only) is available for development: hold RMB to look, WASD/Space/LShift to fly, LCtrl to boost, scroll to change speed, R to snap back to the default view. Active in every state.

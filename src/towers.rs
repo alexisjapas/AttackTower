@@ -1,3 +1,4 @@
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::common::*;
@@ -22,6 +23,11 @@ pub fn spawn_tower(
             Health::new(TOWER_HP),
             Damage(TOWER_DAMAGE),
             AttackCooldown::ready(TOWER_COOLDOWN),
+            // Static obstacle: units flow around towers (replaces the old manual
+            // sidestep). The entity stays unrotated so aiming/arrows are unaffected.
+            RigidBody::Static,
+            Collider::cylinder(TOWER_RADIUS, TOWER_HEIGHT),
+            side.structure_layers(),
         ))
         .with_children(|p| {
             // The tower building model. Faces the center: side mirroring +

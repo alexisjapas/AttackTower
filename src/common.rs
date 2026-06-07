@@ -1,3 +1,4 @@
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 pub const BASE_HP: i32 = 40;
@@ -21,6 +22,9 @@ pub const MAX_MINERS_PER_PLAYER: usize = 5;
 pub const MINER_CAPACITY: u32 = 1;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
+/// How close (XZ) a velocity-driven miner must get to its mining slot before it
+/// stops and starts swinging. Replaces the old exact transform snap-to-slot.
+pub const MINER_ARRIVE_RANGE: f32 = 0.25;
 
 // Priest — support unit: no attack, heals and armors a nearby ally.
 pub const PRIEST_HP: i32 = 9;
@@ -388,6 +392,20 @@ pub const ROCK_OFFSET: f32 = 5.5;
 pub const SPAWN_Z_JITTER: f32 = 0.6;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Physics colliders (Avian). Units are dynamic capsules driven by LinearVelocity;
+// bases/towers/rocks are static obstacles. Avian resolves all overlap (units push
+// apart) and blocking, replacing the old manual queue/sidestep logic.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Cylindrical part of the unit capsule (total height ≈ LENGTH + 2·UNIT_RADIUS).
+pub const UNIT_CAPSULE_LENGTH: f32 = 0.6;
+/// Base obstacle radius. Kept below `ENGAGE_RANGE − UNIT_RADIUS` so attackers can
+/// still reach melee at the wall (refined with a base engage range in step 3).
+pub const BASE_COLLIDER_RADIUS: f32 = 0.9;
+pub const BASE_COLLIDER_HEIGHT: f32 = 3.0;
+pub const ROCK_COLLIDER_RADIUS: f32 = 0.9;
+pub const ROCK_COLLIDER_HEIGHT: f32 = 2.0;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Unit animation timing. All units are now rigged glTF models driven by
 // `animate_unit_model`; these are the shared timing values it reads.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +559,54 @@ impl Side {
             Side::Right => Quat::from_rotation_y(std::f32::consts::PI),
         }
     }
+
+    fn unit_layer(self) -> GameLayer {
+        match self {
+            Side::Left => GameLayer::UnitLeft,
+            Side::Right => GameLayer::UnitRight,
+        }
+    }
+
+    fn struct_layer(self) -> GameLayer {
+        match self {
+            Side::Left => GameLayer::StructLeft,
+            Side::Right => GameLayer::StructRight,
+        }
+    }
+
+    /// Units collide with every unit (separation) and every structure (blocking).
+    pub fn unit_layers(self) -> CollisionLayers {
+        CollisionLayers::new(
+            self.unit_layer(),
+            [
+                GameLayer::UnitLeft,
+                GameLayer::UnitRight,
+                GameLayer::StructLeft,
+                GameLayer::StructRight,
+            ],
+        )
+    }
+
+    /// Static obstacles (base/tower/rock) block units of both sides.
+    pub fn structure_layers(self) -> CollisionLayers {
+        CollisionLayers::new(
+            self.struct_layer(),
+            [GameLayer::UnitLeft, GameLayer::UnitRight],
+        )
+    }
+}
+
+/// Physics collision layers. Separate per-side layers let units separate from
+/// allies while (in step 4) arrows filter to the enemy only. Bit 0 (`Default`)
+/// is the layer everything unassigned falls into.
+#[derive(PhysicsLayer, Default, Clone, Copy)]
+pub enum GameLayer {
+    #[default]
+    Default,
+    UnitLeft,
+    UnitRight,
+    StructLeft,
+    StructRight,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

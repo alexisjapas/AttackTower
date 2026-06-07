@@ -61,7 +61,10 @@ fn main() {
         default_plugins
     };
     app.add_plugins(default_plugins)
-        .add_plugins(PhysicsPlugins::default());
+        .add_plugins(PhysicsPlugins::default())
+        // Everything is ground-bound (units lock their Y axis), so global gravity
+        // would only add solver work — disable it.
+        .insert_resource(Gravity(Vec3::ZERO));
     #[cfg(feature = "raytracing")]
     if raytracing_supported {
         app.add_plugins(bevy::solari::prelude::SolariPlugins);

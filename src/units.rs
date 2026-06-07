@@ -1,6 +1,7 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::time::Duration;
 
+use avian3d::prelude::*;
 use bevy::animation::RepeatAnimation;
 use bevy::ecs::system::ParamSet;
 use bevy::prelude::*;
@@ -204,6 +205,20 @@ fn spawn_unit(
             Armor::default(),
             ModeledUnit,
             UnitAnimState::default(),
+            // Physics: a dynamic capsule driven by LinearVelocity in `combat_tick`.
+            // Rotation + Y are locked so it stays upright on the plane; Avian
+            // resolves all unit↔unit separation and structure blocking.
+            (
+                RigidBody::Dynamic,
+                Collider::capsule(UNIT_RADIUS, UNIT_CAPSULE_LENGTH),
+                LockedAxes::ROTATION_LOCKED.lock_translation_y(),
+                LinearVelocity::default(),
+                Friction::new(0.0),
+                // Units frequently stop (combat/mining) then resume; never let a
+                // resting body sleep, or a re-set velocity could be ignored.
+                SleepingDisabled,
+                side.unit_layers(),
+            ),
         ))
         .add_children(&[scene_child])
         .id();
@@ -291,6 +306,7 @@ pub fn combat_tick(
                 &PlayerSlot,
                 &UnitKind,
                 &mut Transform,
+                &mut LinearVelocity,
                 &Damage,
                 &mut AttackCooldown,
                 &MoveSpeed,
@@ -309,7 +325,10 @@ pub fn combat_tick(
     )>,
 ) {
     if *state != GameState::Playing {
-        for (_, _, _, _, _, _, _, _, mut anim, _, _, _, _) in sets.p0().iter_mut() {
+        // Freeze movement so nothing drifts while paused/ended (physics keeps
+        // stepping regardless of GameState).
+        for (_, _, _, _, _, mut lin_vel, _, _, _, mut anim, _, _, _, _) in sets.p0().iter_mut() {
+            lin_vel.0 = Vec3::ZERO;
             anim.walking = false;
             anim.attacking = false;
         }
@@ -322,7 +341,7 @@ pub fn combat_tick(
     gold_events.clear();
     heal_events.clear();
     buff_events.clear();
-    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _, _) in sets.p0().iter() {
+    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _, _, _) in sets.p0().iter() {
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
@@ -365,15 +384,15 @@ pub fn combat_tick(
         });
     }
 
-    let dt = time.delta_secs();
-
-    // 2. Per-unit decision.
+    // 2. Per-unit decision. Movement is expressed as LinearVelocity; Avian
+    // integrates it and resolves separation/blocking.
     for (
         entity,
         side,
         slot,
         kind,
         mut transform,
+        mut lin_vel,
         damage,
         mut cooldown,
         speed,
@@ -385,6 +404,7 @@ pub fn combat_tick(
     ) in sets.p0().iter_mut()
     {
         if anim.dying {
+            lin_vel.0 = Vec3::ZERO;
             anim.walking = false;
             anim.attacking = false;
             continue;
@@ -420,38 +440,27 @@ pub fn combat_tick(
                     if cooldown.0.just_finished() {
                         damage_events.push((target.entity, damage.0));
                     }
+                    lin_vel.0 = Vec3::ZERO;
+                    face_dir(&mut transform, target.pos - pos);
                     anim.walking = false;
                     continue;
                 }
 
                 anim.attacking = false;
 
-                if ally_blocking(
-                    &combatants,
-                    entity,
-                    *side,
-                    pos,
-                    walk_sign,
-                    CombatantKind::Soldier,
-                ) || enemy_tower_blocking(&combatants, *side, pos, walk_sign)
-                {
-                    anim.walking = false;
-                    continue;
-                }
+                // Advance toward the enemy base; Avian handles separation from
+                // allies and blocking against towers/structures (no manual queue).
                 let enemy_base = combatants
                     .iter()
                     .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
-                if let Some(base) = enemy_base {
-                    let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
-                    step_toward(&mut transform, target, speed.0 * dt);
-                } else {
-                    transform.translation.x += walk_sign * speed.0 * dt;
-                }
-                transform.translation.z +=
-                    allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
+                let dir = match enemy_base {
+                    Some(base) => base.pos - pos,
+                    None => Vec3::new(walk_sign, 0.0, 0.0),
+                };
+                drive(&mut lin_vel, &mut transform, dir, speed.0, true);
                 anim.walking = true;
             }
             UnitKind::Miner => {
@@ -471,25 +480,18 @@ pub fn combat_tick(
                     MinerPhase::ToRock => {
                         anim.attacking = false;
                         let Some(rock) = own_rock else {
+                            lin_vel.0 = Vec3::ZERO;
                             anim.walking = false;
                             continue;
                         };
                         let target = rock.pos + miner_slot_offset(ring_slot, *side);
                         let target_xz = Vec3::new(target.x, 0.0, target.z);
-                        let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
-                        let dist = (target_xz - pos_xz).length();
-                        // Once we're within one frame's worth of the slot, do
-                        // the final step (step_toward clamps to dist, so this
-                        // lands exactly on the target) and transition. No
-                        // snap: the last frame of motion *is* the arrival.
-                        if dist <= speed.0 * dt {
-                            step_toward(&mut transform, target_xz, speed.0 * dt);
-                            // Face the rock so the mining animation looks
-                            // toward what's being hit, not the approach line.
-                            let to_rock_x = rock.pos.x - transform.translation.x;
-                            let to_rock_z = rock.pos.z - transform.translation.z;
-                            let yaw = to_rock_z.atan2(to_rock_x);
-                            transform.rotation = Quat::from_rotation_y(-yaw);
+                        let dist = xz_distance(target_xz, pos);
+                        if dist <= MINER_ARRIVE_RANGE {
+                            // Arrived at the mining slot: stop, face the rock so
+                            // the swing reads toward what's being hit, and mine.
+                            lin_vel.0 = Vec3::ZERO;
+                            face_dir(&mut transform, rock.pos - pos);
                             if let Some(phase) = phase_opt.as_deref_mut() {
                                 *phase = MinerPhase::Mining;
                             }
@@ -500,10 +502,11 @@ pub fn combat_tick(
                             anim.walking = false;
                             continue;
                         }
-                        step_toward(&mut transform, target_xz, speed.0 * dt);
+                        drive(&mut lin_vel, &mut transform, target_xz - pos, speed.0, true);
                         anim.walking = true;
                     }
                     MinerPhase::Mining => {
+                        lin_vel.0 = Vec3::ZERO;
                         cooldown.0.tick(time.delta());
                         anim.attacking = true;
                         anim.walking = false;
@@ -521,13 +524,14 @@ pub fn combat_tick(
                     MinerPhase::Returning => {
                         anim.attacking = false;
                         let Some(base) = own_base else {
+                            lin_vel.0 = Vec3::ZERO;
                             anim.walking = false;
                             continue;
                         };
                         let target_xz = Vec3::new(base.pos.x, 0.0, base.pos.z);
-                        let pos_xz = Vec3::new(pos.x, 0.0, pos.z);
-                        let dist = (target_xz - pos_xz).length();
+                        let dist = xz_distance(target_xz, pos);
                         if dist <= MINER_DEPOSIT_RANGE {
+                            lin_vel.0 = Vec3::ZERO;
                             if let Some(carry) = carry_opt.as_deref_mut()
                                 && carry.current > 0
                             {
@@ -540,7 +544,7 @@ pub fn combat_tick(
                             anim.walking = false;
                             continue;
                         }
-                        step_toward(&mut transform, target_xz, speed.0 * dt);
+                        drive(&mut lin_vel, &mut transform, target_xz - pos, speed.0, true);
                         anim.walking = true;
                     }
                 }
@@ -590,9 +594,11 @@ pub fn combat_tick(
                     // normal walk so it reads as a careful retreat.
                     let target_ahead = (target.pos.x - pos.x) * walk_sign;
                     if dist < ARCHER_KITE_RANGE && target_ahead > 0.0 {
-                        transform.translation.x -= walk_sign * speed.0 * 0.7 * dt;
+                        // Kite: retreat (slower than a normal walk) while shooting.
+                        lin_vel.0 = Vec3::new(-walk_sign * speed.0 * 0.7, 0.0, 0.0);
                         anim.walking = true;
                     } else {
+                        lin_vel.0 = Vec3::ZERO;
                         anim.walking = false;
                     }
                     continue;
@@ -606,33 +612,21 @@ pub fn combat_tick(
                 // front (animate_unit_model smoothly pivots toward this yaw).
                 anim.face_yaw = face_angle(walk_sign, 0.0);
 
-                if ally_blocking(
-                    &combatants,
-                    entity,
-                    *side,
-                    pos,
-                    walk_sign,
-                    CombatantKind::Archer,
-                ) || enemy_tower_blocking(&combatants, *side, pos, walk_sign)
-                {
-                    anim.walking = false;
-                    continue;
-                }
                 let enemy_base = combatants
                     .iter()
                     .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
-                if let Some(base) = enemy_base {
-                    let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
-                    anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
-                    move_toward_xz(&mut transform, target, speed.0 * dt);
-                } else {
-                    transform.translation.x += walk_sign * speed.0 * dt;
-                }
-                transform.translation.z +=
-                    allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
+                let dir = match enemy_base {
+                    Some(base) => {
+                        anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
+                        base.pos - pos
+                    }
+                    None => Vec3::new(walk_sign, 0.0, 0.0),
+                };
+                // face_yaw owns the archer's rotation (smoothed in animate_unit_model).
+                drive(&mut lin_vel, &mut transform, dir, speed.0, false);
                 anim.walking = true;
             }
             UnitKind::Priest => {
@@ -658,6 +652,7 @@ pub fn combat_tick(
                     cooldown.0.tick(time.delta());
                     anim.attacking = true;
                     anim.walking = false;
+                    lin_vel.0 = Vec3::ZERO;
                     // Face the ally being supported (animate_unit_model smooths to it).
                     anim.face_yaw = face_angle(ally.pos.x - pos.x, ally.pos.z - pos.z);
                     if cooldown.0.just_finished() {
@@ -670,33 +665,21 @@ pub fn combat_tick(
                 anim.attacking = false;
                 anim.face_yaw = face_angle(walk_sign, 0.0);
 
-                if ally_blocking(
-                    &combatants,
-                    entity,
-                    *side,
-                    pos,
-                    walk_sign,
-                    CombatantKind::Priest,
-                ) || enemy_tower_blocking(&combatants, *side, pos, walk_sign)
-                {
-                    anim.walking = false;
-                    continue;
-                }
                 let enemy_base = combatants
                     .iter()
                     .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
-                if let Some(base) = enemy_base {
-                    let target = Vec3::new(base.pos.x, 0.0, base.pos.z);
-                    anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
-                    move_toward_xz(&mut transform, target, speed.0 * dt);
-                } else {
-                    transform.translation.x += walk_sign * speed.0 * dt;
-                }
-                transform.translation.z +=
-                    allied_tower_sidestep(&combatants, *side, pos, walk_sign, speed.0 * dt);
+                let dir = match enemy_base {
+                    Some(base) => {
+                        anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
+                        base.pos - pos
+                    }
+                    None => Vec3::new(walk_sign, 0.0, 0.0),
+                };
+                // face_yaw owns the priest's rotation (smoothed in animate_unit_model).
+                drive(&mut lin_vel, &mut transform, dir, speed.0, false);
                 anim.walking = true;
             }
         }
@@ -726,84 +709,30 @@ pub fn combat_tick(
     }
 }
 
-fn enemy_tower_blocking(
-    combatants: &[Combatant],
-    self_side: Side,
-    self_pos: Vec3,
-    walk_sign: f32,
-) -> bool {
-    combatants.iter().any(|c| {
-        if c.kind != CombatantKind::Tower || c.side == self_side {
-            return false;
-        }
-        let dx_ahead = (c.pos.x - self_pos.x) * walk_sign;
-        dx_ahead > 0.0
-            && dx_ahead < UNIT_RADIUS + TOWER_RADIUS + 0.1
-            && (c.pos.z - self_pos.z).abs() < UNIT_RADIUS + TOWER_RADIUS
-    })
-}
-
-/// If an allied tower sits in the unit's forward corridor, return a lateral Z
-/// step so the unit drifts around it. Returns 0 when no detour is needed.
-fn allied_tower_sidestep(
-    combatants: &[Combatant],
-    self_side: Side,
-    self_pos: Vec3,
-    walk_sign: f32,
-    step: f32,
-) -> f32 {
-    let look_ahead = UNIT_RADIUS + TOWER_RADIUS + 1.2;
-    let corridor = UNIT_RADIUS + TOWER_RADIUS;
-    let mut push: f32 = 0.0;
-    for c in combatants {
-        if c.kind != CombatantKind::Tower || c.side != self_side {
-            continue;
-        }
-        let dx_ahead = (c.pos.x - self_pos.x) * walk_sign;
-        let dz = self_pos.z - c.pos.z;
-        if dx_ahead > 0.0 && dx_ahead < look_ahead && dz.abs() < corridor {
-            // Push toward the freer Z side. If the unit is already centered on
-            // the tower (dz≈0) use the sign of dz, defaulting to +1.
-            let dir = if dz.abs() < 1e-3 { 1.0 } else { dz.signum() };
-            push += dir * step;
-        }
+/// Set a unit's planar (XZ) velocity toward `dir` (need not be normalized) at
+/// `speed` m/s; Y is left to the locked axis. When `face` is true, also turn the
+/// unit to look along the motion (soldier/miner). Aiming kinds (archer/priest)
+/// pass `false` and drive their own rotation via `UnitAnim.face_yaw`.
+fn drive(
+    lin_vel: &mut LinearVelocity,
+    transform: &mut Transform,
+    dir: Vec3,
+    speed: f32,
+    face: bool,
+) {
+    let v = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero() * speed;
+    lin_vel.0 = v;
+    if face {
+        face_dir(transform, v);
     }
-    push
 }
 
-fn ally_blocking(
-    combatants: &[Combatant],
-    self_entity: Entity,
-    self_side: Side,
-    self_pos: Vec3,
-    walk_sign: f32,
-    kind: CombatantKind,
-) -> bool {
-    combatants.iter().any(|c| {
-        if c.entity == self_entity || c.side != self_side || c.kind != kind {
-            return false;
-        }
-        let dx_ahead = (c.pos.x - self_pos.x) * walk_sign;
-        dx_ahead > 0.0
-            && dx_ahead < UNIT_RADIUS * 2.0 + 0.05
-            && (c.pos.z - self_pos.z).abs() < UNIT_RADIUS
-    })
-}
-
-fn step_toward(transform: &mut Transform, target_xz: Vec3, step: f32) {
-    let pos = transform.translation;
-    let dx = target_xz.x - pos.x;
-    let dz = target_xz.z - pos.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-    if dist <= 1e-4 {
-        return;
+/// Turn the unit to face the world XZ direction `dir` (no-op if it's ~zero).
+fn face_dir(transform: &mut Transform, dir: Vec3) {
+    if dir.x.hypot(dir.z) > 1e-4 {
+        let yaw = dir.z.atan2(dir.x);
+        transform.rotation = Quat::from_rotation_y(-yaw);
     }
-    let s = step.min(dist);
-    transform.translation.x += dx / dist * s;
-    transform.translation.z += dz / dist * s;
-    // Face direction of motion (rotate around Y).
-    let yaw = dz.atan2(dx);
-    transform.rotation = Quat::from_rotation_y(-yaw);
 }
 
 fn xz_distance(a: Vec3, b: Vec3) -> f32 {
@@ -811,7 +740,7 @@ fn xz_distance(a: Vec3, b: Vec3) -> f32 {
 }
 
 /// Entity yaw (rotation around Y) that faces the world XZ direction `(dx, dz)`,
-/// matching `step_toward`'s `Quat::from_rotation_y` convention: `dx>0, dz=0`
+/// matching `face_dir`'s `Quat::from_rotation_y` convention: `dx>0, dz=0`
 /// gives 0 (faces +X).
 fn face_angle(dx: f32, dz: f32) -> f32 {
     -dz.atan2(dx)
@@ -826,22 +755,6 @@ fn shortest_yaw_diff(target: f32, current: f32) -> f32 {
         diff -= std::f32::consts::TAU;
     }
     diff
-}
-
-/// Translate toward an XZ target without touching rotation. The archer's facing
-/// is driven separately (`UnitAnim.face_yaw` → `animate_unit_model`) so it can pivot
-/// smoothly with the `Idle_Turn_*` clips instead of snapping like `step_toward`.
-fn move_toward_xz(transform: &mut Transform, target_xz: Vec3, step: f32) {
-    let pos = transform.translation;
-    let dx = target_xz.x - pos.x;
-    let dz = target_xz.z - pos.z;
-    let dist = (dx * dx + dz * dz).sqrt();
-    if dist <= 1e-4 {
-        return;
-    }
-    let s = step.min(dist);
-    transform.translation.x += dx / dist * s;
-    transform.translation.z += dz / dist * s;
 }
 
 pub fn process_damage_effects(

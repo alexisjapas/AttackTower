@@ -6,7 +6,7 @@ POC of a bilateral 3D tower defense game, written in Rust with Bevy and Avian3d.
 
 - **Language**: Rust (edition 2024)
 - **Engine**: Bevy 0.18 (pinned)
-- **Physics**: Avian3d 0.6 (loaded; colliders not yet used)
+- **Physics**: Avian3d 0.6 (dynamic unit capsules driven by velocity + static building/rock colliders)
 - **Dev environment**: Nix flake (Vulkan, Wayland/X11, mold linker)
 
 ## Prerequisites
@@ -51,7 +51,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 ### Combat
 - Units engage anything within `ENGAGE_RANGE` (1.4) for melee, or `ARCHER_RANGE` (8.0) for arrows. The closest valid target is picked each frame.
 - Archers **kite**: an enemy that closes inside `ARCHER_KITE_RANGE` (2.5) pushes the archer back while it keeps shooting.
-- Allies walking directly behind another ally in the same lane form a queue (no overlap).
+- Units are dynamic Avian bodies: they separate from one another (no overlap or stacking) and are blocked by buildings/rocks — collision is handled by the physics engine, not by hand.
 - Archers fire arrows on a parabolic trajectory with light homing; the arrow despawns on impact.
 
 ### Camera & map
@@ -84,7 +84,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 ### Done
 - 1v1 and 2v2 modes, shared-screen.
 - Soldier / miner (procedural rigs) and a rigged glTF archer with animated, hand-anchored shots.
-- Towers with ghost-preview placement, parabolic arrows, mining economy, queueing.
+- Towers with ghost-preview placement, parabolic arrows, mining economy, Avian-based unit separation.
 - Day/night cycle with dynamic sun and torch lighting.
 - Native procedural-atmosphere sky with fog-blended horizon and mountain backdrop.
 - Raytraced lighting (Bevy Solari) with GPU auto-detection, plus a graphics-settings overlay (presets, per-parameter cost impact, colorblind palette) persisted to disk.
@@ -93,7 +93,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 
 ### Planned / ideas
 - **More nations** with distinct units, stats and visuals (the nation pick is wired but only Ada'Ram exists).
-- **Avian3d colliders** for real collision/projectile physics — the plugin is loaded but no colliders are used yet.
+- **Avian3d projectile physics** — units and buildings now collide via Avian (dynamic capsules + static colliders); arrows still use scripted hit detection (physical, area-of-effect arrows are planned).
 - Additional unit types and abilities; sound effects.
 - Possibly online or split-screen play (currently a single shared screen).
 - Automated tests (none today).

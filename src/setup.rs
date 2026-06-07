@@ -1,3 +1,4 @@
+use avian3d::prelude::*;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::light_consts::lux;
@@ -1028,6 +1029,11 @@ fn spawn_castle(
             side,
             slot,
             Health::new(BASE_HP),
+            // Static obstacle so units stop at the wall (Avian-blocked) instead
+            // of walking through the keep. Radius kept under melee reach.
+            RigidBody::Static,
+            Collider::cylinder(BASE_COLLIDER_RADIUS, BASE_COLLIDER_HEIGHT),
+            side.structure_layers(),
         ))
         .with_children(|p| {
             // The base building model.
@@ -1063,6 +1069,9 @@ fn spawn_rock(commands: &mut Commands, env: &EnvAssets, slot: PlayerSlot, z: f32
             Rock,
             side,
             slot,
+            RigidBody::Static,
+            Collider::cylinder(ROCK_COLLIDER_RADIUS, ROCK_COLLIDER_HEIGHT),
+            side.structure_layers(),
         ))
         .with_children(|p| {
             // The mining rock reuses the desert stone prop.

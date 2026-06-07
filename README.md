@@ -46,7 +46,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 
 ### Economy
 - **10 gold** starting per player.
-- Each player starts with one miner. Miners walk to their side's rock, mine in place, then return to their base to deposit (capacity 4 per trip). Max 5 miners per player. There is no passive income.
+- Each player starts with one miner. Miners walk to their side's rock, mine in place, then return to their base to deposit (capacity 1 per trip). Max 5 miners per player. There is no passive income.
 
 ### Combat
 - Units engage anything within `ENGAGE_RANGE` (1.4) for melee, or `ARCHER_RANGE` (8.0) for arrows. The closest valid target is picked each frame.

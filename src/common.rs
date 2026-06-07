@@ -16,7 +16,9 @@ pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
 pub const MAX_MINERS_PER_PLAYER: usize = 5;
-pub const MINER_CAPACITY: u32 = 4;
+/// Gold a miner deposits per round-trip. At 1 (with `MINER_GOLD_PER_HIT` = 1)
+/// the miner returns after a single swing, so the economy is deliberately slow.
+pub const MINER_CAPACITY: u32 = 1;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 

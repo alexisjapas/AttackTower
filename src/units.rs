@@ -584,39 +584,22 @@ pub fn combat_tick(
             }
             UnitKind::Archer => {
                 let walk_sign = side.forward();
-                let enemy = combatants
-                    .iter()
-                    .filter(|c| {
-                        c.side != *side
-                            && (c.kind.is_unit()
-                                || c.kind == CombatantKind::Base
-                                || c.kind == CombatantKind::Tower)
-                    })
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-                if let Some((target, dist)) = enemy
-                    && dist <= ARCHER_RANGE
-                {
-                    // Pivot so the archer's left faces the target: the shot clip
-                    // releases to the left, so this makes the arrow read as aimed
-                    // straight at the target. animate_unit_model smoothly turns toward
-                    // this yaw.
-                    anim.face_yaw = face_angle(target.pos.x - pos.x, target.pos.z - pos.z)
-                        + ARCHER_SHOT_YAW_OFFSET;
+                // Aim at the densest enemy knot in range (a zone, not one unit).
+                if let Some(aim) = volley_aim(&combatants, *side, pos) {
+                    // The shot clip looses to the model's left, so add the offset
+                    // so the leftward release reads as aimed at the zone.
+                    anim.face_yaw =
+                        face_angle(aim.x - pos.x, aim.z - pos.z) + ARCHER_SHOT_YAW_OFFSET;
                     anim.attacking = true;
-                    // Only queue a shot once the pivot is done (facing error
-                    // within ARCHER_TURN_EPS), so the first arrow waits for the
-                    // turn to finish. `animate_unit_model` releases the queued shot at
-                    // the end of the shot clip's cycle; the cadence is the clip
-                    // length (tuned to ARCHER_COOLDOWN).
+                    // Queue the volley only once the pivot is done (facing within
+                    // ARCHER_TURN_EPS); `animate_unit_model` looses one arrow per
+                    // shot-clip cycle toward the aim point.
                     let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
                     let aimed =
                         shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= ARCHER_TURN_EPS;
                     if let Some(arch_state) = arch_state.as_deref_mut() {
                         arch_state.pending_shot = aimed.then_some(PendingShot {
-                            target: target.entity,
-                            target_pos: target.pos,
+                            aim,
                             damage: damage.0,
                         });
                     }
@@ -804,6 +787,42 @@ fn nearest_enemy_in_reach(
         .map(|(c, _)| c)
 }
 
+/// An archer's volley aim point (ground level): the centroid of the densest knot
+/// of enemy units within `ARCHER_RANGE` — for each enemy, count its neighbours
+/// within `VOLLEY_RADIUS` and take the densest. With no enemy units in range, aim
+/// at the nearest enemy structure (base/tower). None if nothing is in range.
+fn volley_aim(combatants: &[Combatant], self_side: Side, pos: Vec3) -> Option<Vec3> {
+    let in_range = |c: &&Combatant| c.side != self_side && xz_distance(c.pos, pos) <= ARCHER_RANGE;
+    let units: Vec<Vec3> = combatants
+        .iter()
+        .filter(|c| c.kind.is_unit() && in_range(c))
+        .map(|c| c.pos)
+        .collect();
+    if !units.is_empty() {
+        let best = *units.iter().max_by_key(|p| {
+            units
+                .iter()
+                .filter(|o| xz_distance(**o, **p) <= VOLLEY_RADIUS)
+                .count()
+        })?;
+        let knot: Vec<Vec3> = units
+            .iter()
+            .copied()
+            .filter(|o| xz_distance(*o, best) <= VOLLEY_RADIUS)
+            .collect();
+        let c = knot.iter().copied().sum::<Vec3>() / knot.len() as f32;
+        return Some(Vec3::new(c.x, 0.0, c.z));
+    }
+    combatants
+        .iter()
+        .filter(|c| {
+            (c.kind == CombatantKind::Base || c.kind == CombatantKind::Tower) && in_range(c)
+        })
+        .map(|c| (c.pos, xz_distance(c.pos, pos)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(p, _)| Vec3::new(p.x, 0.0, p.z))
+}
+
 /// Direction for a unit marching with no enemy target: dead-straight along its
 /// forward axis until within `BASE_SEEK_RANGE` of the enemy base, then steer onto
 /// the base so it actually reaches and hits it (instead of converging on the
@@ -870,12 +889,10 @@ pub fn spawn_arrow(
     lib: &MatLibrary,
     side: Side,
     start: Vec3,
-    target_entity: Entity,
-    target_pos: Vec3,
+    aim: Vec3,
+    shooter: Entity,
     damage: i32,
 ) {
-    // Aim at the target's chest so arrows visibly strike the body, not its feet.
-    let aim = target_pos + Vec3::new(0.0, 0.55, 0.0);
     let dist = (aim - start).length();
     let total = (dist / ARROW_TRAVEL_SPEED).max(0.2);
     let apex = (dist * ARROW_ARC_FRACTION).max(ARROW_MIN_ARC);
@@ -891,12 +908,15 @@ pub fn spawn_arrow(
             Visibility::default(),
             Arrow {
                 start,
-                target_entity,
-                target_pos: aim,
+                aim,
                 elapsed: 0.0,
                 total,
                 apex,
                 damage,
+                shooter,
+                side,
+                stuck: false,
+                stick_t: 0.0,
             },
         ))
         .with_children(|a| {
@@ -933,51 +953,75 @@ pub fn arrow_flight_system(
     mut commands: Commands,
     time: Res<Time>,
     state: Res<GameState>,
+    spatial: SpatialQuery,
     mut arrows: Query<(Entity, &mut Arrow, &mut Transform)>,
-    targets: Query<&Transform, (Or<(With<Unit>, With<Base>, With<Tower>)>, Without<Arrow>)>,
     mut healths: Query<(&mut Health, Option<&Armor>)>,
+    mut combat_targets: Query<&mut CombatTarget>,
 ) {
     if *state != GameState::Playing {
         return;
     }
     let dt = time.delta_secs();
+    // One sphere reused to test every arrow against enemy colliders this frame.
+    let hit_shape = Collider::sphere(ARROW_HIT_RADIUS);
+
     for (entity, mut arrow, mut transform) in arrows.iter_mut() {
-        arrow.elapsed += dt;
-        // Light homing: keep aiming at the target's current chest position if it
-        // still exists, so a slowly-moving target still gets hit.
-        if let Ok(target_t) = targets.get(arrow.target_entity) {
-            arrow.target_pos = target_t.translation + Vec3::new(0.0, 0.55, 0.0);
+        // Planted arrow: just age out.
+        if arrow.stuck {
+            arrow.stick_t += dt;
+            if arrow.stick_t >= ARROW_STICK_DURATION {
+                commands.entity(entity).despawn();
+            }
+            continue;
         }
 
+        // Advance the scripted parabola toward the fixed aim point (no homing).
+        arrow.elapsed += dt;
         let t = (arrow.elapsed / arrow.total).clamp(0.0, 1.0);
         let start = arrow.start;
-        let target = arrow.target_pos;
-        let pos_y_linear = start.y + (target.y - start.y) * t;
+        let aim = arrow.aim;
+        let pos_y_linear = start.y + (aim.y - start.y) * t;
         let arc = 4.0 * arrow.apex * t * (1.0 - t);
         let pos = Vec3::new(
-            start.x + (target.x - start.x) * t,
+            start.x + (aim.x - start.x) * t,
             pos_y_linear + arc,
-            start.z + (target.z - start.z) * t,
+            start.z + (aim.z - start.z) * t,
         );
         transform.translation = pos;
 
         // Orient the arrow along its velocity.
         let total_time = arrow.total.max(1e-3);
-        let vx = (target.x - start.x) / total_time;
-        let vz = (target.z - start.z) / total_time;
-        let vy =
-            (target.y - start.y) / total_time + (4.0 * arrow.apex / total_time) * (1.0 - 2.0 * t);
+        let vx = (aim.x - start.x) / total_time;
+        let vz = (aim.z - start.z) / total_time;
+        let vy = (aim.y - start.y) / total_time + (4.0 * arrow.apex / total_time) * (1.0 - 2.0 * t);
         let velocity = Vec3::new(vx, vy, vz);
         if velocity.length_squared() > 1e-6 {
             transform.rotation = Quat::from_rotation_arc(Vec3::X, velocity.normalize());
         }
 
-        if t >= 1.0 {
-            if let Ok((mut hp, armor)) = healths.get_mut(arrow.target_entity) {
+        // Damage only on contact: test the arrow's position against ENEMY
+        // colliders (the filter mask excludes allies, so no friendly fire).
+        let filter = SpatialQueryFilter::from_mask(arrow.side.arrow_target_mask());
+        if let Some(&victim) = spatial
+            .shape_intersections(&hit_shape, pos, Quat::IDENTITY, &filter)
+            .first()
+        {
+            if let Ok((mut hp, armor)) = healths.get_mut(victim) {
                 let reduction = armor.map(Armor::active).unwrap_or(0);
                 hp.current -= (arrow.damage - reduction).max(MIN_DAMAGE);
             }
+            // Ranged retaliation: the victim remembers who shot it.
+            if let Ok(mut ct) = combat_targets.get_mut(victim) {
+                ct.last_attacker = Some(arrow.shooter);
+            }
             commands.entity(entity).despawn();
+            continue;
+        }
+
+        // Reached the ground without hitting anything → plant it in the sand.
+        if t >= 1.0 {
+            arrow.stuck = true;
+            arrow.stick_t = 0.0;
         }
     }
 }
@@ -1099,9 +1143,9 @@ fn uses_face_yaw(kind: UnitKind) -> bool {
 }
 
 /// Drives every modeled unit's `AnimationPlayer` from the `UnitAnim` flags set by
-/// `combat_tick` (walk / attack / hurt / death), per kind via `UnitModels`. Owns
-/// the `hurt_t`/`death_t` bookkeeping and, for the archer, the per-cycle arrow
-/// release. Tolerates kinds with no attack/hurt/death clip (the miner).
+/// `combat_tick` (walk / attack / death), per kind via `UnitModels`. Owns the
+/// `death_t` bookkeeping and, for the archer, the per-cycle arrow release.
+/// Tolerates kinds with no attack/death clip (the miner).
 pub fn animate_unit_model(
     mut commands: Commands,
     time: Res<Time>,
@@ -1109,6 +1153,7 @@ pub fn animate_unit_model(
     lib: Res<MatLibrary>,
     mut units: Query<
         (
+            Entity,
             &UnitKind,
             &Side,
             &mut UnitAnim,
@@ -1124,7 +1169,7 @@ pub fn animate_unit_model(
     let dt = time.delta_secs();
     let blend = Duration::from_secs_f32(0.15);
 
-    for (kind, side, mut anim, mut state, mut transform) in units.iter_mut() {
+    for (entity, kind, side, mut anim, mut state, mut transform) in units.iter_mut() {
         let model = models.get(*kind);
         let Some(nodes) = model.nodes.as_ref() else {
             continue;
@@ -1224,8 +1269,8 @@ pub fn animate_unit_model(
                         &lib,
                         *side,
                         start,
-                        shot.target,
-                        shot.target_pos,
+                        shot.aim,
+                        entity,
                         shot.damage,
                     );
                 }

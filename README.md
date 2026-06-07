@@ -42,7 +42,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 ### Towers
 - **30 HP**, **3 damage**, **6 gold**, range **8.5**, cooldown **1.5 s**.
 - Placed inside the player's own zone (terrain is split into three strips by `ZONE_BOUNDARY`; the Z extent of the zone adapts to `GameMode`). A ghost preview at the cursor turns green on a legal spot, red otherwise.
-- Towers shoot arrows on a parabolic trajectory at the nearest enemy unit/base in range. Killed towers tilt + sink briefly before despawning.
+- Towers shoot physical arrows at the nearest enemy in range; the arrow damages whatever enemy it strikes (or plants on a miss). Killed towers tilt + sink briefly before despawning.
 
 ### Economy
 - **10 gold** starting per player.
@@ -52,7 +52,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - Units march straight toward the enemy base by default and only **redirect to an enemy that enters a short aggro radius** (`AGGRO_RADIUS`), then chase it within a leash and switch to a closer threat that crosses their path. A unit with no target that gets hit **turns on its attacker**. Melee triggers within `ENGAGE_RANGE` (1.4); archers shoot within `ARCHER_RANGE` (8.0).
 - Archers hold their position and shoot the nearest enemy in range (no kiting/retreat).
 - Units are dynamic Avian bodies: they separate from one another (no overlap or stacking) and are blocked by **enemy** buildings/rocks (they pass through their own) — collision is handled by the physics engine, not by hand.
-- Archers fire arrows on a parabolic trajectory with light homing; the arrow despawns on impact.
+- Archers aim each volley at the **densest enemy cluster** in range and loose a physical arrow at that spot. The arrow only damages an enemy it actually flies through (tested via Avian `SpatialQuery` — no friendly fire); a miss plants in the ground and fades. Being shot makes an idle unit turn on the shooter.
 
 ### Camera & map
 - Horizontal map, bases aligned on the left/right axis.
@@ -85,7 +85,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 ### Done
 - 1v1 and 2v2 modes, shared-screen.
 - Soldier / miner (procedural rigs) and a rigged glTF archer with animated, hand-anchored shots.
-- Towers with ghost-preview placement, parabolic arrows, mining economy, Avian-based unit separation.
+- Towers with ghost-preview placement, physical area-volley arrows, mining economy, and Avian-driven combat (dynamic-body units with march/aggro/retaliate AI, static building colliders).
 - Day/night cycle with dynamic sun and torch lighting.
 - Native procedural-atmosphere sky with fog-blended horizon and mountain backdrop.
 - Raytraced lighting (Bevy Solari) with GPU auto-detection, plus a graphics-settings overlay (presets, per-parameter cost impact, colorblind palette) persisted to disk.
@@ -94,7 +94,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 
 ### Planned / ideas
 - **More nations** with distinct units, stats and visuals (the nation pick is wired but only Ada'Ram exists).
-- **Avian3d projectile physics** — units and buildings now collide via Avian (dynamic capsules + static colliders); arrows still use scripted hit detection (physical, area-of-effect arrows are planned).
+- **Deeper physics use** — units, buildings and arrows already run on Avian (dynamic capsules, static colliders, `SpatialQuery` arrow hits); ragdoll deaths, debris or knockback could build on it.
 - Additional unit types and abilities; sound effects.
 - Possibly online or split-screen play (currently a single shared screen).
 - Automated tests (none today).

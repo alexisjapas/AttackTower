@@ -58,49 +58,52 @@ pub fn tower_attack_tick(
     state: Res<GameState>,
     lib: Res<MatLibrary>,
     mut towers: Query<
-        (&Side, &Transform, &Damage, &mut AttackCooldown),
+        (Entity, &Side, &Transform, &Damage, &mut AttackCooldown),
         (With<Tower>, Without<TowerDying>),
     >,
-    units: Query<(Entity, &Side, &Transform), (With<Unit>, Without<Tower>)>,
-    bases: Query<(Entity, &Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
+    units: Query<(&Side, &Transform), (With<Unit>, Without<Tower>)>,
+    bases: Query<(&Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
 ) {
     if *state != GameState::Playing {
         return;
     }
 
-    for (side, transform, damage, mut cooldown) in towers.iter_mut() {
+    for (tower_entity, side, transform, damage, mut cooldown) in towers.iter_mut() {
         let pos = transform.translation;
-        let mut nearest: Option<(Entity, Vec3, f32)> = None;
-        let mut consider = |entity: Entity, target_pos: Vec3| {
+        // Aim at the nearest enemy's position; the arrow then damages whatever
+        // enemy it flies through (or plants in the ground on a miss).
+        let mut nearest: Option<(Vec3, f32)> = None;
+        let mut consider = |target_pos: Vec3| {
             let d = (target_pos.x - pos.x).hypot(target_pos.z - pos.z);
-            if nearest.is_none_or(|(_, _, nd)| d < nd) {
-                nearest = Some((entity, target_pos, d));
+            if nearest.is_none_or(|(_, nd)| d < nd) {
+                nearest = Some((target_pos, d));
             }
         };
-        for (entity, s, t) in units.iter() {
+        for (s, t) in units.iter() {
             if s != side {
-                consider(entity, t.translation);
+                consider(t.translation);
             }
         }
-        for (entity, s, t) in bases.iter() {
+        for (s, t) in bases.iter() {
             if s != side {
-                consider(entity, t.translation);
+                consider(t.translation);
             }
         }
 
-        if let Some((target_entity, target_pos, dist)) = nearest
+        if let Some((target_pos, dist)) = nearest
             && dist <= TOWER_RANGE
         {
             cooldown.0.tick(time.delta());
             if cooldown.0.just_finished() {
                 let start = pos + Vec3::new(0.0, TOWER_ARROW_HEIGHT, 0.0);
+                let aim = Vec3::new(target_pos.x, 0.0, target_pos.z);
                 spawn_arrow(
                     &mut commands,
                     &lib,
                     *side,
                     start,
-                    target_entity,
-                    target_pos,
+                    aim,
+                    tower_entity,
                     damage.0,
                 );
             }

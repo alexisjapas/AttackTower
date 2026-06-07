@@ -360,6 +360,15 @@ pub const TOWER_ARROW_HEIGHT: f32 = 2.1;
 pub const ARROW_TRAVEL_SPEED: f32 = 7.0;
 pub const ARROW_ARC_FRACTION: f32 = 0.22;
 pub const ARROW_MIN_ARC: f32 = 1.0;
+/// Volley targeting: for each enemy in range an archer counts the enemies within
+/// this radius and aims at the centroid of the densest such knot. The arrow then
+/// damages any enemy it physically passes through.
+pub const VOLLEY_RADIUS: f32 = 2.5;
+/// Sphere radius the flying arrow is tested with (via `SpatialQuery`) against
+/// enemy colliders each frame.
+pub const ARROW_HIT_RADIUS: f32 = 0.3;
+/// Seconds a missed arrow stays planted in the ground before despawning.
+pub const ARROW_STICK_DURATION: f32 = 3.0;
 
 pub const STARTING_GOLD: u32 = 10;
 pub const ENGAGE_RANGE: f32 = 1.4;
@@ -634,6 +643,15 @@ impl Side {
     pub fn structure_layers(self) -> CollisionLayers {
         CollisionLayers::new(self.struct_layer(), [self.opposite().unit_layer()])
     }
+
+    /// Collision-layer mask of the ENEMY side's units and structures — what an
+    /// arrow fired by this side may strike. Used as the `SpatialQuery` filter mask
+    /// in `arrow_flight_system`, so arrows hit only enemies (no friendly fire) and
+    /// never need a collider of their own.
+    pub fn arrow_target_mask(self) -> LayerMask {
+        let enemy = self.opposite();
+        [enemy.unit_layer(), enemy.struct_layer()].into()
+    }
 }
 
 /// Physics collision layers. Separate per-side layers let units separate from
@@ -907,12 +925,22 @@ pub struct PlayerFocus {
 #[derive(Component)]
 pub struct Arrow {
     pub start: Vec3,
-    pub target_entity: Entity,
-    pub target_pos: Vec3,
+    /// Fixed ground point the arrow arcs toward (no homing). It damages any enemy
+    /// it passes through; if it reaches the ground untouched it plants here.
+    pub aim: Vec3,
     pub elapsed: f32,
     pub total: f32,
     pub apex: f32,
     pub damage: i32,
+    /// Who fired it — recorded as the victim's `last_attacker` on hit (so a unit
+    /// retaliates against a distant archer/tower that shot it).
+    pub shooter: Entity,
+    /// Shooter's side — selects which side's units/structures the arrow can hit.
+    pub side: Side,
+    /// Once it lands without hitting anything it sticks in the ground, ageing by
+    /// `stick_t` until `ARROW_STICK_DURATION`.
+    pub stuck: bool,
+    pub stick_t: f32,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -1004,12 +1032,12 @@ pub enum ModelClip {
 }
 
 /// A shot queued by `combat_tick` and released by `animate_unit_model` (archer
-/// only) when the shot clip reaches the end of its cycle. The target is
-/// snapshotted at queue time; the arrow's light homing corrects for movement.
+/// only) when the shot clip reaches its release point. Carries the ground point
+/// (densest enemy cluster centroid) the volley is aimed at — the arrow is a dumb
+/// projectile that damages whatever enemy it flies through.
 #[derive(Clone, Copy)]
 pub struct PendingShot {
-    pub target: Entity,
-    pub target_pos: Vec3,
+    pub aim: Vec3,
     pub damage: i32,
 }
 

@@ -355,6 +355,25 @@ pub const ARROW_MIN_ARC: f32 = 1.0;
 pub const STARTING_GOLD: u32 = 10;
 pub const ENGAGE_RANGE: f32 = 1.4;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Unit AI (combat_tick). Units march straight toward the enemy base and only
+// peel off to fight an enemy that comes within a short aggro radius; they answer
+// fire from an attacker even with no target in sight.
+// ─────────────────────────────────────────────────────────────────────────────
+/// Units march straight by default and only redirect toward an enemy (unit or
+/// tower) that comes within this short radius — the "redirect only at relatively
+/// short distance" rule.
+pub const AGGRO_RADIUS: f32 = 3.0;
+/// Once committed to a target, a unit keeps chasing it until the target dies or
+/// moves beyond this (larger) distance — prevents yo-yoing at the aggro edge.
+pub const TARGET_LEASH: f32 = 5.5;
+/// An idle unit (no target in view) that gets hit charges its attacker if the
+/// attacker is within this distance (lets a marching unit answer ranged fire).
+pub const RETALIATE_LEASH: f32 = 8.0;
+/// While marching with no enemy target, a unit goes dead-straight until it comes
+/// within this distance of the enemy base, then steers onto it to attack.
+pub const BASE_SEEK_RANGE: f32 = 6.0;
+
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;
 // Z offset between the two bases of a same side in 2v2 mode.
@@ -560,6 +579,13 @@ impl Side {
         }
     }
 
+    pub fn opposite(self) -> Side {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        }
+    }
+
     fn unit_layer(self) -> GameLayer {
         match self {
             Side::Left => GameLayer::UnitLeft,
@@ -587,12 +613,12 @@ impl Side {
         )
     }
 
-    /// Static obstacles (base/tower/rock) block units of both sides.
+    /// Static obstacles (base/tower/rock) block only ENEMY units: allied units
+    /// pass through their own buildings, so a unit marching straight never gets
+    /// stuck on its own tower (no manual sidestep needed), while enemy units are
+    /// blocked — the defensive value of a tower.
     pub fn structure_layers(self) -> CollisionLayers {
-        CollisionLayers::new(
-            self.struct_layer(),
-            [GameLayer::UnitLeft, GameLayer::UnitRight],
-        )
+        CollisionLayers::new(self.struct_layer(), [self.opposite().unit_layer()])
     }
 }
 
@@ -737,6 +763,16 @@ pub enum MinerPhase {
 
 #[derive(Component, Clone, Copy)]
 pub struct MinerSlot(pub usize);
+
+/// Per-unit targeting memory for `combat_tick`'s AI: the enemy the unit is
+/// currently committed to (acquired within `AGGRO_RADIUS`, kept until it dies or
+/// leaves `TARGET_LEASH`) and the last enemy that damaged it (so an idle unit
+/// retaliates against an attacker within `RETALIATE_LEASH`).
+#[derive(Component, Default)]
+pub struct CombatTarget {
+    pub current: Option<Entity>,
+    pub last_attacker: Option<Entity>,
+}
 
 #[derive(Component)]
 pub struct TowerGhost;

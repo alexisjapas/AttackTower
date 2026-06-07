@@ -49,9 +49,9 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - Each player starts with one miner. Miners walk to their side's rock, mine in place, then return to their base to deposit (capacity 1 per trip). Max 5 miners per player. There is no passive income.
 
 ### Combat
-- Units engage anything within `ENGAGE_RANGE` (1.4) for melee, or `ARCHER_RANGE` (8.0) for arrows. The closest valid target is picked each frame.
+- Units march straight toward the enemy base by default and only **redirect to an enemy that enters a short aggro radius** (`AGGRO_RADIUS`), then chase it within a leash and switch to a closer threat that crosses their path. A unit with no target that gets hit **turns on its attacker**. Melee triggers within `ENGAGE_RANGE` (1.4); archers shoot within `ARCHER_RANGE` (8.0).
 - Archers **kite**: an enemy that closes inside `ARCHER_KITE_RANGE` (2.5) pushes the archer back while it keeps shooting.
-- Units are dynamic Avian bodies: they separate from one another (no overlap or stacking) and are blocked by buildings/rocks — collision is handled by the physics engine, not by hand.
+- Units are dynamic Avian bodies: they separate from one another (no overlap or stacking) and are blocked by **enemy** buildings/rocks (they pass through their own) — collision is handled by the physics engine, not by hand.
 - Archers fire arrows on a parabolic trajectory with light homing; the arrow despawns on impact.
 
 ### Camera & map

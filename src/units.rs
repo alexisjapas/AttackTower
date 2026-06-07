@@ -204,7 +204,8 @@ fn spawn_unit(
             UnitAnim::default(),
             Armor::default(),
             ModeledUnit,
-            UnitAnimState::default(),
+            // Nested so the outer bundle tuple stays within Bevy's element limit.
+            (UnitAnimState::default(), CombatTarget::default()),
             // Physics: a dynamic capsule driven by LinearVelocity in `combat_tick`.
             // Rotation + Y are locked so it stays upright on the plane; Avian
             // resolves all unit↔unit separation and structure blocking.
@@ -293,7 +294,10 @@ pub fn combat_tick(
     mut gold: ResMut<Gold>,
     // Reused across frames to avoid per-frame Vec allocations.
     mut combatants: Local<Vec<Combatant>>,
-    mut damage_events: Local<Vec<(Entity, i32)>>,
+    // (target, damage, source). `source` lets the victim remember who hit it.
+    mut damage_events: Local<Vec<(Entity, i32, Option<Entity>)>>,
+    // (victim, attacker) → CombatTarget.last_attacker, applied after damage.
+    mut attacker_events: Local<Vec<(Entity, Entity)>>,
     mut gold_events: Local<Vec<(PlayerSlot, u32)>>,
     // Priest support: HP to restore (clamped to max) and (armor, duration) to grant.
     mut heal_events: Local<Vec<(Entity, i32)>>,
@@ -323,6 +327,9 @@ pub fn combat_tick(
         Query<(&mut Health, Option<&mut Armor>)>,
         Query<(Entity, &Side, &Transform), (With<Tower>, Without<TowerDying>)>,
     )>,
+    // Targeting memory, kept out of the ParamSet (disjoint component) so it can be
+    // read/written during the decision loop and again after damage is applied.
+    mut targets: Query<&mut CombatTarget>,
 ) {
     if *state != GameState::Playing {
         // Freeze movement so nothing drifts while paused/ended (physics keeps
@@ -338,6 +345,7 @@ pub fn combat_tick(
     // 1. Snapshot every combatant's position.
     combatants.clear();
     damage_events.clear();
+    attacker_events.clear();
     gold_events.clear();
     heal_events.clear();
     buff_events.clear();
@@ -415,52 +423,81 @@ pub fn combat_tick(
         match *kind {
             UnitKind::Soldier => {
                 let walk_sign = side.forward();
-                let enemy = combatants
-                    .iter()
-                    .filter(|c| {
-                        c.side != *side
-                            && (c.kind.is_unit()
-                                || c.kind == CombatantKind::Base
-                                || c.kind == CombatantKind::Tower)
+                let mut ct = targets.get_mut(entity).expect("unit has CombatTarget");
+                let committed_id = ct.current;
+                let last_attacker = ct.last_attacker;
+
+                // Acquire / switch: nearest enemy unit or tower within the short
+                // aggro radius wins, re-evaluated every frame, so the soldier
+                // redirects to a closer threat that crosses its path.
+                let aggro = nearest_enemy_combatant(&combatants, *side, pos, AGGRO_RADIUS);
+                // Keep chasing the committed target while it lives and stays
+                // within the larger leash, even after it leaves the aggro ring.
+                let committed = committed_id.and_then(|e| {
+                    combatants.iter().find(|c| {
+                        c.entity == e
+                            && c.side != *side
+                            && (c.kind.is_unit() || c.kind == CombatantKind::Tower)
+                            && xz_distance(c.pos, pos) <= TARGET_LEASH
                     })
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                });
+                // Retaliate: with no target in sight, charge the last attacker if
+                // it is alive and within reach (answers ranged fire too).
+                let retaliation = || {
+                    last_attacker.and_then(|e| {
+                        combatants.iter().find(|c| {
+                            c.entity == e
+                                && c.side != *side
+                                && (c.kind.is_unit() || c.kind == CombatantKind::Tower)
+                                && xz_distance(c.pos, pos) <= RETALIATE_LEASH
+                        })
+                    })
+                };
+                let target = aggro.or(committed).or_else(retaliation);
+                ct.current = target.map(|c| c.entity);
 
-                if let Some((target, dist)) = enemy
-                    && dist <= ENGAGE_RANGE
-                {
-                    if !anim.attacking {
-                        // First frame in melee: restart the swing from the
-                        // beginning so the animation doesn't pick up at a
-                        // random fraction left over from a previous fight.
-                        cooldown.0.reset();
-                    }
-                    cooldown.0.tick(time.delta());
-                    anim.attacking = true;
-                    if cooldown.0.just_finished() {
-                        damage_events.push((target.entity, damage.0));
-                    }
-                    lin_vel.0 = Vec3::ZERO;
-                    face_dir(&mut transform, target.pos - pos);
-                    anim.walking = false;
-                    continue;
-                }
-
-                anim.attacking = false;
-
-                // Advance toward the enemy base; Avian handles separation from
-                // allies and blocking against towers/structures (no manual queue).
+                // Fallback objective: the enemy base. Marched toward straight,
+                // then attacked on arrival.
                 let enemy_base = combatants
                     .iter()
                     .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
                     .map(|c| (c, xz_distance(c.pos, pos)))
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
-                let dir = match enemy_base {
-                    Some(base) => base.pos - pos,
-                    None => Vec3::new(walk_sign, 0.0, 0.0),
+
+                // What to engage (entity + pos) and which way to move this frame.
+                let (engage, move_dir) = match target {
+                    Some(t) => (Some((t.entity, t.pos)), t.pos - pos),
+                    None => match enemy_base {
+                        Some(base) => (
+                            Some((base.entity, base.pos)),
+                            march_dir(pos, base.pos, walk_sign),
+                        ),
+                        None => (None, Vec3::new(walk_sign, 0.0, 0.0)),
+                    },
                 };
-                drive(&mut lin_vel, &mut transform, dir, speed.0, true);
+
+                if let Some((target_entity, target_pos)) = engage
+                    && xz_distance(target_pos, pos) <= ENGAGE_RANGE
+                {
+                    if !anim.attacking {
+                        // First frame in melee: restart the swing so it doesn't
+                        // pick up at a random fraction from a previous fight.
+                        cooldown.0.reset();
+                    }
+                    cooldown.0.tick(time.delta());
+                    anim.attacking = true;
+                    if cooldown.0.just_finished() {
+                        damage_events.push((target_entity, damage.0, Some(entity)));
+                    }
+                    lin_vel.0 = Vec3::ZERO;
+                    face_dir(&mut transform, target_pos - pos);
+                    anim.walking = false;
+                    continue;
+                }
+
+                anim.attacking = false;
+                drive(&mut lin_vel, &mut transform, move_dir, speed.0, true);
                 anim.walking = true;
             }
             UnitKind::Miner => {
@@ -619,12 +656,10 @@ pub fn combat_tick(
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
                 let dir = match enemy_base {
-                    Some(base) => {
-                        anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
-                        base.pos - pos
-                    }
+                    Some(base) => march_dir(pos, base.pos, walk_sign),
                     None => Vec3::new(walk_sign, 0.0, 0.0),
                 };
+                anim.face_yaw = face_angle(dir.x, dir.z);
                 // face_yaw owns the archer's rotation (smoothed in animate_unit_model).
                 drive(&mut lin_vel, &mut transform, dir, speed.0, false);
                 anim.walking = true;
@@ -672,12 +707,10 @@ pub fn combat_tick(
                     .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .map(|(c, _)| c);
                 let dir = match enemy_base {
-                    Some(base) => {
-                        anim.face_yaw = face_angle(base.pos.x - pos.x, base.pos.z - pos.z);
-                        base.pos - pos
-                    }
+                    Some(base) => march_dir(pos, base.pos, walk_sign),
                     None => Vec3::new(walk_sign, 0.0, 0.0),
                 };
+                anim.face_yaw = face_angle(dir.x, dir.z);
                 // face_yaw owns the priest's rotation (smoothed in animate_unit_model).
                 drive(&mut lin_vel, &mut transform, dir, speed.0, false);
                 anim.walking = true;
@@ -687,10 +720,13 @@ pub fn combat_tick(
 
     // 3. Apply damage, heals, armor buffs and gold.
     let mut healths = sets.p3();
-    for (target, dmg) in damage_events.drain(..) {
+    for (target, dmg, source) in damage_events.drain(..) {
         if let Ok((mut hp, armor)) = healths.get_mut(target) {
             let reduction = armor.as_deref().map(Armor::active).unwrap_or(0);
             hp.current -= (dmg - reduction).max(MIN_DAMAGE);
+            if let Some(source) = source {
+                attacker_events.push((target, source));
+            }
         }
     }
     for (target, amount) in heal_events.drain(..) {
@@ -706,6 +742,14 @@ pub fn combat_tick(
     }
     for (slot, amount) in gold_events.drain(..) {
         gold.add(slot, amount);
+    }
+
+    // Record who hit whom so idle victims retaliate. CombatTarget is disjoint
+    // from the ParamSet, so it's safe to write here, after the damage pass.
+    for (victim, attacker) in attacker_events.drain(..) {
+        if let Ok(mut ct) = targets.get_mut(victim) {
+            ct.last_attacker = Some(attacker);
+        }
     }
 }
 
@@ -732,6 +776,35 @@ fn face_dir(transform: &mut Transform, dir: Vec3) {
     if dir.x.hypot(dir.z) > 1e-4 {
         let yaw = dir.z.atan2(dir.x);
         transform.rotation = Quat::from_rotation_y(-yaw);
+    }
+}
+
+/// Nearest enemy unit or tower within `radius` (XZ) of `pos`, if any. Drives the
+/// soldier's short-range aggro acquisition / target switching.
+fn nearest_enemy_combatant(
+    combatants: &[Combatant],
+    self_side: Side,
+    pos: Vec3,
+    radius: f32,
+) -> Option<&Combatant> {
+    combatants
+        .iter()
+        .filter(|c| c.side != self_side && (c.kind.is_unit() || c.kind == CombatantKind::Tower))
+        .map(|c| (c, xz_distance(c.pos, pos)))
+        .filter(|(_, d)| *d <= radius)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(c, _)| c)
+}
+
+/// Direction for a unit marching with no enemy target: dead-straight along its
+/// forward axis until within `BASE_SEEK_RANGE` of the enemy base, then steer onto
+/// the base so it actually reaches and hits it (instead of converging on the
+/// centre line the whole way, which is what made units pile up).
+fn march_dir(pos: Vec3, base_pos: Vec3, walk_sign: f32) -> Vec3 {
+    if xz_distance(base_pos, pos) <= BASE_SEEK_RANGE {
+        base_pos - pos
+    } else {
+        Vec3::new(walk_sign, 0.0, 0.0)
     }
 }
 

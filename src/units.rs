@@ -609,8 +609,7 @@ pub fn combat_tick(
                     // within ARCHER_TURN_EPS), so the first arrow waits for the
                     // turn to finish. `animate_unit_model` releases the queued shot at
                     // the end of the shot clip's cycle; the cadence is the clip
-                    // length (tuned to ARCHER_COOLDOWN). The kite/advance logic
-                    // below still runs while turning so melee can't sneak in.
+                    // length (tuned to ARCHER_COOLDOWN).
                     let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
                     let aimed =
                         shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= ARCHER_TURN_EPS;
@@ -621,19 +620,9 @@ pub fn combat_tick(
                             damage: damage.0,
                         });
                     }
-                    // Kite: an enemy that closes inside ARCHER_KITE_RANGE in
-                    // front of us pushes us back so the archer stays at range
-                    // instead of being slaughtered in melee. Slower than the
-                    // normal walk so it reads as a careful retreat.
-                    let target_ahead = (target.pos.x - pos.x) * walk_sign;
-                    if dist < ARCHER_KITE_RANGE && target_ahead > 0.0 {
-                        // Kite: retreat (slower than a normal walk) while shooting.
-                        lin_vel.0 = Vec3::new(-walk_sign * speed.0 * 0.7, 0.0, 0.0);
-                        anim.walking = true;
-                    } else {
-                        lin_vel.0 = Vec3::ZERO;
-                        anim.walking = false;
-                    }
+                    // Hold position and shoot — no kiting/retreat.
+                    lin_vel.0 = Vec3::ZERO;
+                    anim.walking = false;
                     continue;
                 }
 
@@ -820,7 +809,10 @@ fn nearest_enemy_in_reach(
 /// the base so it actually reaches and hits it (instead of converging on the
 /// centre line the whole way, which is what made units pile up).
 fn march_dir(pos: Vec3, base_pos: Vec3, walk_sign: f32) -> Vec3 {
-    if xz_distance(base_pos, pos) <= BASE_SEEK_RANGE {
+    // Seek the base once close on the march (X) axis — not radially — so a unit in
+    // an outer lane (far in Z) still converges onto the base instead of marching
+    // straight past it.
+    if (base_pos.x - pos.x).abs() <= BASE_SEEK_RANGE {
         base_pos - pos
     } else {
         Vec3::new(walk_sign, 0.0, 0.0)

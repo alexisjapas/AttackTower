@@ -52,10 +52,6 @@ pub const ARCHER_SPEED: f32 = 1.5;
 pub const ARCHER_COOLDOWN: f32 = 1.7;
 pub const ARCHER_RANGE: f32 = 8.0;
 pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
-/// If the closest enemy is within this distance, the archer steps backward
-/// while continuing to shoot (kiting). Cheap, gives the archer a tactical
-/// identity vs. soldiers.
-pub const ARCHER_KITE_RANGE: f32 = 2.5;
 /// The archer is rendered from a rigged glTF model (Meshy export) instead of
 /// the procedural capsule rig the soldier/miner use. The mesh/skeleton come from
 /// the Walking file's scene; each clip is loaded from its own one-animation file
@@ -315,8 +311,8 @@ pub const SCENERY_Z_MAX: f32 = 12.0;
 /// Keep-clear gameplay rectangle (no props): |x| < CLEAR_X and z ∈ [CLEAR_Z_MIN,
 /// CLEAR_Z_MAX] — covers the bases, lanes and tower zones.
 pub const SCENERY_CLEAR_X: f32 = 23.0;
-pub const SCENERY_CLEAR_Z_MIN: f32 = -7.0;
-pub const SCENERY_CLEAR_Z_MAX: f32 = 9.0;
+pub const SCENERY_CLEAR_Z_MIN: f32 = -10.0;
+pub const SCENERY_CLEAR_Z_MAX: f32 = 10.0;
 /// Per-instance random scale spread applied on top of each kind's base scale.
 pub const SCENERY_SCALE_MIN: f32 = 0.8;
 pub const SCENERY_SCALE_MAX: f32 = 1.25;
@@ -383,9 +379,11 @@ pub const TARGET_LEASH: f32 = 5.5;
 /// An idle unit (no target in view) that gets hit charges its attacker if the
 /// attacker is within this distance (lets a marching unit answer ranged fire).
 pub const RETALIATE_LEASH: f32 = 8.0;
-/// While marching with no enemy target, a unit goes dead-straight until it comes
-/// within this distance of the enemy base, then steers onto it to attack.
-pub const BASE_SEEK_RANGE: f32 = 6.0;
+/// While marching with no enemy target, a unit goes dead-straight until it is
+/// within this distance of the enemy base ON THE MARCH (X) AXIS, then steers onto
+/// it to attack. X-based (not radial) so units in a far lane still converge onto
+/// the base instead of marching straight past it.
+pub const BASE_SEEK_RANGE: f32 = 8.0;
 /// When attacking, a soldier closes only to this distance — just past body
 /// contact (`2·UNIT_RADIUS`) — so it strikes a target instead of shoving it,
 /// while still creeping in to follow a kiting target and stay in reach.
@@ -393,8 +391,9 @@ pub const MELEE_STANDOFF: f32 = UNIT_RADIUS * 2.0 + 0.25;
 
 pub const LEFT_BASE_X: f32 = -14.0;
 pub const RIGHT_BASE_X: f32 = 14.0;
-// Z offset between the two bases of a same side in 2v2 mode.
-pub const BASE_Z_OFFSET: f32 = 3.0;
+// Z offset between the two bases of a same side in 2v2 mode (scaled with the
+// widened lateral battlefront so the two allied lanes stay separated).
+pub const BASE_Z_OFFSET: f32 = 9.0;
 // Terrain between bases is split into three equal parts: left zone, neutral, right zone.
 pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
 pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
@@ -415,11 +414,12 @@ pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
 /// successive same-kind units don't pile on top of each other.
 pub const LANE_COUNT: usize = 5;
 /// Half-width of the lane spread in 1v1: lanes are centred on each base's Z
-/// (which is 0 in 1v1) and span ±LANE_HALF_WIDTH_1V1.
-pub const LANE_HALF_WIDTH_1V1: f32 = 2.6;
-/// Half-width in 2v2: tighter so each ally's lanes don't bleed into the
-/// allied lanes (their bases are only `BASE_Z_OFFSET` apart on Z).
-pub const LANE_HALF_WIDTH_2V2: f32 = 1.5;
+/// (which is 0 in 1v1) and span ±LANE_HALF_WIDTH_1V1. Widened ×3 for a roomy
+/// lateral battlefront (drives the tower z-limit and the sand ground band too).
+pub const LANE_HALF_WIDTH_1V1: f32 = 7.8;
+/// Half-width in 2v2: tighter than 1v1 so each ally's lanes don't bleed into the
+/// allied lanes (their bases are `BASE_Z_OFFSET` apart on Z).
+pub const LANE_HALF_WIDTH_2V2: f32 = 4.5;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
 pub const ROCK_OFFSET: f32 = 5.5;
 /// Spread applied to non-laned units' Z at spawn so consecutive same-side

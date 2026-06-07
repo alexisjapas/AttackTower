@@ -50,7 +50,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 
 ### Combat
 - Units march straight toward the enemy base by default and only **redirect to an enemy that enters a short aggro radius** (`AGGRO_RADIUS`), then chase it within a leash and switch to a closer threat that crosses their path. A unit with no target that gets hit **turns on its attacker**. Melee triggers within `ENGAGE_RANGE` (1.4); archers shoot within `ARCHER_RANGE` (8.0).
-- Archers **kite**: an enemy that closes inside `ARCHER_KITE_RANGE` (2.5) pushes the archer back while it keeps shooting.
+- Archers hold their position and shoot the nearest enemy in range (no kiting/retreat).
 - Units are dynamic Avian bodies: they separate from one another (no overlap or stacking) and are blocked by **enemy** buildings/rocks (they pass through their own) — collision is handled by the physics engine, not by hand.
 - Archers fire arrows on a parabolic trajectory with light homing; the arrow despawns on impact.
 

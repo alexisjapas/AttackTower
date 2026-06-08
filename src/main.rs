@@ -93,6 +93,7 @@ fn main() {
         .init_resource::<GameMode>()
         .init_resource::<UnitModels>()
         .init_resource::<EnvAssets>()
+        .init_resource::<MouseUi>()
         .add_systems(
             Startup,
             (
@@ -121,6 +122,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                read_mouse_ui,
                 menu_input_system,
                 settings_input_system,
                 pause_input_system,

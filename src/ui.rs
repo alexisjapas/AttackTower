@@ -82,9 +82,10 @@ pub struct PresetText;
 
 /// Marker on a tab toggle in the settings overlay. The overlay is rebuilt
 /// when the active tab changes, so the highlight stays implicit (colours are
-/// set at spawn time).
+/// set at spawn time). Carries the tab it selects so a mouse click can target
+/// it directly (see [`read_mouse_ui`]).
 #[derive(Component, Clone, Copy)]
-pub struct SettingsTabButton;
+pub struct SettingsTabButton(pub SettingsTab);
 
 /// Marker for one of the four impact rows in the description card. Carries
 /// the channel name so the value can be re-colored on focus change without
@@ -131,6 +132,77 @@ pub struct SideCardLine {
 
 #[derive(Component, Clone, Copy)]
 pub struct MenuButton(pub usize);
+
+/// Per-frame snapshot of mouse interaction with the UI, populated by
+/// [`read_mouse_ui`] at the head of the input chain and consumed by the
+/// per-state input systems. This is what gives the otherwise gamepad-only game
+/// clickable buttons for debugging: a hover moves the menu focus, a left-click
+/// activates the focused item exactly as the gamepad's South button would.
+///
+/// Only the currently active overlay's buttons exist (the others are despawned
+/// on state change), so the `MenuButton`-indexed fields are unambiguous across
+/// the Menu / Pause / Settings / Endgame screens.
+#[derive(Resource, Default)]
+pub struct MouseUi {
+    /// `MenuButton` index under the cursor (drives focus on hover).
+    pub menu_hover: Option<usize>,
+    /// `MenuButton` index left-clicked this frame (activate).
+    pub menu_click: Option<usize>,
+    /// Settings tab left-clicked this frame.
+    pub tab_click: Option<SettingsTab>,
+    /// HUD player-panel slot under the cursor (drives the in-game hover
+    /// highlight, since a controller-less debug session has no `PlayerFocus`).
+    pub panel_hover: Option<(PlayerSlot, usize)>,
+    /// HUD player-panel slot left-clicked this frame (buy unit / arm tower).
+    pub panel_click: Option<(PlayerSlot, usize)>,
+}
+
+/// Translate raw UI [`Interaction`] state into [`MouseUi`] intent. Runs first in
+/// the input chain so the per-state systems see a fresh snapshot. A click is the
+/// frame where the left mouse button goes down while a button reports `Pressed`
+/// (Bevy's `ui_focus_system` sets `Pressed` only while the cursor is over the
+/// node and the button is held).
+pub fn read_mouse_ui(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut mouse: ResMut<MouseUi>,
+    menu_buttons: Query<(&MenuButton, &Interaction)>,
+    tab_buttons: Query<(&SettingsTabButton, &Interaction)>,
+    panel_buttons: Query<(&PanelSlot, &Interaction)>,
+) {
+    *mouse = MouseUi::default();
+    let clicked = mouse_buttons.just_pressed(MouseButton::Left);
+    for (btn, interaction) in &menu_buttons {
+        match interaction {
+            Interaction::Hovered => mouse.menu_hover = Some(btn.0),
+            Interaction::Pressed => {
+                mouse.menu_hover = Some(btn.0);
+                if clicked {
+                    mouse.menu_click = Some(btn.0);
+                }
+            }
+            Interaction::None => {}
+        }
+    }
+    for (slot, interaction) in &panel_buttons {
+        match interaction {
+            Interaction::Hovered => mouse.panel_hover = Some((slot.slot, slot.index)),
+            Interaction::Pressed => {
+                mouse.panel_hover = Some((slot.slot, slot.index));
+                if clicked {
+                    mouse.panel_click = Some((slot.slot, slot.index));
+                }
+            }
+            Interaction::None => {}
+        }
+    }
+    if clicked {
+        for (tab, interaction) in &tab_buttons {
+            if *interaction == Interaction::Pressed {
+                mouse.tab_click = Some(tab.0);
+            }
+        }
+    }
+}
 
 const BTN_NORMAL: Color = Color::srgb(0.16, 0.16, 0.20);
 const BTN_FOCUSED: Color = Color::srgb(0.32, 0.32, 0.40);
@@ -365,6 +437,7 @@ fn spawn_slot(panel: &mut ChildSpawnerCommands, slot: PlayerSlot, index: usize, 
             BackgroundColor(BTN_NORMAL),
             BorderColor::all(slot.side().color()),
             PanelSlot { slot, index },
+            Button,
         ))
         .with_child((
             Text::new(label),
@@ -590,7 +663,8 @@ fn spawn_tab_selector(parent: &mut ChildSpawnerCommands, active: SettingsTab) {
                     } else {
                         Color::srgb(0.45, 0.46, 0.55)
                     }),
-                    SettingsTabButton,
+                    SettingsTabButton(tab),
+                    Button,
                 ))
                 .with_child((
                     Text::new(tab.label()),
@@ -654,6 +728,7 @@ fn spawn_preset_button(parent: &mut ChildSpawnerCommands, index: usize, preset: 
             BackgroundColor(BTN_NORMAL),
             BorderColor::all(Color::srgb(0.85, 0.78, 0.30)),
             MenuButton(index),
+            Button,
         ))
         .with_child((
             Text::new(format!("Preset: {}", preset.label())),
@@ -943,6 +1018,7 @@ fn spawn_toggle_button<M: Component>(
             BackgroundColor(BTN_NORMAL),
             BorderColor::all(Color::srgb(0.7, 0.7, 0.75)),
             MenuButton(index),
+            Button,
         ))
         .with_child((
             Text::new(label),
@@ -1033,6 +1109,8 @@ pub fn pause_input_system(
     mut tod: ResMut<TimeOfDay>,
     battlefield: Query<Entity, BattlefieldEntity>,
     gamepads: Query<&Gamepad>,
+    mouse: Res<MouseUi>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     if *state != GameState::Paused {
         return;
@@ -1049,7 +1127,8 @@ pub fn pause_input_system(
     let mut up = false;
     let mut down = false;
     let mut activate = false;
-    let mut resume = false;
+    // Escape mirrors gamepad Start/East to resume (keyboard debug fallback).
+    let mut resume = keys.just_pressed(KeyCode::Escape);
     for pad in &gamepads {
         if pad.just_pressed(GamepadButton::DPadUp) {
             up = true;
@@ -1070,6 +1149,15 @@ pub fn pause_input_system(
     }
     if down {
         menu_focus.index = (menu_focus.index + 1) % SLOTS;
+    }
+
+    // Mouse: hover moves focus, left-click activates the hovered item.
+    if let Some(i) = mouse.menu_hover.filter(|i| *i < SLOTS) {
+        menu_focus.index = i;
+    }
+    if let Some(i) = mouse.menu_click.filter(|i| *i < SLOTS) {
+        menu_focus.index = i;
+        activate = true;
     }
 
     if resume {
@@ -1374,6 +1462,7 @@ fn spawn_menu_button(parent: &mut ChildSpawnerCommands, index: usize, label: &st
             BackgroundColor(BTN_NORMAL),
             BorderColor::all(border),
             MenuButton(index),
+            Button,
         ))
         .with_child((
             Text::new(label),
@@ -1407,6 +1496,7 @@ pub fn apply_menu_focus_visual(
 pub fn apply_player_focus_visual(
     state: Res<GameState>,
     focuses: Query<&PlayerFocus>,
+    mouse: Res<MouseUi>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
     mut panels: Query<
@@ -1448,9 +1538,10 @@ pub fn apply_player_focus_visual(
             continue;
         }
         let focused = active
-            && focuses
+            && (focuses
                 .iter()
-                .any(|f| f.slot == panel.slot && f.index == panel.index);
+                .any(|f| f.slot == panel.slot && f.index == panel.index)
+                || mouse.panel_hover == Some((panel.slot, panel.index)));
         bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
         *border = BorderColor::all(if focused {
             Color::WHITE
@@ -1663,6 +1754,7 @@ pub fn menu_input_system(
     battlefield: Query<Entity, BattlefieldEntity>,
     mut exit: MessageWriter<AppExit>,
     gamepads: Query<&Gamepad>,
+    mouse: Res<MouseUi>,
 ) {
     let in_menu = *state == GameState::Menu;
     let in_endgame = matches!(*state, GameState::Ended(_));
@@ -1701,6 +1793,15 @@ pub fn menu_input_system(
         menu_focus.index = (menu_focus.index + 1) % slot_count;
     }
 
+    // Mouse: hover moves focus, left-click activates the hovered item.
+    if let Some(i) = mouse.menu_hover.filter(|i| *i < slot_count) {
+        menu_focus.index = i;
+    }
+    if let Some(i) = mouse.menu_click.filter(|i| *i < slot_count) {
+        menu_focus.index = i;
+        activate = true;
+    }
+
     if !activate {
         return;
     }
@@ -1714,6 +1815,18 @@ pub fn menu_input_system(
             1 if pad_count > 0 => {
                 *mode = GameMode::TwoVsTwo;
                 *state = GameState::SideSelect;
+            }
+            // Debug launch: with no pad connected only the mouse can have fired
+            // this activation, and SideSelect (which assigns pads to seats) would
+            // be a dead end. Jump straight into a controller-less match so the
+            // HUD buttons can be driven by mouse for debugging.
+            0 => {
+                *mode = GameMode::OneVsOne;
+                *state = GameState::Playing;
+            }
+            1 => {
+                *mode = GameMode::TwoVsTwo;
+                *state = GameState::Playing;
             }
             2 => {
                 *origin = SettingsOrigin::Menu;
@@ -1989,6 +2102,8 @@ pub fn gameplay_input_system(
     gamepads: Query<&Gamepad>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
+    mouse: Res<MouseUi>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     if *state != GameState::Playing {
         return;
@@ -2002,7 +2117,9 @@ pub fn gameplay_input_system(
         alive[slot.index()] = true;
     }
 
-    let mut pause = false;
+    // Escape mirrors the gamepad Start as a keyboard pause, so a controller-less
+    // debug session (mouse-launched match) can still reach the pause menu.
+    let mut pause = keys.just_pressed(KeyCode::Escape);
 
     for (pad_entity, mut focus) in focuses.iter_mut() {
         let Ok(pad) = gamepads.get(pad_entity) else {
@@ -2052,59 +2169,43 @@ pub fn gameplay_input_system(
         }
 
         if pad.just_pressed(GamepadButton::South) {
-            match focus.index {
-                0 => arm_placement(&mut placement, focus.slot, *mode),
-                1 if gold.try_spend(focus.slot, SOLDIER_COST) => {
-                    let count = units
-                        .iter()
-                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Soldier)
-                        .count();
-                    spawn_soldier(
-                        &mut commands,
-                        &models,
-                        focus.slot,
-                        *mode,
-                        count % LANE_COUNT,
-                    );
-                }
-                2 if gold.try_spend(focus.slot, ARCHER_COST) => {
-                    let count = units
-                        .iter()
-                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Archer)
-                        .count();
-                    spawn_archer(
-                        &mut commands,
-                        &models,
-                        focus.slot,
-                        *mode,
-                        count % LANE_COUNT,
-                    );
-                }
-                3 if gold.try_spend(focus.slot, PRIEST_COST) => {
-                    let count = units
-                        .iter()
-                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Priest)
-                        .count();
-                    spawn_priest(
-                        &mut commands,
-                        &models,
-                        focus.slot,
-                        *mode,
-                        count % LANE_COUNT,
-                    );
-                }
-                4 => {
-                    let miner_count = units
-                        .iter()
-                        .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
-                        .count();
-                    if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(focus.slot, MINER_COST)
-                    {
-                        spawn_miner(&mut commands, &models, focus.slot, *mode, miner_count);
-                    }
-                }
-                _ => {}
-            }
+            buy_or_place_slot(
+                &mut commands,
+                &models,
+                &mut gold,
+                &mut placement,
+                &units,
+                focus.slot,
+                focus.index,
+                *mode,
+            );
+        }
+    }
+
+    // Mouse: left-clicking a HUD panel slot buys/places for that slot directly,
+    // independent of any pad focus, honouring the same alive / placement-busy /
+    // miner-cap guards as the gamepad path.
+    if let Some((slot, index)) = mouse.panel_click
+        && mode.active_slots().contains(&slot)
+        && alive[slot.index()]
+        && placement.get(slot).is_none()
+    {
+        let miner_count = units
+            .iter()
+            .filter(|(s, k)| **s == slot && **k == UnitKind::Miner)
+            .count();
+        let hidden = index == 4 && miner_count >= MAX_MINERS_PER_PLAYER;
+        if !hidden {
+            buy_or_place_slot(
+                &mut commands,
+                &models,
+                &mut gold,
+                &mut placement,
+                &units,
+                slot,
+                index,
+                *mode,
+            );
         }
     }
 
@@ -2127,6 +2228,9 @@ pub fn placement_system(
     ghosts: Query<(Entity, &PlayerSlot), With<TowerGhost>>,
     existing_towers: Query<&Transform, With<Tower>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    windows: Query<&Window>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
 ) {
     // While paused, keep the ghosts visible in place but skip input handling.
     if *state == GameState::Paused {
@@ -2162,16 +2266,9 @@ pub fn placement_system(
         let Some(seat) = placement.get(slot) else {
             continue;
         };
-        let Some(pad_entity) = players.get(slot) else {
-            placement.clear(slot);
-            continue;
-        };
-        let Ok(pad) = gamepads.get(pad_entity) else {
-            placement.clear(slot);
-            continue;
-        };
 
-        // Swallow the press that activated placement.
+        // Swallow the frame that armed placement so the activating press/click
+        // isn't also read as a confirm.
         if !seat.armed {
             placement.set(
                 slot,
@@ -2183,69 +2280,182 @@ pub fn placement_system(
             continue;
         }
 
-        if pad.just_pressed(GamepadButton::East) {
-            placement.clear(slot);
-            continue;
-        }
-
-        // Move virtual cursor by left stick.
-        let stick = pad.left_stick();
-        let dt = time.delta_secs();
-        let dx = if stick.x.abs() > GAMEPAD_STICK_DEADZONE {
-            stick.x
-        } else {
-            0.0
-        };
-        let dz = if stick.y.abs() > GAMEPAD_STICK_DEADZONE {
-            stick.y
-        } else {
-            0.0
-        };
-        let mut pos = seat.world_pos;
-        pos.x += dx * GAMEPAD_CURSOR_SPEED * dt;
-        // Stick Y positive = up on screen → -Z in world (closer to camera-far).
-        pos.z -= dz * GAMEPAD_CURSOR_SPEED * dt;
-
         let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
-        let side = slot.side();
-        let in_zone = is_valid_tower_zone(side, pos, *mode);
-        let no_overlap = !collides_with_existing_tower(pos, &tower_positions);
-        let can_afford = gold.get(slot) >= TOWER_COST;
-        let valid = in_zone && no_overlap && can_afford;
 
-        // Place on A.
-        if pad.just_pressed(GamepadButton::South) && valid && gold.try_spend(slot, TOWER_COST) {
-            spawn_tower(
-                &mut commands,
-                &lib,
-                &env,
-                slot,
-                Vec3::new(pos.x, 0.0, pos.z),
-            );
-            placement.clear(slot);
-            continue;
+        match players.get(slot) {
+            // Gamepad-driven: left stick moves the cursor, A places, B cancels.
+            Some(pad_entity) => {
+                let Ok(pad) = gamepads.get(pad_entity) else {
+                    placement.clear(slot);
+                    continue;
+                };
+                if pad.just_pressed(GamepadButton::East) {
+                    placement.clear(slot);
+                    continue;
+                }
+                let stick = pad.left_stick();
+                let dt = time.delta_secs();
+                let dx = if stick.x.abs() > GAMEPAD_STICK_DEADZONE {
+                    stick.x
+                } else {
+                    0.0
+                };
+                let dz = if stick.y.abs() > GAMEPAD_STICK_DEADZONE {
+                    stick.y
+                } else {
+                    0.0
+                };
+                let mut pos = seat.world_pos;
+                pos.x += dx * GAMEPAD_CURSOR_SPEED * dt;
+                // Stick Y positive = up on screen → -Z in world.
+                pos.z -= dz * GAMEPAD_CURSOR_SPEED * dt;
+                let confirm = pad.just_pressed(GamepadButton::South);
+                place_tower_at(
+                    &mut commands,
+                    &lib,
+                    &env,
+                    &mut gold,
+                    &mut placement,
+                    &tower_positions,
+                    slot,
+                    *mode,
+                    pos,
+                    confirm,
+                );
+            }
+            // Mouse-driven (controller-less debug): the ghost tracks the cursor's
+            // ground projection, left-click places, right-click cancels.
+            None => {
+                if mouse_buttons.just_pressed(MouseButton::Right) {
+                    placement.clear(slot);
+                    continue;
+                }
+                let pos = windows
+                    .single()
+                    .ok()
+                    .and_then(|w| w.cursor_position())
+                    .zip(camera.single().ok())
+                    .and_then(|(cursor, (cam, cam_tf))| cursor_ground_pos(cam, cam_tf, cursor))
+                    .map(|p| Vec3::new(p.x, 0.0, p.z))
+                    .unwrap_or(seat.world_pos);
+                let confirm = mouse_buttons.just_pressed(MouseButton::Left);
+                place_tower_at(
+                    &mut commands,
+                    &lib,
+                    &env,
+                    &mut gold,
+                    &mut placement,
+                    &tower_positions,
+                    slot,
+                    *mode,
+                    pos,
+                    confirm,
+                );
+            }
         }
+    }
+}
 
-        // Update seat and spawn ghost.
-        placement.set(
-            slot,
-            PlacementSeat {
-                world_pos: pos,
-                armed: true,
-            },
-        );
-        let mat = if valid {
-            lib.ghost_valid_mat.clone()
-        } else {
-            lib.ghost_invalid_mat.clone()
-        };
-        commands.spawn((
-            Mesh3d(lib.tower_ghost_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_xyz(pos.x, TOWER_HEIGHT * 0.5, pos.z),
-            TowerGhost,
-            slot,
-        ));
+/// Shared tail of tower placement: validate `pos`, and either spend gold + spawn
+/// the tower (when `confirm` and the spot is valid) or (re)spawn the placement
+/// ghost tinted by validity. Returns true if a tower was placed. Used by both
+/// the gamepad and mouse placement paths in [`placement_system`].
+fn place_tower_at(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    env: &EnvAssets,
+    gold: &mut Gold,
+    placement: &mut PlacementMode,
+    tower_positions: &[Vec3],
+    slot: PlayerSlot,
+    mode: GameMode,
+    pos: Vec3,
+    confirm: bool,
+) -> bool {
+    let valid = is_valid_tower_zone(slot.side(), pos, mode)
+        && !collides_with_existing_tower(pos, tower_positions)
+        && gold.get(slot) >= TOWER_COST;
+    if confirm && valid && gold.try_spend(slot, TOWER_COST) {
+        spawn_tower(commands, lib, env, slot, Vec3::new(pos.x, 0.0, pos.z));
+        placement.clear(slot);
+        return true;
+    }
+    placement.set(
+        slot,
+        PlacementSeat {
+            world_pos: pos,
+            armed: true,
+        },
+    );
+    let mat = if valid {
+        lib.ghost_valid_mat.clone()
+    } else {
+        lib.ghost_invalid_mat.clone()
+    };
+    commands.spawn((
+        Mesh3d(lib.tower_ghost_mesh.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_xyz(pos.x, TOWER_HEIGHT * 0.5, pos.z),
+        TowerGhost,
+        slot,
+    ));
+    false
+}
+
+/// Project a screen-space cursor position onto the world ground plane (y = 0)
+/// through `camera`, for mouse tower placement.
+fn cursor_ground_pos(camera: &Camera, cam_tf: &GlobalTransform, cursor: Vec2) -> Option<Vec3> {
+    let ray = camera.viewport_to_world(cam_tf, cursor).ok()?;
+    let dist = ray.intersect_plane(Vec3::ZERO, InfinitePlane3d::new(Vec3::Y))?;
+    Some(ray.get_point(dist))
+}
+
+/// Perform the action bound to a HUD panel slot (Tower/Soldier/Archer/Priest/
+/// Miner) for `slot`. Shared by the gamepad path (`focus.index` on South) and
+/// the mouse path (`MouseUi::panel_click`) so both stay in lockstep.
+fn buy_or_place_slot(
+    commands: &mut Commands,
+    models: &UnitModels,
+    gold: &mut Gold,
+    placement: &mut PlacementMode,
+    units: &Query<(&PlayerSlot, &UnitKind), With<Unit>>,
+    slot: PlayerSlot,
+    index: usize,
+    mode: GameMode,
+) {
+    match index {
+        0 => arm_placement(placement, slot, mode),
+        1 if gold.try_spend(slot, SOLDIER_COST) => {
+            let count = units
+                .iter()
+                .filter(|(s, k)| **s == slot && **k == UnitKind::Soldier)
+                .count();
+            spawn_soldier(commands, models, slot, mode, count % LANE_COUNT);
+        }
+        2 if gold.try_spend(slot, ARCHER_COST) => {
+            let count = units
+                .iter()
+                .filter(|(s, k)| **s == slot && **k == UnitKind::Archer)
+                .count();
+            spawn_archer(commands, models, slot, mode, count % LANE_COUNT);
+        }
+        3 if gold.try_spend(slot, PRIEST_COST) => {
+            let count = units
+                .iter()
+                .filter(|(s, k)| **s == slot && **k == UnitKind::Priest)
+                .count();
+            spawn_priest(commands, models, slot, mode, count % LANE_COUNT);
+        }
+        4 => {
+            let miner_count = units
+                .iter()
+                .filter(|(s, k)| **s == slot && **k == UnitKind::Miner)
+                .count();
+            if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(slot, MINER_COST) {
+                spawn_miner(commands, models, slot, mode, miner_count);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2277,6 +2487,7 @@ pub fn settings_input_system(
     mut menu_focus: ResMut<MenuFocus>,
     origin: Res<SettingsOrigin>,
     gamepads: Query<&Gamepad>,
+    mouse: Res<MouseUi>,
 ) {
     if *state != GameState::Settings {
         return;
@@ -2315,6 +2526,14 @@ pub fn settings_input_system(
         }
     }
 
+    // Mouse-clicking a tab switches straight to it (a no-op if already active).
+    if let Some(t) = mouse.tab_click {
+        if *tab != t {
+            *tab = t;
+            menu_focus.index = 0;
+        }
+        return;
+    }
     if switch_tab {
         *tab = tab.toggle();
         menu_focus.index = 0;
@@ -2326,6 +2545,15 @@ pub fn settings_input_system(
     }
     if down {
         menu_focus.index = (menu_focus.index + 1) % slots;
+    }
+
+    // Mouse: hover moves focus, left-click activates the hovered row.
+    if let Some(i) = mouse.menu_hover.filter(|i| *i < slots) {
+        menu_focus.index = i;
+    }
+    if let Some(i) = mouse.menu_click.filter(|i| *i < slots) {
+        menu_focus.index = i;
+        activate = true;
     }
 
     if back {

@@ -29,7 +29,9 @@ pub fn lane_z(lane: usize, mode: GameMode) -> f32 {
     if LANE_COUNT <= 1 {
         return 0.0;
     }
-    let half = mode.lane_half_width();
+    // Tight spawn spread (the column at the gate); the formation rules in
+    // `combat_tick` fan units out into a battalion as they advance.
+    let half = mode.spawn_lane_half_width();
     let step = (half * 2.0) / (LANE_COUNT as f32 - 1.0);
     -half + (lane.min(LANE_COUNT - 1) as f32) * step
 }
@@ -493,7 +495,21 @@ pub fn combat_tick(
                         None => Vec3::new(walk_sign, 0.0, 0.0),
                     },
                 };
-                drive(&mut lin_vel, &mut transform, move_dir, speed.0, true);
+                // Only shape the free march into a battalion; a committed target
+                // is chased at full speed.
+                let move_speed = if target.is_some() {
+                    speed.0
+                } else {
+                    speed.0
+                        * formation_speed_factor(
+                            &combatants,
+                            *side,
+                            entity,
+                            pos,
+                            CombatantKind::Soldier,
+                        )
+                };
+                drive(&mut lin_vel, &mut transform, move_dir, move_speed, true);
                 anim.walking = true;
             }
             UnitKind::Miner => {
@@ -629,8 +645,17 @@ pub fn combat_tick(
                 };
                 anim.face_yaw = face_angle(dir.x, dir.z);
                 // face_yaw owns the archer's rotation (smoothed in animate_unit_model).
-                drive(&mut lin_vel, &mut transform, dir, speed.0, false);
-                anim.walking = true;
+                // Hold behind the soldier front (range layering) while marching.
+                let march_speed = speed.0
+                    * formation_speed_factor(
+                        &combatants,
+                        *side,
+                        entity,
+                        pos,
+                        CombatantKind::Archer,
+                    );
+                drive(&mut lin_vel, &mut transform, dir, march_speed, false);
+                anim.walking = march_speed > 1e-3;
             }
             UnitKind::Priest => {
                 let walk_sign = side.forward();
@@ -680,8 +705,17 @@ pub fn combat_tick(
                 };
                 anim.face_yaw = face_angle(dir.x, dir.z);
                 // face_yaw owns the priest's rotation (smoothed in animate_unit_model).
-                drive(&mut lin_vel, &mut transform, dir, speed.0, false);
-                anim.walking = true;
+                // Hold behind the soldier front (range layering) while marching.
+                let march_speed = speed.0
+                    * formation_speed_factor(
+                        &combatants,
+                        *side,
+                        entity,
+                        pos,
+                        CombatantKind::Priest,
+                    );
+                drive(&mut lin_vel, &mut transform, dir, march_speed, false);
+                anim.walking = march_speed > 1e-3;
             }
         }
     }
@@ -836,6 +870,97 @@ fn march_dir(pos: Vec3, base_pos: Vec3, walk_sign: f32) -> Vec3 {
     } else {
         Vec3::new(walk_sign, 0.0, 0.0)
     }
+}
+
+/// Local battalion steering applied while a unit MARCHES (no enemy target).
+/// Returns a forward-speed factor in `[FORMATION_MIN_FACTOR, 1.0]`, the smaller of
+/// two graduated slow-downs (see the `common.rs` formation block):
+///  - RANK COHESION: the further this unit has pulled ahead of nearby SAME-ROLE
+///    peers (weighted toward lateral lane neighbours), the more it slows, so the
+///    rank lines up abreast;
+///  - RANGED PACING: an archer/priest slows as it crowds the nearest allied
+///    SOLDIER *ahead of it*, keeping its per-role gap — so it paces the soldiers
+///    and never freezes, and the army layers by range.
+///
+/// Full speed (`1.0`) with no relevant neighbours, so a lone unit or the head of
+/// an unopposed advance is never artificially stalled.
+fn formation_speed_factor(
+    combatants: &[Combatant],
+    side: Side,
+    self_entity: Entity,
+    pos: Vec3,
+    kind: CombatantKind,
+) -> f32 {
+    let walk_sign = side.forward();
+    // Forward coordinate on the march axis: larger = closer to the enemy.
+    let fwd = |p: Vec3| p.x * walk_sign;
+
+    // ── Rank cohesion: weighted average of how far ahead we are of same-role
+    // peers behind us, weighting nearby and laterally-close (lane) neighbours.
+    let mut lead_sum = 0.0;
+    let mut weight_sum = 0.0;
+    for c in combatants
+        .iter()
+        .filter(|c| c.side == side && c.entity != self_entity && c.kind == kind && c.kind.is_unit())
+    {
+        let d = xz_distance(c.pos, pos);
+        if d > FORMATION_RADIUS {
+            continue;
+        }
+        let lead = fwd(pos) - fwd(c.pos); // > 0 ⇒ this peer is behind us
+        if lead <= 0.0 {
+            continue;
+        }
+        let dist_w = 1.0 - d / FORMATION_RADIUS;
+        let dz = (c.pos.z - pos.z).abs();
+        let lateral_w = (1.0 - dz / FORMATION_LATERAL_RANGE).max(FORMATION_LATERAL_FLOOR);
+        let w = dist_w * lateral_w;
+        lead_sum += lead * w;
+        weight_sum += w;
+    }
+    let cohesion = if weight_sum > 0.0 {
+        formation_slow_curve(lead_sum / weight_sum)
+    } else {
+        1.0
+    };
+
+    // ── Ranged pacing: keep the per-role gap behind the nearest soldier ahead.
+    let role_gap = match kind {
+        CombatantKind::Priest => FORMATION_PRIEST_GAP,
+        CombatantKind::Archer => FORMATION_ARCHER_GAP,
+        _ => 0.0,
+    };
+    let pacing = if role_gap > 0.0 {
+        let nearest_soldier_ahead = combatants
+            .iter()
+            .filter(|c| {
+                c.side == side
+                    && c.kind == CombatantKind::Soldier
+                    && fwd(c.pos) > fwd(pos)
+                    && xz_distance(c.pos, pos) <= FORMATION_RADIUS
+            })
+            .map(|c| fwd(c.pos))
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        match nearest_soldier_ahead {
+            // excess > 0 ⇒ we are closer than the gap and must ease off the pace.
+            Some(front) => formation_slow_curve(role_gap - (front - fwd(pos))),
+            None => 1.0,
+        }
+    } else {
+        1.0
+    };
+
+    cohesion.min(pacing)
+}
+
+/// Smooth slow-down for being `lead` units ahead of where this unit should be:
+/// `lead <= 0` ⇒ full speed `1.0`; it then falls linearly to `FORMATION_MIN_FACTOR`
+/// once `lead` reaches `FORMATION_DECAY`. Pure (no ECS) so it is unit-testable.
+fn formation_slow_curve(lead: f32) -> f32 {
+    if lead <= 0.0 {
+        return 1.0;
+    }
+    (1.0 - lead / FORMATION_DECAY).clamp(FORMATION_MIN_FACTOR, 1.0)
 }
 
 fn xz_distance(a: Vec3, b: Vec3) -> f32 {
@@ -1301,11 +1426,38 @@ mod tests {
 
     #[test]
     fn lane_z_spreads_symmetrically() {
-        let half = GameMode::OneVsOne.lane_half_width();
+        let half = GameMode::OneVsOne.spawn_lane_half_width();
         let first = lane_z(0, GameMode::OneVsOne);
         let last = lane_z(LANE_COUNT - 1, GameMode::OneVsOne);
         assert!((first + half).abs() < 1e-4);
         assert!((last - half).abs() < 1e-4);
+    }
+
+    #[test]
+    fn formation_slow_curve_full_speed_when_not_ahead() {
+        // Level with or behind the reference ⇒ no slow-down.
+        assert_eq!(formation_slow_curve(0.0), 1.0);
+        assert_eq!(formation_slow_curve(-1.0), 1.0);
+    }
+
+    #[test]
+    fn formation_slow_curve_bottoms_out_at_floor() {
+        // At/past FORMATION_DECAY the factor clamps to the floor — never a dead stop.
+        assert_eq!(formation_slow_curve(FORMATION_DECAY), FORMATION_MIN_FACTOR);
+        assert_eq!(
+            formation_slow_curve(FORMATION_DECAY * 3.0),
+            FORMATION_MIN_FACTOR
+        );
+        assert!(FORMATION_MIN_FACTOR > 0.0);
+    }
+
+    #[test]
+    fn formation_slow_curve_is_monotonic_decreasing() {
+        let a = formation_slow_curve(0.2);
+        let b = formation_slow_curve(0.8);
+        let c = formation_slow_curve(1.5);
+        assert!(a > b && b > c);
+        assert!(a <= 1.0 && c >= FORMATION_MIN_FACTOR);
     }
 
     #[test]

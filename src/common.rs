@@ -398,6 +398,42 @@ pub const BASE_SEEK_RANGE: f32 = 8.0;
 /// while still creeping in to follow a kiting target and stay in reach.
 pub const MELEE_STANDOFF: f32 = UNIT_RADIUS * 2.0 + 0.25;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Battalion formation. Self-organized by simple per-unit rules in `combat_tick`
+// (no global controller): while a unit marches with no enemy target, its forward
+// speed is scaled by the SMALLEST of two graduated slow-downs —
+//   1. RANK COHESION: it slows the further it has pulled ahead of nearby
+//      SAME-ROLE peers (weighted toward lateral "lane" neighbours), so each rank
+//      advances abreast — "ralentit pour chaque voisin, surtout ses voisins de
+//      couloir devant lui";
+//   2. RANGED PACING (archer/priest only): it keeps a per-role gap behind the
+//      nearest allied SOLDIER *ahead of it*, slowing only when it crowds that
+//      soldier — so it paces the soldiers (never freezes) and the army layers by
+//      range (soldiers → priests → archers).
+// All comparisons are limited to allies within `FORMATION_RADIUS`, which keeps
+// the behaviour local: a straggler outside that radius never stalls the front.
+// ─────────────────────────────────────────────────────────────────────────────
+/// How far (XZ) a marching unit "sees" allies for its formation decisions.
+pub const FORMATION_RADIUS: f32 = 6.0;
+/// Gap (march axis) a marching priest keeps behind the nearest soldier ahead.
+/// Shorter range than the archer ⇒ sits closer to the front.
+pub const FORMATION_PRIEST_GAP: f32 = 1.8;
+/// Gap a marching archer keeps behind the nearest soldier ahead — larger than the
+/// priest's so the longest-range role ends up at the back ("par portée").
+pub const FORMATION_ARCHER_GAP: f32 = 3.5;
+/// How far ahead (march axis) a unit must be of its reference before its speed
+/// bottoms out at `FORMATION_MIN_FACTOR`. Smaller ⇒ tighter, snappier ranks.
+pub const FORMATION_DECAY: f32 = 2.0;
+/// Floor of the formation speed factor: a waiting unit still creeps forward at
+/// this fraction of its speed (never a dead stop, so it never looks frozen).
+pub const FORMATION_MIN_FACTOR: f32 = 0.3;
+/// Lateral (Z) distance over which a same-rank neighbour's pull fades. Neighbours
+/// beside you (your "lane" flankers) weigh most when deciding to wait for them.
+pub const FORMATION_LATERAL_RANGE: f32 = 3.0;
+/// Minimum weight kept for a same-rank neighbour far away in Z, so distant-lane
+/// peers still count a little toward rank cohesion.
+pub const FORMATION_LATERAL_FLOOR: f32 = 0.15;
+
 pub const LEFT_BASE_X: f32 = -21.0;
 pub const RIGHT_BASE_X: f32 = 21.0;
 // Z offset between the two bases of a same side in 2v2 mode (scaled with the
@@ -425,13 +461,20 @@ pub const SOLDIER_SPAWN_OFFSET: f32 = 1.5;
 /// Number of parallel lanes (Z offsets) units cycle through on spawn so that
 /// successive same-kind units don't pile on top of each other.
 pub const LANE_COUNT: usize = 5;
-/// Half-width of the lane spread in 1v1: lanes are centred on each base's Z
-/// (which is 0 in 1v1) and span ±LANE_HALF_WIDTH_1V1. Widened ×3 for a roomy
-/// lateral battlefront (drives the tower z-limit and the sand ground band too).
+/// Half-width of the lateral **battlefront** in 1v1 (NOT the spawn spread):
+/// drives the tower z-limit and the sand ground band. Widened ×3 for a roomy
+/// field. Units now spawn in a tight column (`SPAWN_LANE_HALF_WIDTH_*`) and
+/// fan out into a battalion via the formation rules, so this is decoupled from
+/// where they exit the base.
 pub const LANE_HALF_WIDTH_1V1: f32 = 7.8;
-/// Half-width in 2v2: tighter than 1v1 so each ally's lanes don't bleed into the
-/// allied lanes (their bases are `BASE_Z_OFFSET` apart on Z).
+/// Half-width of the battlefront in 2v2: tighter than 1v1 so each ally's half of
+/// the field doesn't bleed into the other (their bases are `BASE_Z_OFFSET` apart).
 pub const LANE_HALF_WIDTH_2V2: f32 = 4.5;
+/// Half-width of the **spawn** lane spread. Deliberately tight so units leave the
+/// base clustered (a column at the gate) instead of fanning across the whole
+/// battlefront; the per-unit formation rules then organize them into a battalion.
+pub const SPAWN_LANE_HALF_WIDTH_1V1: f32 = 2.5;
+pub const SPAWN_LANE_HALF_WIDTH_2V2: f32 = 1.6;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
 pub const ROCK_OFFSET: f32 = 8.25;
 /// Spread applied to non-laned units' Z at spawn so consecutive same-side
@@ -548,10 +591,12 @@ impl GameMode {
         }
     }
 
-    pub fn lane_half_width(self) -> f32 {
+    /// Half-width of the (much tighter) spawn lane spread — where units exit the
+    /// base, before the formation rules fan them out into a battalion.
+    pub fn spawn_lane_half_width(self) -> f32 {
         match self {
-            GameMode::OneVsOne => LANE_HALF_WIDTH_1V1,
-            GameMode::TwoVsTwo => LANE_HALF_WIDTH_2V2,
+            GameMode::OneVsOne => SPAWN_LANE_HALF_WIDTH_1V1,
+            GameMode::TwoVsTwo => SPAWN_LANE_HALF_WIDTH_2V2,
         }
     }
 }
@@ -1372,8 +1417,17 @@ mod tests {
     }
 
     #[test]
-    fn lane_half_width_tighter_in_2v2() {
-        assert!(GameMode::OneVsOne.lane_half_width() > GameMode::TwoVsTwo.lane_half_width());
+    fn spawn_lane_width_tighter_in_2v2() {
+        assert!(
+            GameMode::OneVsOne.spawn_lane_half_width() > GameMode::TwoVsTwo.spawn_lane_half_width()
+        );
+    }
+
+    #[test]
+    fn spawn_spread_tighter_than_battlefront() {
+        // Units exit clustered, not fanned across the whole field.
+        assert!(SPAWN_LANE_HALF_WIDTH_1V1 < LANE_HALF_WIDTH_1V1);
+        assert!(SPAWN_LANE_HALF_WIDTH_2V2 < LANE_HALF_WIDTH_2V2);
     }
 
     #[test]

@@ -93,6 +93,7 @@ Real-time bilateral tower defense: one player on the left, one on the right (1v1
 - Free-fly debug camera.
 
 ### Planned / ideas
+- **Rework the battalion formation.** A first pass exists (local per-unit rules in `formation_speed_factor`: tight column spawn, graduated rank-cohesion slow-down weighted toward lane neighbours, ranged units pacing behind the soldier front by range). It does not yet feel right — units organize and wait poorly — so the steering rules and tuning (`FORMATION_*` in `common.rs`) need another pass.
 - **More nations** with distinct units, stats and visuals (the nation pick is wired but only Ada'Ram exists).
 - **Deeper physics use** — units, buildings and arrows already run on Avian (dynamic capsules, static colliders, `SpatialQuery` arrow hits); ragdoll deaths, debris or knockback could build on it.
 - Additional unit types and abilities; sound effects.

@@ -398,13 +398,16 @@ pub const BASE_SEEK_RANGE: f32 = 8.0;
 /// while still creeping in to follow a kiting target and stay in reach.
 pub const MELEE_STANDOFF: f32 = UNIT_RADIUS * 2.0 + 0.25;
 
-pub const LEFT_BASE_X: f32 = -14.0;
-pub const RIGHT_BASE_X: f32 = 14.0;
+pub const LEFT_BASE_X: f32 = -21.0;
+pub const RIGHT_BASE_X: f32 = 21.0;
 // Z offset between the two bases of a same side in 2v2 mode (scaled with the
 // widened lateral battlefront so the two allied lanes stay separated).
 pub const BASE_Z_OFFSET: f32 = 9.0;
-// Terrain between bases is split into three equal parts: left zone, neutral, right zone.
-pub const ZONE_BOUNDARY: f32 = (RIGHT_BASE_X - LEFT_BASE_X) / 6.0;
+// Half-width of the central neutral no-man's-land. Pinned to an absolute size
+// (the old 28/6 derived from ±14 bases) and NOT recomputed from the base
+// separation, so moving the bases farther apart lengthens each side's buildable
+// zone while the no-man's-land keeps the same footprint.
+pub const ZONE_BOUNDARY: f32 = 14.0 / 3.0;
 pub const TOWER_PLACEMENT_MARGIN: f32 = 1.6;
 /// Z half-extent of the placement zone in 1v1: lanes are centred on Z=0 so the
 /// usable strip is narrow. Wider would let you drop a tower way off any lane.
@@ -430,7 +433,7 @@ pub const LANE_HALF_WIDTH_1V1: f32 = 7.8;
 /// allied lanes (their bases are `BASE_Z_OFFSET` apart on Z).
 pub const LANE_HALF_WIDTH_2V2: f32 = 4.5;
 pub const MINER_SPAWN_OFFSET: f32 = 1.0;
-pub const ROCK_OFFSET: f32 = 5.5;
+pub const ROCK_OFFSET: f32 = 8.25;
 /// Spread applied to non-laned units' Z at spawn so consecutive same-side
 /// spawns don't appear in a perfect line. ±half the value, around the slot's
 /// base Z.
@@ -743,13 +746,12 @@ pub const SUN_DISTANCE: f32 = 55.0;
 /// Eye position of the fixed 3/4 game view. Both `setup_world` and the debug
 /// camera's "reset" use this so they can't drift apart.
 ///
-/// The height (Y) is the key knob for the skyline: the horizon always sits at
-/// the camera's eye level, so a mountain only has **sky directly behind it** if
-/// its top rises above this Y. The tallest peaks top out at ~13.9, so the eye
-/// must sit below that — hence 11. At 11 the tall ridge clears the horizon by
-/// ~2° (`atan((13.9-11)/80)`), silhouetting it against the sky instead of the
-/// camera looking down over it onto the ground beyond.
-pub const CAMERA_DEFAULT_POS: Vec3 = Vec3::new(0.0, 13.0, 30.0);
+/// Dollied straight back (×1.5 along the eye→target ray) from the old
+/// (0,13,30) when the bases were widened ±14→±21, so the battlefield keeps the
+/// same on-screen size. Caveat: the eye (17.5) now sits above the tallest peaks
+/// (~13.9), so mountains read as ground-beyond rather than silhouetted against
+/// the sky — the height was previously kept below the peaks for that skyline.
+pub const CAMERA_DEFAULT_POS: Vec3 = Vec3::new(0.0, 17.5, 45.0);
 /// Look-at point of the default view. Above the ground (not the origin) to tilt
 /// the view up so the horizon enters the frame (otherwise the sky is above the
 /// top edge and the area behind the peaks reads as dark "void"). Chosen with the

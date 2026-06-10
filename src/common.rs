@@ -316,6 +316,10 @@ pub const SCENERY_CLEAR_Z_MAX: f32 = 10.0;
 /// Per-instance random scale spread applied on top of each kind's base scale.
 pub const SCENERY_SCALE_MIN: f32 = 0.8;
 pub const SCENERY_SCALE_MAX: f32 = 1.25;
+/// Radius kept free of props around each possible mining-rock position. The
+/// rocks sit at x ≈ ±(base + ROCK_OFFSET), *outside* the keep-clear rectangle,
+/// so without this a prop could spawn on the rock or the miners' arc.
+pub const SCENERY_ROCK_CLEARANCE: f32 = 4.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ground coloring. A procedural texture (built in `init_mat_library`) paints the
@@ -747,11 +751,20 @@ impl UnitKind {
 #[derive(Component)]
 pub struct Base;
 
-/// Marker added to a `Base` whose HP hit 0. Targeting filters (`combat_tick`,
+/// Added to a `Base` whose HP hit 0. Targeting filters (`combat_tick`,
 /// `tower_attack_tick`) exclude these so allied units retarget the surviving
-/// enemy base, and the HUD greys out the owning player's panel.
-#[derive(Component)]
-pub struct BaseDestroyed;
+/// enemy base, and the HUD greys out the owning player's panel. Its collider is
+/// removed on insertion (a ruin neither blocks units nor soaks arrows) and `t`
+/// drives the sink animation in `collapse_destroyed_bases`.
+#[derive(Component, Default)]
+pub struct BaseDestroyed {
+    pub t: f32,
+}
+
+/// Seconds the destroyed-base sink animation lasts.
+pub const BASE_COLLAPSE_DURATION: f32 = 2.5;
+/// How deep (world units) a destroyed base sinks into the ground.
+pub const BASE_COLLAPSE_SINK: f32 = 2.2;
 
 #[derive(Component)]
 pub struct Unit;
@@ -1190,7 +1203,9 @@ pub enum GameState {
     SideSelect,
     Playing,
     Paused,
-    Ended(Side),
+    /// Match over. `Some(side)` is the winner; `None` is a draw (both sides'
+    /// last bases fell on the same frame).
+    Ended(Option<Side>),
 }
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq)]

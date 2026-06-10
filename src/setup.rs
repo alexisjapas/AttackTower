@@ -385,10 +385,16 @@ pub fn setup_world(
 /// empty arena. Despawned on return-to-menu paths so the next match can be
 /// rebuilt cleanly for either 1v1 or 2v2. Guarded by `state.is_changed()` so
 /// the bases query isn't iterated every frame during a match.
+///
+/// Also seeds each active slot's free starting miner here, keyed on the same
+/// "arena just built" condition: tying it to a units-are-empty check instead
+/// (as before) handed out free miners on any Paused→Playing resume where every
+/// unit happened to be dead.
 pub fn spawn_arena(
     mut commands: Commands,
     lib: Res<MatLibrary>,
     env: Res<EnvAssets>,
+    models: Res<UnitModels>,
     state: Res<GameState>,
     mode: Res<GameMode>,
     mut images: ResMut<Assets<Image>>,
@@ -410,6 +416,8 @@ pub fn spawn_arena(
         let z = slot.base_z(*mode);
         spawn_castle(&mut commands, &lib, &env, slot, z);
         spawn_rock(&mut commands, &env, slot, z);
+        // One free miner per player so the economy works without spending first.
+        crate::units::spawn_miner(&mut commands, &models, slot, *mode, 0);
     }
 }
 
@@ -1028,6 +1036,21 @@ impl Rng {
 /// kind is drawn by `DesertProp::weight` (rocks/trees common, ruins/arches rare)
 /// at a random yaw and slightly randomized scale.
 fn spawn_scenery(commands: &mut Commands, env: &EnvAssets) {
+    // The mining rocks sit OUTSIDE the keep-clear rectangle (x ≈ ±29), so they
+    // get their own clearance circles. The scenery is spawned once at startup,
+    // before the GameMode is known, so every possible rock position (1v1 z=0,
+    // 2v2 z=±BASE_Z_OFFSET) is kept clear.
+    let rock_xs = [LEFT_BASE_X - ROCK_OFFSET, RIGHT_BASE_X + ROCK_OFFSET];
+    let rock_zs = [0.0, BASE_Z_OFFSET, -BASE_Z_OFFSET];
+    let near_rock = |x: f32, z: f32| {
+        rock_xs.iter().any(|&rx| {
+            rock_zs.iter().any(|&rz| {
+                let dx = x - rx;
+                let dz = z - rz;
+                dx * dx + dz * dz < SCENERY_ROCK_CLEARANCE * SCENERY_ROCK_CLEARANCE
+            })
+        })
+    };
     let mut rng = Rng::new(0x5F3A_C0FF_EE15_600D);
     let mut gx = -SCENERY_X_RANGE;
     while gx <= SCENERY_X_RANGE {
@@ -1036,8 +1059,11 @@ fn spawn_scenery(commands: &mut Commands, env: &EnvAssets) {
             let x = gx + rng.range(-SCENERY_JITTER, SCENERY_JITTER);
             let z = gz + rng.range(-SCENERY_JITTER, SCENERY_JITTER);
             gz += SCENERY_GRID_STEP;
-            // Keep the bases, lanes and tower zones clear.
+            // Keep the bases, lanes, tower zones and mining rocks clear.
             if x.abs() < SCENERY_CLEAR_X && z > SCENERY_CLEAR_Z_MIN && z < SCENERY_CLEAR_Z_MAX {
+                continue;
+            }
+            if near_rock(x, z) {
                 continue;
             }
             let kind = rng.pick_prop();

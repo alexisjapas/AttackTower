@@ -1440,9 +1440,13 @@ mod tests {
 
     #[test]
     fn spawn_spread_tighter_than_battlefront() {
-        // Units exit clustered, not fanned across the whole field.
-        assert!(SPAWN_LANE_HALF_WIDTH_1V1 < LANE_HALF_WIDTH_1V1);
-        assert!(SPAWN_LANE_HALF_WIDTH_2V2 < LANE_HALF_WIDTH_2V2);
+        // Units exit clustered, not fanned across the whole field. Const
+        // blocks: pure constant relations, checked at compile time (and they
+        // keep clippy's assertions_on_constants happy under -D warnings).
+        const {
+            assert!(SPAWN_LANE_HALF_WIDTH_1V1 < LANE_HALF_WIDTH_1V1);
+            assert!(SPAWN_LANE_HALF_WIDTH_2V2 < LANE_HALF_WIDTH_2V2);
+        }
     }
 
     #[test]

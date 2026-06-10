@@ -1492,7 +1492,10 @@ mod tests {
             formation_slow_curve(FORMATION_DECAY * 3.0),
             FORMATION_MIN_FACTOR
         );
-        assert!(FORMATION_MIN_FACTOR > 0.0);
+        // Constant relation → const block (compile-time, clippy-clean).
+        const {
+            assert!(FORMATION_MIN_FACTOR > 0.0);
+        }
     }
 
     #[test]

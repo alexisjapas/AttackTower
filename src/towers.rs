@@ -61,7 +61,7 @@ pub fn tower_attack_tick(
         (Entity, &Side, &Transform, &Damage, &mut AttackCooldown),
         (With<Tower>, Without<TowerDying>),
     >,
-    units: Query<(&Side, &Transform), (With<Unit>, Without<Tower>)>,
+    units: Query<(&Side, &Transform, &UnitAnim), (With<Unit>, Without<Tower>)>,
     bases: Query<(&Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
 ) {
     if *state != GameState::Playing {
@@ -79,8 +79,9 @@ pub fn tower_attack_tick(
                 nearest = Some((target_pos, d));
             }
         };
-        for (s, t) in units.iter() {
-            if s != side {
+        for (s, t, anim) in units.iter() {
+            // Don't waste arrows on corpses playing their death clip.
+            if s != side && !anim.dying {
                 consider(t.translation);
             }
         }
@@ -114,8 +115,13 @@ pub fn tower_attack_tick(
 pub fn cleanup_dead_towers(
     mut commands: Commands,
     time: Res<Time>,
+    state: Res<GameState>,
     mut towers: Query<(Entity, &Health, &mut Transform, Option<&mut TowerDying>), With<Tower>>,
 ) {
+    // Frozen outside Playing so the collapse doesn't progress during a pause.
+    if *state != GameState::Playing {
+        return;
+    }
     let dt = time.delta_secs();
     for (entity, hp, mut transform, dying) in towers.iter_mut() {
         if hp.current > 0 {
@@ -155,7 +161,7 @@ pub fn collides_with_existing_tower(pos: Vec3, towers: &[Vec3]) -> bool {
     towers.iter().any(|t| {
         let dx = t.x - pos.x;
         let dz = t.z - pos.z;
-        (dx * dx + dz * dz).sqrt() < TOWER_MIN_SEPARATION
+        dx * dx + dz * dz < TOWER_MIN_SEPARATION * TOWER_MIN_SEPARATION
     })
 }
 

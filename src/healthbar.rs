@@ -10,12 +10,46 @@ const BAR_BG_COLOR: Color = Color::srgba(0.05, 0.05, 0.07, 0.9);
 const BAR_FILL_FULL: Color = Color::srgb(0.30, 0.85, 0.30);
 const BAR_FILL_LOW: Color = Color::srgb(0.95, 0.30, 0.25);
 const TOWER_BAR_WIDTH: f32 = 1.2;
+/// Fill width as a fraction of the bar width, so the dark frame stays visible
+/// on the edges. Shared by the mesh construction and the fill-anchoring math.
+const FILL_WIDTH_RATIO: f32 = 0.96;
 
 /// Vertical offset above each owner kind. Tuned to clear the tallest mesh
 /// without floating too far overhead.
 const UNIT_BAR_HEIGHT: f32 = 1.25;
 const TOWER_BAR_HEIGHT: f32 = 3.30;
 const BASE_BAR_HEIGHT: f32 = 3.20;
+
+/// Shared health-bar assets, created once at startup. Every bar reuses these
+/// meshes and the background material; only the fill material is per-bar
+/// (it is re-tinted green→red as the owner's HP drops).
+#[derive(Resource, Default)]
+pub struct HealthBarAssets {
+    pub bg_mesh_unit: Handle<Mesh>,
+    pub fill_mesh_unit: Handle<Mesh>,
+    pub bg_mesh_struct: Handle<Mesh>,
+    pub fill_mesh_struct: Handle<Mesh>,
+    pub bg_mat: Handle<StandardMaterial>,
+}
+
+pub fn init_health_bar_assets(
+    mut assets: ResMut<HealthBarAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let bg = |w: f32| Cuboid::new(w, BAR_HEIGHT, BAR_DEPTH);
+    let fill = |w: f32| Cuboid::new(w * FILL_WIDTH_RATIO, BAR_HEIGHT * 0.7, BAR_DEPTH * 1.2);
+    assets.bg_mesh_unit = meshes.add(bg(BAR_WIDTH));
+    assets.fill_mesh_unit = meshes.add(fill(BAR_WIDTH));
+    assets.bg_mesh_struct = meshes.add(bg(TOWER_BAR_WIDTH));
+    assets.fill_mesh_struct = meshes.add(fill(TOWER_BAR_WIDTH));
+    assets.bg_mat = materials.add(StandardMaterial {
+        base_color: BAR_BG_COLOR,
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+}
 
 /// Component on the health bar root. Drives placement, billboarding and
 /// visibility each frame; despawned automatically when its owner disappears.
@@ -28,7 +62,7 @@ pub struct HealthBar {
     /// units only show it once they've taken damage.
     pub always_visible: bool,
     /// Child entity holding the colored fill cuboid. Its X scale is set to
-    /// the current HP fraction every frame.
+    /// the current HP fraction whenever the owner's HP changes.
     pub fill: Entity,
 }
 
@@ -45,31 +79,28 @@ pub fn spawn_health_bar_for_base(commands: &mut Commands, owner: Entity) {
 }
 
 fn spawn_bar(commands: &mut Commands, owner: Entity, height: f32, width: f32, always: bool) {
-    // Deferred: cannot allocate Mesh/Material handles without world access.
-    // We let init_health_bar_assets stash shared handles in a resource;
-    // until then we just record the spawn request inline below using
-    // commands. Simpler: just spawn here using a closure-friendly system
-    // pattern — but since this is called from spawn_* helpers that already
-    // have access to MatLibrary equivalents, do mesh allocation through a
-    // queued command instead.
+    // Deferred: the shared handles live in HealthBarAssets and the per-bar
+    // fill material needs Assets access, so the spawn happens through a queued
+    // command with world access.
     commands.queue(move |world: &mut World| {
-        let bg_mesh = world
-            .resource_mut::<Assets<Mesh>>()
-            .add(Cuboid::new(width, BAR_HEIGHT, BAR_DEPTH));
-        // Slightly thinner fill so the dark frame stays visible on edges.
-        let fill_mesh = world.resource_mut::<Assets<Mesh>>().add(Cuboid::new(
-            width * 0.96,
-            BAR_HEIGHT * 0.7,
-            BAR_DEPTH * 1.2,
-        ));
-        let bg_mat = world
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial {
-                base_color: BAR_BG_COLOR,
-                unlit: true,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
+        let (bg_mesh, fill_mesh, bg_mat) = {
+            let assets = world.resource::<HealthBarAssets>();
+            if always {
+                // Structures (towers/bases) use the wide pair.
+                (
+                    assets.bg_mesh_struct.clone(),
+                    assets.fill_mesh_struct.clone(),
+                    assets.bg_mat.clone(),
+                )
+            } else {
+                (
+                    assets.bg_mesh_unit.clone(),
+                    assets.fill_mesh_unit.clone(),
+                    assets.bg_mat.clone(),
+                )
+            }
+        };
+        // Per-bar: the fill material is mutated (re-tinted) as HP drops.
         let fill_mat = world
             .resource_mut::<Assets<StandardMaterial>>()
             .add(StandardMaterial {
@@ -108,14 +139,17 @@ fn spawn_bar(commands: &mut Commands, owner: Entity, height: f32, width: f32, al
     });
 }
 
-/// Updates every health bar each frame: position above its owner, billboard
-/// toward the camera (Y axis only), fill scale = current/max, visibility per
-/// the `always_visible` flag. Orphan bars (owner despawned) are cleaned up.
+/// Updates every health bar: position above its owner and Y-only billboarding
+/// run each frame, but the fill scale / tint / visibility are only rewritten
+/// when the owner's HP actually changed (or the bar was just spawned) —
+/// mutating `Assets<StandardMaterial>` every frame for every bar would
+/// invalidate material caching for no visual gain. Orphan bars (owner
+/// despawned) clean themselves up.
 pub fn update_health_bars(
     mut commands: Commands,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
-    healths: Query<(&GlobalTransform, &Health)>,
-    mut bars: Query<(Entity, &HealthBar, &mut Transform, &mut Visibility)>,
+    healths: Query<(&GlobalTransform, Ref<Health>)>,
+    mut bars: Query<(Entity, Ref<HealthBar>, &mut Transform, &mut Visibility)>,
     fill_mats: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fill_t: Query<&mut Transform, Without<HealthBar>>,
@@ -140,6 +174,13 @@ pub fn update_health_bars(
         let yaw = to_cam.x.atan2(to_cam.z);
         transform.rotation = Quat::from_rotation_y(yaw);
 
+        // Fill/tint/visibility only when the HP moved or the bar is new (a bar
+        // spawns one flush after its owner, so it may miss the owner's
+        // initial Changed<Health> tick — `is_added` covers that frame).
+        if !hp.is_changed() && !bar.is_added() {
+            continue;
+        }
+
         let max = hp.max.max(1) as f32;
         let cur = hp.current.max(0) as f32;
         let frac = (cur / max).clamp(0.0, 1.0);
@@ -151,7 +192,7 @@ pub fn update_health_bars(
         };
 
         if let Ok(mut t) = fill_t.get_mut(bar.fill) {
-            let inner_w = bar.width * 0.96;
+            let inner_w = bar.width * FILL_WIDTH_RATIO;
             let scaled = inner_w * frac;
             t.scale = Vec3::new(frac.max(0.0001), 1.0, 1.0);
             // Anchor the fill at the left edge so it shrinks from the right.

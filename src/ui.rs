@@ -212,6 +212,9 @@ const HUD_BG_DISABLED: Color = Color::srgba(0.0, 0.0, 0.0, 0.40);
 const HUD_BORDER_DISABLED: Color = Color::srgb(0.40, 0.40, 0.44);
 const CARD_NORMAL: Color = Color::srgb(0.12, 0.13, 0.18);
 const CARD_HOVERED: Color = Color::srgb(0.22, 0.23, 0.30);
+/// Vertical gap between settings-menu rows. Shared by the column layout and
+/// `scroll_focused_into_view`'s offset math, which must stay in sync.
+const SETTINGS_ROW_GAP: f32 = 4.0;
 
 pub fn setup_ui(mut commands: Commands) {
     let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
@@ -369,8 +372,8 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
         });
 }
 
-/// Stats text for one of the four slot indices, matching the panel button
-/// order (0 Tower, 1 Soldier, 2 Archer, 3 Miner).
+/// Stats text for one of the five slot indices, matching the panel button
+/// order (0 Tower, 1 Soldier, 2 Archer, 3 Priest, 4 Miner).
 fn focus_stats_string(index: usize) -> String {
     match index {
         0 => format!(
@@ -386,6 +389,10 @@ fn focus_stats_string(index: usize) -> String {
             ARCHER_HP, ARCHER_DAMAGE, ARCHER_RANGE, ARCHER_COOLDOWN
         ),
         3 => format!(
+            "Priest\nHP {}  HEAL {}  RNG {:.1}  CD {:.1}s",
+            PRIEST_HP, PRIEST_HEAL, PRIEST_RANGE, PRIEST_COOLDOWN
+        ),
+        4 => format!(
             "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
             MINER_HP, MINER_CAPACITY, MINER_SPEED, MINER_COOLDOWN
         ),
@@ -691,7 +698,7 @@ fn spawn_settings_menu_column(
         Node {
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Stretch,
-            row_gap: Val::Px(4.0),
+            row_gap: Val::Px(SETTINGS_ROW_GAP),
             min_width: Val::Px(380.0),
             max_height: Val::Vh(72.0),
             overflow: Overflow::scroll_y(),
@@ -956,8 +963,7 @@ pub fn scroll_focused_into_view(
     let viewport_height = column_node.size().y;
     // Walk the column's direct children in order, accumulating heights to
     // compute each button's top offset in the (unscrolled) content space.
-    // `row_gap` matches the column's `Node.row_gap` above.
-    let row_gap = 4.0_f32;
+    let row_gap = SETTINGS_ROW_GAP;
     let mut y_offset = 0.0_f32;
     let mut focused: Option<(f32, f32)> = None; // (top, height)
     for child in children.iter() {
@@ -1105,6 +1111,7 @@ pub fn pause_input_system(
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
+    mut nations: ResMut<PlayerNations>,
     mut gtime: ResMut<GameTime>,
     mut tod: ResMut<TimeOfDay>,
     battlefield: Query<Entity, BattlefieldEntity>,
@@ -1179,6 +1186,7 @@ pub fn pause_input_system(
                     &mut gold,
                     &mut placement,
                     &mut players,
+                    &mut nations,
                     &mut gtime,
                     &mut tod,
                 );
@@ -1203,15 +1211,16 @@ type BattlefieldEntity = Or<(
 )>;
 
 /// Wipe a finished/abandoned match: despawn every battlefield entity, and reset
-/// gold, placement, player→pad mapping and the day/night clock. The arena is
-/// rebuilt by `spawn_arena` on the next `Playing` transition. Used by both the
-/// pause "Main menu" action and the endgame "Main menu" action.
+/// gold, placement, player→pad mapping, chosen nations and the day/night clock.
+/// The arena is rebuilt by `spawn_arena` on the next `Playing` transition. Used
+/// by both the pause "Main menu" action and the endgame "Main menu" action.
 fn reset_match(
     commands: &mut Commands,
     battlefield: &Query<Entity, BattlefieldEntity>,
     gold: &mut Gold,
     placement: &mut PlacementMode,
     players: &mut PlayerControllers,
+    nations: &mut PlayerNations,
     gtime: &mut GameTime,
     tod: &mut TimeOfDay,
 ) {
@@ -1221,6 +1230,7 @@ fn reset_match(
     *gold = Gold::default();
     *placement = PlacementMode::default();
     *players = PlayerControllers::default();
+    *nations = PlayerNations::default();
     // Restart the day/night clock so the new match opens at the same morning,
     // not wherever the abandoned one left off.
     *gtime = GameTime::default();
@@ -1283,10 +1293,15 @@ pub fn update_endgame_overlay(
                 EndgameOverlay,
             ))
             .with_children(|parent| {
+                let (title, color) = match winner {
+                    Some(w) => (format!("Player {} wins", w.label()), w.color()),
+                    // Both sides' last bases fell on the same frame.
+                    None => ("Draw".to_string(), Color::WHITE),
+                };
                 parent.spawn((
-                    Text::new(format!("Player {} wins", winner.label())),
+                    Text::new(title),
                     TextFont::from_font_size(40.0),
-                    TextColor(winner.color()),
+                    TextColor(color),
                 ));
                 spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
                 parent.spawn((
@@ -1485,11 +1500,16 @@ pub fn apply_menu_focus_visual(
         GameState::Menu | GameState::Settings | GameState::Paused | GameState::Ended(_)
     );
     for (btn, mut bg) in &mut buttons {
-        bg.0 = if active && btn.0 == focus.index {
+        let target = if active && btn.0 == focus.index {
             BTN_FOCUSED
         } else {
             BTN_NORMAL
         };
+        // Compare first: an unconditional write would dirty every button's
+        // change-detection every frame.
+        if bg.0 != target {
+            bg.0 = target;
+        }
     }
 }
 
@@ -1682,13 +1702,23 @@ pub fn update_sideselect_cards(
 /// entity disappears from the `Gamepad` query). Without this the abandoned
 /// player would silently freeze in place while the other plays on, with no
 /// way to recover except for the surviving pad to open the pause menu.
+///
+/// Also re-binds: a connected pad that holds no seat claims the first vacant
+/// active slot, so plugging the controller back in (it reconnects as a NEW
+/// gamepad entity) restores control of the orphaned seat instead of leaving
+/// the match permanently dead.
 pub fn detect_pad_disconnect(
     mut state: ResMut<GameState>,
     mut players: ResMut<PlayerControllers>,
     mode: Res<GameMode>,
     gamepads: Query<Entity, With<Gamepad>>,
+    // Slots whose pad was lost mid-match. Only these may be re-claimed by a
+    // fresh pad — a seat that was never occupied (e.g. a 2v2 launched with two
+    // players) must not be grabbed by a bystander controller.
+    mut orphaned: Local<[bool; 4]>,
 ) {
     if !matches!(*state, GameState::Playing | GameState::Paused) {
+        *orphaned = [false; 4];
         return;
     }
     let mut any_lost = false;
@@ -1697,11 +1727,30 @@ pub fn detect_pad_disconnect(
             && gamepads.get(entity).is_err()
         {
             players.set(slot, None);
+            orphaned[slot.index()] = true;
             any_lost = true;
         }
     }
     if any_lost && *state == GameState::Playing {
         *state = GameState::Paused;
+    }
+    // Reconnection: hand each orphaned slot to a pad that isn't bound to any
+    // slot (a replugged controller reconnects as a NEW gamepad entity).
+    // `manage_input_components` gives it a PlayerFocus on the resume.
+    let mut bound: Vec<Entity> = mode
+        .active_slots()
+        .iter()
+        .filter_map(|s| players.get(*s))
+        .collect();
+    for &slot in mode.active_slots() {
+        if orphaned[slot.index()]
+            && players.get(slot).is_none()
+            && let Some(free_pad) = gamepads.iter().find(|e| !bound.contains(e))
+        {
+            players.set(slot, Some(free_pad));
+            orphaned[slot.index()] = false;
+            bound.push(free_pad);
+        }
     }
 }
 
@@ -1713,7 +1762,10 @@ pub fn manage_input_components(
     gamepads: Query<&Gamepad>,
     focuses: Query<Entity, With<PlayerFocus>>,
 ) {
-    if !state.is_changed() {
+    // Also reacts to PlayerControllers changes so a pad re-bound mid-match by
+    // `detect_pad_disconnect` (a NEW gamepad entity, with no focus yet) gets
+    // its PlayerFocus without waiting for a state transition.
+    if !state.is_changed() && !players.is_changed() {
         return;
     }
     let active = matches!(*state, GameState::Playing | GameState::Paused);
@@ -1723,13 +1775,12 @@ pub fn manage_input_components(
         }
         return;
     }
-    // Keep focus if already set (e.g. Pause→Playing).
-    if focuses.iter().next().is_some() {
-        return;
-    }
+    // Per-slot: give the bound pad a focus if it lacks one. Pads that already
+    // hold a focus keep it (e.g. Pause→Playing resume).
     for &slot in mode.active_slots() {
         if let Some(pad) = players.get(slot)
             && gamepads.get(pad).is_ok()
+            && focuses.get(pad).is_err()
         {
             commands.entity(pad).insert(PlayerFocus { slot, index: 0 });
         }
@@ -1749,6 +1800,7 @@ pub fn menu_input_system(
     mut gold: ResMut<Gold>,
     mut placement: ResMut<PlacementMode>,
     mut players: ResMut<PlayerControllers>,
+    mut nations: ResMut<PlayerNations>,
     mut gtime: ResMut<GameTime>,
     mut tod: ResMut<TimeOfDay>,
     battlefield: Query<Entity, BattlefieldEntity>,
@@ -1844,6 +1896,7 @@ pub fn menu_input_system(
             &mut gold,
             &mut placement,
             &mut players,
+            &mut nations,
             &mut gtime,
             &mut tod,
         );
@@ -2100,7 +2153,7 @@ pub fn gameplay_input_system(
     mut placement: ResMut<PlacementMode>,
     mut focuses: Query<(Entity, &mut PlayerFocus)>,
     gamepads: Query<&Gamepad>,
-    units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
+    units: Query<(&PlayerSlot, &UnitKind, Option<&MinerSlot>), With<Unit>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
     mouse: Res<MouseUi>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -2147,7 +2200,7 @@ pub fn gameplay_input_system(
 
         let miner_count = units
             .iter()
-            .filter(|(s, k)| **s == focus.slot && **k == UnitKind::Miner)
+            .filter(|(s, k, _)| **s == focus.slot && **k == UnitKind::Miner)
             .count();
         // Slot indices match the vertical HUD order: 0 Tower, 1 Soldier,
         // 2 Archer, 3 Priest, 4 Miner. Miner slot hides when the cap is reached.
@@ -2192,7 +2245,7 @@ pub fn gameplay_input_system(
     {
         let miner_count = units
             .iter()
-            .filter(|(s, k)| **s == slot && **k == UnitKind::Miner)
+            .filter(|(s, k, _)| **s == slot && **k == UnitKind::Miner)
             .count();
         let hidden = index == 4 && miner_count >= MAX_MINERS_PER_PLAYER;
         if !hidden {
@@ -2214,6 +2267,20 @@ pub fn gameplay_input_system(
     }
 }
 
+/// Query over the per-slot placement ghosts. Mutable so the ghost is moved /
+/// re-tinted in place each frame instead of being despawned and respawned.
+type GhostQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static PlayerSlot,
+        &'static mut Transform,
+        &'static mut MeshMaterial3d<StandardMaterial>,
+    ),
+    With<TowerGhost>,
+>;
+
 pub fn placement_system(
     mut commands: Commands,
     time: Res<Time>,
@@ -2225,8 +2292,8 @@ pub fn placement_system(
     mut gold: ResMut<Gold>,
     players: Res<PlayerControllers>,
     gamepads: Query<&Gamepad>,
-    ghosts: Query<(Entity, &PlayerSlot), With<TowerGhost>>,
-    existing_towers: Query<&Transform, With<Tower>>,
+    mut ghosts: GhostQuery,
+    existing_towers: Query<&Transform, (With<Tower>, Without<TowerGhost>)>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
     camera: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     windows: Query<&Window>,
@@ -2239,7 +2306,7 @@ pub fn placement_system(
     // Outside Playing: wipe everything.
     if *state != GameState::Playing {
         *placement = PlacementMode::default();
-        for (e, _) in &ghosts {
+        for (e, _, _, _) in &ghosts {
             commands.entity(e).despawn();
         }
         return;
@@ -2250,20 +2317,19 @@ pub fn placement_system(
         alive[slot.index()] = true;
     }
 
-    for &slot in mode.active_slots() {
-        // Despawn any existing ghost for this slot (will respawn below if still placing).
-        for (e, ghost_slot) in &ghosts {
-            if *ghost_slot == slot {
-                commands.entity(e).despawn();
-            }
-        }
+    // Spawned towers are deferred (Commands), so a same-frame placement by the
+    // other player isn't visible either way — safe to snapshot once.
+    let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
 
+    for &slot in mode.active_slots() {
         if !alive[slot.index()] {
             placement.clear(slot);
+            despawn_ghost(&mut commands, &ghosts, slot);
             continue;
         }
 
         let Some(seat) = placement.get(slot) else {
+            despawn_ghost(&mut commands, &ghosts, slot);
             continue;
         };
 
@@ -2280,17 +2346,17 @@ pub fn placement_system(
             continue;
         }
 
-        let tower_positions: Vec<Vec3> = existing_towers.iter().map(|t| t.translation).collect();
-
-        match players.get(slot) {
+        let (pos, confirm) = match players.get(slot) {
             // Gamepad-driven: left stick moves the cursor, A places, B cancels.
             Some(pad_entity) => {
                 let Ok(pad) = gamepads.get(pad_entity) else {
                     placement.clear(slot);
+                    despawn_ghost(&mut commands, &ghosts, slot);
                     continue;
                 };
                 if pad.just_pressed(GamepadButton::East) {
                     placement.clear(slot);
+                    despawn_ghost(&mut commands, &ghosts, slot);
                     continue;
                 }
                 let stick = pad.left_stick();
@@ -2309,25 +2375,14 @@ pub fn placement_system(
                 pos.x += dx * GAMEPAD_CURSOR_SPEED * dt;
                 // Stick Y positive = up on screen → -Z in world.
                 pos.z -= dz * GAMEPAD_CURSOR_SPEED * dt;
-                let confirm = pad.just_pressed(GamepadButton::South);
-                place_tower_at(
-                    &mut commands,
-                    &lib,
-                    &env,
-                    &mut gold,
-                    &mut placement,
-                    &tower_positions,
-                    slot,
-                    *mode,
-                    pos,
-                    confirm,
-                );
+                (pos, pad.just_pressed(GamepadButton::South))
             }
             // Mouse-driven (controller-less debug): the ghost tracks the cursor's
             // ground projection, left-click places, right-click cancels.
             None => {
                 if mouse_buttons.just_pressed(MouseButton::Right) {
                     placement.clear(slot);
+                    despawn_ghost(&mut commands, &ghosts, slot);
                     continue;
                 }
                 let pos = windows
@@ -2338,29 +2393,35 @@ pub fn placement_system(
                     .and_then(|(cursor, (cam, cam_tf))| cursor_ground_pos(cam, cam_tf, cursor))
                     .map(|p| Vec3::new(p.x, 0.0, p.z))
                     .unwrap_or(seat.world_pos);
-                let confirm = mouse_buttons.just_pressed(MouseButton::Left);
-                place_tower_at(
-                    &mut commands,
-                    &lib,
-                    &env,
-                    &mut gold,
-                    &mut placement,
-                    &tower_positions,
-                    slot,
-                    *mode,
-                    pos,
-                    confirm,
-                );
+                (pos, mouse_buttons.just_pressed(MouseButton::Left))
             }
+        };
+
+        let (placed, valid) = try_place_tower(
+            &mut commands,
+            &lib,
+            &env,
+            &mut gold,
+            &mut placement,
+            &tower_positions,
+            slot,
+            *mode,
+            pos,
+            confirm,
+        );
+        if placed {
+            despawn_ghost(&mut commands, &ghosts, slot);
+        } else {
+            upsert_ghost(&mut commands, &lib, &mut ghosts, slot, pos, valid);
         }
     }
 }
 
-/// Shared tail of tower placement: validate `pos`, and either spend gold + spawn
-/// the tower (when `confirm` and the spot is valid) or (re)spawn the placement
-/// ghost tinted by validity. Returns true if a tower was placed. Used by both
-/// the gamepad and mouse placement paths in [`placement_system`].
-fn place_tower_at(
+/// Shared tail of tower placement: validate `pos` and, when `confirm` and the
+/// spot is valid, spend gold + spawn the tower. Returns `(placed, valid)`;
+/// the caller drives the ghost from `valid`. Used by both the gamepad and
+/// mouse placement paths in [`placement_system`].
+fn try_place_tower(
     commands: &mut Commands,
     lib: &MatLibrary,
     env: &EnvAssets,
@@ -2371,14 +2432,14 @@ fn place_tower_at(
     mode: GameMode,
     pos: Vec3,
     confirm: bool,
-) -> bool {
+) -> (bool, bool) {
     let valid = is_valid_tower_zone(slot.side(), pos, mode)
         && !collides_with_existing_tower(pos, tower_positions)
         && gold.get(slot) >= TOWER_COST;
     if confirm && valid && gold.try_spend(slot, TOWER_COST) {
         spawn_tower(commands, lib, env, slot, Vec3::new(pos.x, 0.0, pos.z));
         placement.clear(slot);
-        return true;
+        return (true, valid);
     }
     placement.set(
         slot,
@@ -2387,19 +2448,47 @@ fn place_tower_at(
             armed: true,
         },
     );
+    (false, valid)
+}
+
+fn despawn_ghost(commands: &mut Commands, ghosts: &GhostQuery, slot: PlayerSlot) {
+    for (e, s, _, _) in ghosts.iter() {
+        if *s == slot {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Move (and if needed re-tint) `slot`'s ghost in place; spawn it only the
+/// first frame of a placement. Mutating beats the old despawn+respawn cycle,
+/// which churned an entity per player per frame for the whole placement.
+fn upsert_ghost(
+    commands: &mut Commands,
+    lib: &MatLibrary,
+    ghosts: &mut GhostQuery,
+    slot: PlayerSlot,
+    pos: Vec3,
+    valid: bool,
+) {
     let mat = if valid {
-        lib.ghost_valid_mat.clone()
+        &lib.ghost_valid_mat
     } else {
-        lib.ghost_invalid_mat.clone()
+        &lib.ghost_invalid_mat
     };
-    commands.spawn((
-        Mesh3d(lib.tower_ghost_mesh.clone()),
-        MeshMaterial3d(mat),
-        Transform::from_xyz(pos.x, TOWER_HEIGHT * 0.5, pos.z),
-        TowerGhost,
-        slot,
-    ));
-    false
+    if let Some((_, _, mut t, mut m)) = ghosts.iter_mut().find(|(_, s, _, _)| **s == slot) {
+        t.translation = Vec3::new(pos.x, TOWER_HEIGHT * 0.5, pos.z);
+        if m.0 != *mat {
+            m.0 = mat.clone();
+        }
+    } else {
+        commands.spawn((
+            Mesh3d(lib.tower_ghost_mesh.clone()),
+            MeshMaterial3d(mat.clone()),
+            Transform::from_xyz(pos.x, TOWER_HEIGHT * 0.5, pos.z),
+            TowerGhost,
+            slot,
+        ));
+    }
 }
 
 /// Project a screen-space cursor position onto the world ground plane (y = 0)
@@ -2418,7 +2507,7 @@ fn buy_or_place_slot(
     models: &UnitModels,
     gold: &mut Gold,
     placement: &mut PlacementMode,
-    units: &Query<(&PlayerSlot, &UnitKind), With<Unit>>,
+    units: &Query<(&PlayerSlot, &UnitKind, Option<&MinerSlot>), With<Unit>>,
     slot: PlayerSlot,
     index: usize,
     mode: GameMode,
@@ -2428,31 +2517,43 @@ fn buy_or_place_slot(
         1 if gold.try_spend(slot, SOLDIER_COST) => {
             let count = units
                 .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Soldier)
+                .filter(|(s, k, _)| **s == slot && **k == UnitKind::Soldier)
                 .count();
             spawn_soldier(commands, models, slot, mode, count % LANE_COUNT);
         }
         2 if gold.try_spend(slot, ARCHER_COST) => {
             let count = units
                 .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Archer)
+                .filter(|(s, k, _)| **s == slot && **k == UnitKind::Archer)
                 .count();
             spawn_archer(commands, models, slot, mode, count % LANE_COUNT);
         }
         3 if gold.try_spend(slot, PRIEST_COST) => {
             let count = units
                 .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Priest)
+                .filter(|(s, k, _)| **s == slot && **k == UnitKind::Priest)
                 .count();
             spawn_priest(commands, models, slot, mode, count % LANE_COUNT);
         }
         4 => {
-            let miner_count = units
-                .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Miner)
-                .count();
+            // Pick the lowest FREE ring slot, not the miner count: after a
+            // miner dies, count-based assignment would duplicate a live
+            // miner's arc position and stack the two on the same spot.
+            let mut used = [false; MAX_MINERS_PER_PLAYER];
+            let mut miner_count = 0usize;
+            for (s, k, ring) in units.iter() {
+                if *s == slot && *k == UnitKind::Miner {
+                    miner_count += 1;
+                    if let Some(ring) = ring
+                        && ring.0 < MAX_MINERS_PER_PLAYER
+                    {
+                        used[ring.0] = true;
+                    }
+                }
+            }
             if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(slot, MINER_COST) {
-                spawn_miner(commands, models, slot, mode, miner_count);
+                let ring_slot = used.iter().position(|u| !u).unwrap_or(miner_count);
+                spawn_miner(commands, models, slot, mode, ring_slot);
             }
         }
         _ => {}

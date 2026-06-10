@@ -93,18 +93,22 @@ fn main() {
         .init_resource::<GameMode>()
         .init_resource::<UnitModels>()
         .init_resource::<EnvAssets>()
+        .init_resource::<HealthBarAssets>()
         .init_resource::<MouseUi>()
+        // Only setup_world depends on earlier Startup systems (the material
+        // library and env handles); the rest can run in parallel.
+        .add_systems(
+            Startup,
+            ((init_mat_library, load_env_assets), setup_world).chain(),
+        )
         .add_systems(
             Startup,
             (
-                init_mat_library,
-                load_env_assets,
-                setup_world,
                 setup_ui,
                 setup_music,
                 load_unit_models,
-            )
-                .chain(),
+                init_health_bar_assets,
+            ),
         )
         .configure_sets(
             Update,
@@ -142,7 +146,6 @@ fn main() {
                 advance_game_time,
                 animate_sun,
                 spawn_arena,
-                spawn_initial_miners,
                 build_unit_graphs,
                 bind_unit_animation_player,
                 bind_unit_weapon_hand,
@@ -168,6 +171,7 @@ fn main() {
                 (check_winner, detect_pad_disconnect),
                 manage_input_components,
                 (
+                    collapse_destroyed_bases,
                     update_menu_overlay,
                     update_graphics_preset,
                     update_settings_overlay,
@@ -189,18 +193,25 @@ fn main() {
         .add_systems(
             Update,
             (
-                enforce_settings_invariants,
-                apply_raytracing_setting,
-                detect_dlss_support,
+                // Settings pipeline, explicitly chained: the invariants MUST be
+                // re-enforced before any apply_* touches the camera/window, or
+                // a frame could render an invalid combination (e.g. HDR just
+                // toggled off while raytracing is still on → wgpu panic).
+                (
+                    detect_dlss_support,
+                    enforce_settings_invariants,
+                    apply_raytracing_setting,
+                    apply_graphics_settings,
+                    apply_dlss_setting,
+                )
+                    .chain(),
                 update_sideselect_cards,
                 update_settings_toggle_texts,
                 update_settings_description,
                 scroll_focused_into_view,
                 apply_menu_focus_visual,
                 apply_player_focus_visual,
-                apply_graphics_settings,
                 apply_colorblind_palette,
-                apply_dlss_setting,
                 persist_settings,
                 sync_music_playback,
                 update_gold_text,

@@ -51,27 +51,6 @@ pub fn spawn_miner(
     ));
 }
 
-/// Each active player slot starts with one miner so the economy works without
-/// the player having to spend gold first. Runs on the Menu→Playing transition;
-/// skips when units already exist (Paused→Playing resume).
-pub fn spawn_initial_miners(
-    state: Res<GameState>,
-    mode: Res<GameMode>,
-    mut commands: Commands,
-    models: Res<UnitModels>,
-    units: Query<Entity, With<Unit>>,
-) {
-    if !state.is_changed() || *state != GameState::Playing {
-        return;
-    }
-    if units.iter().next().is_some() {
-        return;
-    }
-    for &slot in mode.active_slots() {
-        spawn_miner(&mut commands, &models, slot, *mode, 0);
-    }
-}
-
 pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
     // Slots spread across a 180° arc on the base-facing side of the rock, so
     // miners never need to cross the rock to reach their position. Slot 0 is
@@ -304,6 +283,8 @@ pub fn combat_tick(
     // Priest support: HP to restore (clamped to max) and (armor, duration) to grant.
     mut heal_events: Local<Vec<(Entity, i32)>>,
     mut buff_events: Local<Vec<(Entity, i32, f32)>>,
+    // Scratch buffer reused by every archer's volley_aim this frame.
+    mut volley_scratch: Local<Vec<Vec3>>,
     mut sets: ParamSet<(
         Query<
             (
@@ -335,11 +316,11 @@ pub fn combat_tick(
 ) {
     if *state != GameState::Playing {
         // Freeze movement so nothing drifts while paused/ended (physics keeps
-        // stepping regardless of GameState).
-        for (_, _, _, _, _, mut lin_vel, _, _, _, mut anim, _, _, _, _) in sets.p0().iter_mut() {
+        // stepping regardless of GameState). The UnitAnim flags are left
+        // untouched so units resume in the pose they paused in instead of
+        // snapping to idle (`animate_unit_model` pauses the players).
+        for (_, _, _, _, _, mut lin_vel, _, _, _, _, _, _, _, _) in sets.p0().iter_mut() {
             lin_vel.0 = Vec3::ZERO;
-            anim.walking = false;
-            anim.attacking = false;
         }
         return;
     }
@@ -351,7 +332,12 @@ pub fn combat_tick(
     gold_events.clear();
     heal_events.clear();
     buff_events.clear();
-    for (entity, side, slot, kind, transform, _, _, _, _, _, _, _, _, _) in sets.p0().iter() {
+    for (entity, side, slot, kind, transform, _, _, _, _, anim, _, _, _, _) in sets.p0().iter() {
+        // Corpses are not combatants: a dying unit must not be attacked,
+        // chased, aimed at by towers/volleys, or healed by a priest.
+        if anim.dying {
+            continue;
+        }
         let ckind = match *kind {
             UnitKind::Soldier => CombatantKind::Soldier,
             UnitKind::Miner => CombatantKind::Miner,
@@ -482,12 +468,7 @@ pub fn combat_tick(
                 let target = aggro.or(committed).or_else(retaliation);
                 ct.current = target.map(|c| c.entity);
 
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
+                let enemy_base = nearest_enemy_base(&combatants, *side, pos);
                 let move_dir = match target {
                     Some(t) => t.pos - pos,
                     None => match enemy_base {
@@ -601,7 +582,7 @@ pub fn combat_tick(
             UnitKind::Archer => {
                 let walk_sign = side.forward();
                 // Aim at the densest enemy knot in range (a zone, not one unit).
-                if let Some(aim) = volley_aim(&combatants, *side, pos) {
+                if let Some(aim) = volley_aim(&combatants, *side, pos, &mut volley_scratch) {
                     // The shot clip looses to the model's left, so add the offset
                     // so the leftward release reads as aimed at the zone.
                     anim.face_yaw =
@@ -629,16 +610,8 @@ pub fn combat_tick(
                 if let Some(arch_state) = arch_state.as_deref_mut() {
                     arch_state.pending_shot = None;
                 }
-                // No target: face the advance direction so it turns back to the
-                // front (animate_unit_model smoothly pivots toward this yaw).
-                anim.face_yaw = face_angle(walk_sign, 0.0);
 
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
+                let enemy_base = nearest_enemy_base(&combatants, *side, pos);
                 let dir = match enemy_base {
                     Some(base) => march_dir(pos, base.pos, walk_sign),
                     None => Vec3::new(walk_sign, 0.0, 0.0),
@@ -691,14 +664,8 @@ pub fn combat_tick(
                 }
 
                 anim.attacking = false;
-                anim.face_yaw = face_angle(walk_sign, 0.0);
 
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
+                let enemy_base = nearest_enemy_base(&combatants, *side, pos);
                 let dir = match enemy_base {
                     Some(base) => march_dir(pos, base.pos, walk_sign),
                     None => Vec3::new(walk_sign, 0.0, 0.0),
@@ -821,30 +788,60 @@ fn nearest_enemy_in_reach(
         .map(|(c, _)| c)
 }
 
+/// Nearest enemy base, if any. Shared by every marching kind to pick the base
+/// it converges on (`march_dir`).
+fn nearest_enemy_base(combatants: &[Combatant], self_side: Side, pos: Vec3) -> Option<&Combatant> {
+    combatants
+        .iter()
+        .filter(|c| c.kind == CombatantKind::Base && c.side != self_side)
+        .map(|c| (c, xz_distance(c.pos, pos)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(c, _)| c)
+}
+
 /// An archer's volley aim point (ground level): the centroid of the densest knot
 /// of enemy units within `ARCHER_RANGE` — for each enemy, count its neighbours
 /// within `VOLLEY_RADIUS` and take the densest. With no enemy units in range, aim
 /// at the nearest enemy structure (base/tower). None if nothing is in range.
-fn volley_aim(combatants: &[Combatant], self_side: Side, pos: Vec3) -> Option<Vec3> {
+/// `scratch` is a caller-owned buffer reused across archers/frames so this
+/// allocates nothing in steady state.
+fn volley_aim(
+    combatants: &[Combatant],
+    self_side: Side,
+    pos: Vec3,
+    scratch: &mut Vec<Vec3>,
+) -> Option<Vec3> {
     let in_range = |c: &&Combatant| c.side != self_side && xz_distance(c.pos, pos) <= ARCHER_RANGE;
-    let units: Vec<Vec3> = combatants
-        .iter()
-        .filter(|c| c.kind.is_unit() && in_range(c))
-        .map(|c| c.pos)
-        .collect();
-    if !units.is_empty() {
-        let best = *units.iter().max_by_key(|p| {
-            units
-                .iter()
-                .filter(|o| xz_distance(**o, **p) <= VOLLEY_RADIUS)
-                .count()
-        })?;
-        let knot: Vec<Vec3> = units
+    scratch.clear();
+    scratch.extend(
+        combatants
             .iter()
-            .copied()
-            .filter(|o| xz_distance(*o, best) <= VOLLEY_RADIUS)
-            .collect();
-        let c = knot.iter().copied().sum::<Vec3>() / knot.len() as f32;
+            .filter(|c| c.kind.is_unit() && in_range(c))
+            .map(|c| c.pos),
+    );
+    if !scratch.is_empty() {
+        let mut best = scratch[0];
+        let mut best_count = 0usize;
+        for p in scratch.iter() {
+            let count = scratch
+                .iter()
+                .filter(|o| xz_distance(**o, *p) <= VOLLEY_RADIUS)
+                .count();
+            if count > best_count {
+                best_count = count;
+                best = *p;
+            }
+        }
+        let mut sum = Vec3::ZERO;
+        let mut n = 0usize;
+        for o in scratch
+            .iter()
+            .filter(|o| xz_distance(**o, best) <= VOLLEY_RADIUS)
+        {
+            sum += *o;
+            n += 1;
+        }
+        let c = sum / n as f32;
         return Some(Vec3::new(c.x, 0.0, c.z));
     }
     combatants
@@ -986,19 +983,27 @@ fn shortest_yaw_diff(target: f32, current: f32) -> f32 {
 }
 
 pub fn process_damage_effects(
-    mut query: Query<(&Health, &mut UnitAnim), (With<Unit>, Changed<Health>)>,
+    mut commands: Commands,
+    mut query: Query<(Entity, &Health, &mut UnitAnim), (With<Unit>, Changed<Health>)>,
 ) {
-    for (hp, mut anim) in query.iter_mut() {
+    for (entity, hp, mut anim) in query.iter_mut() {
         if hp.current <= 0 && !anim.dying {
             anim.dying = true;
             anim.death_t = 0.0;
+            // A corpse neither blocks the living nor absorbs arrows: drop the
+            // collider for the duration of the death clip.
+            commands.entity(entity).remove::<Collider>();
         }
     }
 }
 
 /// Tick down the priest's flat-armor buffs; the reduction drops to 0 the moment
 /// a buff's timer expires. Unbuffed units start with an already-finished timer.
-pub fn tick_armor_buffs(time: Res<Time>, mut armors: Query<&mut Armor>) {
+/// Frozen outside `Playing` so a pause doesn't eat the buff duration.
+pub fn tick_armor_buffs(time: Res<Time>, state: Res<GameState>, mut armors: Query<&mut Armor>) {
+    if *state != GameState::Playing {
+        return;
+    }
     for mut armor in &mut armors {
         if !armor.timer.is_finished() {
             armor.timer.tick(time.delta());
@@ -1153,15 +1158,41 @@ pub fn arrow_flight_system(
 
 pub fn cleanup_dead_units(
     mut commands: Commands,
+    state: Res<GameState>,
     models: Res<UnitModels>,
     query: Query<(Entity, &UnitAnim, &UnitKind), With<Unit>>,
 ) {
+    // Frozen outside Playing so corpses don't despawn during a pause.
+    if *state != GameState::Playing {
+        return;
+    }
     for (entity, anim, kind) in &query {
         // Hold the corpse for the kind's fall-clip duration (miner has no death
         // clip → the generic `DEATH_DURATION` stored on its model) before despawn.
         let duration = models.get(*kind).death_duration;
         if anim.dying && anim.death_t >= duration {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Walk up the entity hierarchy from `start` until `is_owner` matches (the
+/// modeled-unit root) or the root is reached. Shared by the two `bind_*`
+/// systems below, which both need the unit owning an async-instanced
+/// descendant (AnimationPlayer / skeleton bone).
+fn unit_ancestor(
+    start: Entity,
+    parents: &Query<&ChildOf>,
+    is_owner: impl Fn(Entity) -> bool,
+) -> Option<Entity> {
+    let mut current = start;
+    loop {
+        if is_owner(current) {
+            return Some(current);
+        }
+        match parents.get(current) {
+            Ok(child_of) => current = child_of.parent(),
+            Err(_) => return None,
         }
     }
 }
@@ -1178,18 +1209,9 @@ pub fn bind_unit_animation_player(
     mut units: Query<(&UnitKind, &mut UnitAnimState), With<ModeledUnit>>,
 ) {
     for player in &players {
-        // Walk up the hierarchy to the modeled unit that owns this player.
-        let mut current = player;
-        let owner = loop {
-            if units.contains(current) {
-                break Some(current);
-            }
-            match parents.get(current) {
-                Ok(child_of) => current = child_of.parent(),
-                Err(_) => break None,
-            }
+        let Some(owner) = unit_ancestor(player, &parents, |e| units.contains(e)) else {
+            continue;
         };
-        let Some(owner) = owner else { continue };
         let Ok((kind, mut state)) = units.get_mut(owner) else {
             continue;
         };
@@ -1216,18 +1238,9 @@ pub fn bind_unit_weapon_hand(
     mut units: Query<(&UnitKind, &mut UnitAnimState), With<ModeledUnit>>,
 ) {
     for (bone, name) in &bones {
-        // Walk up to the owning modeled unit.
-        let mut current = bone;
-        let owner = loop {
-            if units.contains(current) {
-                break Some(current);
-            }
-            match parents.get(current) {
-                Ok(child_of) => current = child_of.parent(),
-                Err(_) => break None,
-            }
+        let Some(owner) = unit_ancestor(bone, &parents, |e| units.contains(e)) else {
+            continue;
         };
-        let Some(owner) = owner else { continue };
         let Ok((kind, mut state)) = units.get_mut(owner) else {
             continue;
         };
@@ -1274,8 +1287,11 @@ fn uses_face_yaw(kind: UnitKind) -> bool {
 pub fn animate_unit_model(
     mut commands: Commands,
     time: Res<Time>,
+    game_state: Res<GameState>,
     models: Res<UnitModels>,
     lib: Res<MatLibrary>,
+    // Whether the players are currently paused by the freeze below.
+    mut frozen: Local<bool>,
     mut units: Query<
         (
             Entity,
@@ -1291,6 +1307,34 @@ pub fn animate_unit_model(
     // World transforms of skeleton bones (the hand the arrow leaves from).
     bones: Query<&GlobalTransform>,
 ) {
+    // Outside Playing, pause every unit's AnimationPlayer once and skip the
+    // whole state machine: units freeze mid-pose (no snap to idle), corpses
+    // stop ageing (`death_t`), and no clip transitions fire. Resumed in place
+    // on the next Playing frame.
+    if *game_state != GameState::Playing {
+        if !*frozen {
+            for (_, _, _, _, anim_state, _) in units.iter_mut() {
+                if let Some(player_entity) = anim_state.player
+                    && let Ok((mut player, _)) = players.get_mut(player_entity)
+                {
+                    player.pause_all();
+                }
+            }
+            *frozen = true;
+        }
+        return;
+    }
+    if *frozen {
+        for (_, _, _, _, anim_state, _) in units.iter_mut() {
+            if let Some(player_entity) = anim_state.player
+                && let Ok((mut player, _)) = players.get_mut(player_entity)
+            {
+                player.resume_all();
+            }
+        }
+        *frozen = false;
+    }
+
     let dt = time.delta_secs();
     let blend = Duration::from_secs_f32(0.15);
 
@@ -1448,7 +1492,10 @@ mod tests {
             formation_slow_curve(FORMATION_DECAY * 3.0),
             FORMATION_MIN_FACTOR
         );
-        assert!(FORMATION_MIN_FACTOR > 0.0);
+        // Constant relation → const block (compile-time, clippy-clean).
+        const {
+            assert!(FORMATION_MIN_FACTOR > 0.0);
+        }
     }
 
     #[test]

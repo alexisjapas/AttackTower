@@ -21,6 +21,7 @@ pub enum ParamId {
     Tonemapping,
     FpsCap,
     Colorblind,
+    MusicVolume,
     // Graphics / quality
     Raytracing,
     Dlss,
@@ -65,6 +66,7 @@ pub fn tab_slots(tab: SettingsTab, s: &GameSettings) -> Vec<MenuSlot> {
             v.push(MenuSlot::Param(ParamId::Tonemapping));
             v.push(MenuSlot::Param(ParamId::FpsCap));
             v.push(MenuSlot::Param(ParamId::Colorblind));
+            v.push(MenuSlot::Param(ParamId::MusicVolume));
         }
         SettingsTab::Graphics => {
             v.push(MenuSlot::Preset);
@@ -653,6 +655,21 @@ pub fn param_description(id: ParamId) -> ParamDescription {
             ram: Impact::None,
             vram: Impact::None,
         },
+        ParamId::MusicVolume => ParamDescription {
+            title: "Music volume",
+            functional: concat!(
+                "Volume of the battle music.\n",
+                "Cycles Mute / 20% / 40% / 60% / 80% / 100%."
+            ),
+            technical: concat!(
+                "Linear gain applied to the music audio sink.\n",
+                "The track only plays during a match."
+            ),
+            cpu: Impact::None,
+            gpu: Impact::None,
+            ram: Impact::None,
+            vram: Impact::None,
+        },
         ParamId::FogDensity => ParamDescription {
             title: "Fog density",
             functional: concat!(
@@ -706,6 +723,7 @@ pub fn param_label(
         ParamId::Tonemapping => format!("Tonemapping: {}", tonemapping_label(s.tonemapping)),
         ParamId::FpsCap => format!("FPS cap: {}", fps_cap_label(s.fps_cap)),
         ParamId::Colorblind => format!("Colorblind palette: {}", on_off(s.colorblind)),
+        ParamId::MusicVolume => format!("Music volume: {}", music_volume_label(s.music_volume)),
         ParamId::Raytracing => {
             if cfg!(feature = "raytracing") && rt_supported {
                 format!("Raytracing (Solari): {}", on_off(s.raytracing))
@@ -751,6 +769,22 @@ pub fn fps_cap_label(idx: u8) -> &'static str {
         5 => "240",
         _ => "Unlimited",
     }
+}
+
+pub fn music_volume_label(idx: u8) -> &'static str {
+    match idx {
+        0 => "Mute",
+        1 => "20%",
+        2 => "40%",
+        3 => "60%",
+        4 => "80%",
+        _ => "100%",
+    }
+}
+
+/// Linear sink volume for a `music_volume` step (0..=5 → 0.0..=1.0).
+pub fn music_volume_value(idx: u8) -> f32 {
+    idx.min(5) as f32 / 5.0
 }
 
 /// Target FPS, or `None` for unlimited.
@@ -885,6 +919,7 @@ pub fn load_settings() -> GameSettings {
             "msaa" => s.msaa = v.parse().unwrap_or(s.msaa),
             "tonemapping" => s.tonemapping = v.parse().unwrap_or(s.tonemapping),
             "fps_cap" => s.fps_cap = v.parse().unwrap_or(s.fps_cap),
+            "music_volume" => s.music_volume = v.parse().unwrap_or(s.music_volume),
             "raytracing" => s.raytracing = parse_bool(v).unwrap_or(s.raytracing),
             "dlss" => s.dlss = parse_bool(v).unwrap_or(s.dlss),
             "taa" => s.taa = parse_bool(v).unwrap_or(s.taa),
@@ -935,6 +970,9 @@ pub fn load_settings() -> GameSettings {
     if s.fog_density > 2 {
         s.fog_density = 1;
     }
+    if s.music_volume > 5 {
+        s.music_volume = 5;
+    }
     s
 }
 
@@ -949,7 +987,7 @@ pub fn save_settings(s: &GameSettings) {
         "fullscreen = {}\nvsync = {}\nhdr = {}\nmsaa = {}\ntonemapping = {}\nfps_cap = {}\n\
          raytracing = {}\ndlss = {}\ntaa = {}\nfxaa = {}\nbloom = {}\n\
          atmosphere = {}\nvolumetric_fog = {}\ndistance_fog = {}\nssao = {}\n\
-         shadows = {}\nmotion_blur = {}\ncolorblind = {}\n\
+         shadows = {}\nmotion_blur = {}\ncolorblind = {}\nmusic_volume = {}\n\
          exposure = {}\nbloom_intensity = {}\ndlss_quality = {}\nssao_quality = {}\nfog_density = {}\n",
         s.fullscreen,
         s.vsync,
@@ -969,6 +1007,7 @@ pub fn save_settings(s: &GameSettings) {
         s.shadows,
         s.motion_blur,
         s.colorblind,
+        s.music_volume,
         s.exposure,
         s.bloom_intensity,
         s.dlss_quality,
@@ -1034,6 +1073,9 @@ pub fn sanitize_settings(s: &mut GameSettings, dlss_supported: bool, rt_supporte
     }
     if s.fog_density > 2 {
         s.fog_density = 1;
+    }
+    if s.music_volume > 5 {
+        s.music_volume = 5;
     }
 }
 
@@ -1117,6 +1159,34 @@ mod tests {
         assert_eq!(fps_cap_value(2), Some(60));
         assert_eq!(fps_cap_label(2), "60");
         assert_eq!(fps_cap_label(99), "Unlimited");
+    }
+
+    #[test]
+    fn music_volume_value_clamps_and_scales() {
+        assert_eq!(music_volume_value(0), 0.0);
+        assert_eq!(music_volume_value(5), 1.0);
+        assert_eq!(music_volume_value(99), 1.0);
+        assert!((music_volume_value(2) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sanitize_clamps_music_volume() {
+        let mut s = GameSettings {
+            music_volume: 42,
+            ..default()
+        };
+        sanitize_settings(&mut s, false, false);
+        assert_eq!(s.music_volume, 5);
+    }
+
+    #[test]
+    fn video_tab_contains_music_volume() {
+        let s = GameSettings::default();
+        assert!(
+            tab_slots(SettingsTab::Video, &s)
+                .iter()
+                .any(|slot| matches!(slot, MenuSlot::Param(ParamId::MusicVolume)))
+        );
     }
 
     #[test]

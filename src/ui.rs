@@ -2718,6 +2718,7 @@ pub fn settings_input_system(
             ParamId::Tonemapping => settings.tonemapping = (settings.tonemapping + 1) % 4,
             ParamId::FpsCap => settings.fps_cap = (settings.fps_cap + 1) % 6,
             ParamId::Colorblind => settings.colorblind = !settings.colorblind,
+            ParamId::MusicVolume => settings.music_volume = (settings.music_volume + 1) % 6,
             ParamId::Raytracing => {
                 if cfg!(feature = "raytracing") && rt_avail.0 {
                     settings.raytracing = !settings.raytracing;

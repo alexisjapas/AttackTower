@@ -1237,6 +1237,9 @@ pub struct GameSettings {
     // FPS cap (0=Unlimited 1=30 2=60 3=120 4=144 5=240)
     pub fps_cap: u8,
 
+    // Audio: music volume in 20% steps (0=Mute … 5=100%).
+    pub music_volume: u8,
+
     // Accessibility: swap the Right side from red to orange so the two sides
     // stay distinguishable under deuteranopia/protanopia.
     pub colorblind: bool,
@@ -1269,6 +1272,7 @@ impl Default for GameSettings {
             shadows: true,
             motion_blur: false,
             fps_cap: 0,
+            music_volume: 4,
             colorblind: false,
             exposure: 1,
             bloom_intensity: 1,

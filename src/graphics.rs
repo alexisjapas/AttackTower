@@ -42,7 +42,7 @@ pub enum ParamId {
 
 /// A row in the settings menu. The `Preset` slot only exists on the Graphics
 /// tab; `Back` closes the menu.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuSlot {
     Preset,
     Param(ParamId),

@@ -624,17 +624,23 @@ pub fn update_settings_overlay(
     preset: Res<GraphicsPreset>,
     tab: Res<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
+    mut last_slots: Local<Vec<MenuSlot>>,
     overlay: Query<Entity, With<SettingsOverlay>>,
 ) {
-    // Rebuild on state change, on tab change, OR on settings change (so
-    // sub-parameter rows appear/disappear immediately when their parent
-    // toggle flips).
+    // Rebuild on state change, on tab change, OR when a settings change adds
+    // or removes a row (a sub-parameter row appearing/disappearing with its
+    // parent toggle). Plain value changes are refreshed in place by
+    // `update_settings_toggle_texts`, so they don't need the (expensive) full
+    // overlay rebuild.
     let in_settings = *state == GameState::Settings;
-    let rebuild =
-        state.is_changed() || (in_settings && (tab.is_changed() || settings.is_changed()));
+    let rebuild = state.is_changed()
+        || (in_settings
+            && (tab.is_changed()
+                || (settings.is_changed() && *last_slots != tab_slots(*tab, &settings))));
     if !rebuild {
         return;
     }
+    *last_slots = tab_slots(*tab, &settings);
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
@@ -1572,11 +1578,12 @@ pub fn apply_menu_focus_visual(
         GameState::Menu | GameState::Settings | GameState::Paused | GameState::Ended(_)
     );
     for (btn, mut bg) in &mut buttons {
-        bg.0 = if active && btn.0 == focus.index {
+        let target = if active && btn.0 == focus.index {
             BTN_FOCUSED
         } else {
             BTN_NORMAL
         };
+        set_bg(&mut bg, target);
     }
 }
 

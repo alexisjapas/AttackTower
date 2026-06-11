@@ -30,6 +30,12 @@ pub struct HealthBar {
     /// Child entity holding the colored fill cuboid. Its X scale is set to
     /// the current HP fraction every frame.
     pub fill: Entity,
+    /// Last HP fraction written to the fill transform/material. Starts at -1
+    /// (always dirty) so the first frame initialises both; afterwards the
+    /// fill/tint writes are skipped while HP is unchanged — the material
+    /// write in particular would otherwise dirty the asset and re-upload it
+    /// to the GPU every frame for every bar.
+    pub last_frac: f32,
 }
 
 pub fn spawn_health_bar_for_unit(commands: &mut Commands, owner: Entity) {
@@ -102,6 +108,7 @@ fn spawn_bar(commands: &mut Commands, owner: Entity, height: f32, width: f32, al
                     width,
                     always_visible: always,
                     fill,
+                    last_frac: -1.0,
                 },
             ))
             .add_child(fill);
@@ -115,7 +122,7 @@ pub fn update_health_bars(
     mut commands: Commands,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
     healths: Query<(&GlobalTransform, &Health)>,
-    mut bars: Query<(Entity, &HealthBar, &mut Transform, &mut Visibility)>,
+    mut bars: Query<(Entity, &mut HealthBar, &mut Transform, &mut Visibility)>,
     fill_mats: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fill_t: Query<&mut Transform, Without<HealthBar>>,
@@ -124,7 +131,7 @@ pub fn update_health_bars(
         return;
     };
     let cam_pos = cam_t.translation();
-    for (entity, bar, mut transform, mut vis) in bars.iter_mut() {
+    for (entity, mut bar, mut transform, mut vis) in bars.iter_mut() {
         let Ok((owner_t, hp)) = healths.get(bar.owner) else {
             // Owner gone — drop the bar AND its `fill` child. Bevy 0.18
             // `despawn()` is recursive over the relationship graph, so the
@@ -144,11 +151,21 @@ pub fn update_health_bars(
         let cur = hp.current.max(0) as f32;
         let frac = (cur / max).clamp(0.0, 1.0);
 
-        *vis = if bar.always_visible || frac < 0.999 {
+        let new_vis = if bar.always_visible || frac < 0.999 {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
+        if *vis != new_vis {
+            *vis = new_vis;
+        }
+
+        // Fill scale and tint only depend on `frac` — skip both writes while
+        // HP is unchanged (see `HealthBar::last_frac`).
+        if (frac - bar.last_frac).abs() <= 1e-3 {
+            continue;
+        }
+        bar.last_frac = frac;
 
         if let Ok(mut t) = fill_t.get_mut(bar.fill) {
             let inner_w = bar.width * 0.96;

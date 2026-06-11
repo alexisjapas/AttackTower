@@ -892,6 +892,12 @@ impl PlacementMode {
     pub fn clear(&mut self, slot: PlayerSlot) {
         self.seats[slot.index()] = None;
     }
+
+    /// True while any seat is placing a tower — drives the on-screen
+    /// placement hint.
+    pub fn any_active(&self) -> bool {
+        self.seats.iter().any(|s| s.is_some())
+    }
 }
 
 #[derive(Resource, Default)]
@@ -1373,6 +1379,7 @@ pub struct MatLibrary {
     pub tower_ghost_mesh: Handle<Mesh>,
     pub ghost_valid_mat: Handle<StandardMaterial>,
     pub ghost_invalid_mat: Handle<StandardMaterial>,
+    pub ghost_no_gold_mat: Handle<StandardMaterial>,
 }
 
 /// Handles for the glTF environment scenes (buildings + desert props), loaded
@@ -1395,6 +1402,16 @@ pub struct EnvAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placement_mode_any_active_tracks_seats() {
+        let mut placement = PlacementMode::default();
+        assert!(!placement.any_active());
+        placement.set(PlayerSlot::RightTop, PlacementSeat::default());
+        assert!(placement.any_active());
+        placement.clear(PlayerSlot::RightTop);
+        assert!(!placement.any_active());
+    }
 
     #[test]
     fn side_forward_is_opposite() {

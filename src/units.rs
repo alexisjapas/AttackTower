@@ -629,8 +629,7 @@ pub fn combat_tick(
                     };
                     let room = (pos.x - own_base_x) * walk_sign;
                     let threatened =
-                        nearest_melee_threat(&combatants, *side, pos, ARCHER_KITE_RADIUS)
-                            .is_some();
+                        nearest_melee_threat(&combatants, *side, pos, ARCHER_KITE_RADIUS).is_some();
                     if threatened && room > ARCHER_KITE_MIN_BASE_DIST {
                         // face=false: rotation stays owned by `face_yaw` above,
                         // so the volley aim/release is unaffected by the slide.
@@ -1546,8 +1545,16 @@ mod tests {
     #[test]
     fn nearest_melee_threat_picks_closest_enemy_soldier() {
         let list = [
-            combatant(Side::Right, CombatantKind::Soldier, Vec3::new(2.0, 0.0, 0.0)),
-            combatant(Side::Right, CombatantKind::Soldier, Vec3::new(1.0, 0.0, 0.5)),
+            combatant(
+                Side::Right,
+                CombatantKind::Soldier,
+                Vec3::new(2.0, 0.0, 0.0),
+            ),
+            combatant(
+                Side::Right,
+                CombatantKind::Soldier,
+                Vec3::new(1.0, 0.0, 0.5),
+            ),
         ];
         let hit = nearest_melee_threat(&list, Side::Left, Vec3::ZERO, ARCHER_KITE_RADIUS)
             .expect("a soldier is in radius");

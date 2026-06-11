@@ -19,7 +19,9 @@ use crate::graphics::{
     bloom_intensity_value, description_for, exposure_ev100, fog_density_value, param_label,
     slot_count, tab_slots,
 };
-use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
+use crate::towers::{
+    GhostState, collides_with_existing_tower, ghost_state, is_valid_tower_zone, spawn_tower,
+};
 use crate::units::{spawn_archer, spawn_miner, spawn_priest, spawn_soldier};
 
 #[derive(Component, Clone, Copy)]
@@ -52,6 +54,12 @@ pub struct PlayerCorner(pub PlayerSlot);
 
 #[derive(Component)]
 pub struct ClockText;
+
+/// Marker for the bottom-centre control hint shown while a player is placing a
+/// tower (the ghost itself is respawned every frame, so the hint hangs off
+/// [`PlacementMode`] instead).
+#[derive(Component)]
+pub struct PlacementHintText;
 
 #[derive(Component)]
 pub struct GameHud;
@@ -212,10 +220,25 @@ const HUD_BG_DISABLED: Color = Color::srgba(0.0, 0.0, 0.0, 0.40);
 const HUD_BORDER_DISABLED: Color = Color::srgb(0.40, 0.40, 0.44);
 const CARD_NORMAL: Color = Color::srgb(0.12, 0.13, 0.18);
 const CARD_HOVERED: Color = Color::srgb(0.22, 0.23, 0.30);
+const HUD_BG: Color = Color::srgba(0.0, 0.0, 0.0, 0.65);
+const HUD_BORDER: Color = Color::srgb(0.85, 0.85, 0.9);
+
+/// Gold cost of a player-panel slot, by its navigation index (0 Tower,
+/// 1 Soldier, 2 Archer, 3 Priest, 4 Miner). `None` for out-of-range indices.
+fn slot_cost(index: usize) -> Option<u32> {
+    match index {
+        0 => Some(TOWER_COST),
+        1 => Some(SOLDIER_COST),
+        2 => Some(ARCHER_COST),
+        3 => Some(PRIEST_COST),
+        4 => Some(MINER_COST),
+        _ => None,
+    }
+}
 
 pub fn setup_ui(mut commands: Commands) {
-    let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
-    let hud_border = Color::srgb(0.85, 0.85, 0.9);
+    let hud_bg = HUD_BG;
+    let hud_border = HUD_BORDER;
     // Top global bar: clock only (base HP lives inside each player corner).
     commands
         .spawn((
@@ -248,6 +271,48 @@ pub fn setup_ui(mut commands: Commands) {
     spawn_player_corner(&mut commands, PlayerSlot::RightBottom, hud_bg, hud_border);
     spawn_player_corner(&mut commands, PlayerSlot::LeftTop, hud_bg, hud_border);
     spawn_player_corner(&mut commands, PlayerSlot::RightTop, hud_bg, hud_border);
+
+    // Tower-placement control hint, shown by `update_placement_hint` while any
+    // seat is in placement mode. Same hint styling as the menu overlays.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(96.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Visibility::Hidden,
+            PlacementHintText,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("Left stick: move   A: place   B: cancel"),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::srgb(0.8, 0.8, 0.85)),
+            ));
+        });
+}
+
+/// Show the placement control hint while any player is placing a tower.
+pub fn update_placement_hint(
+    state: Res<GameState>,
+    placement: Res<PlacementMode>,
+    mut hints: Query<&mut Visibility, With<PlacementHintText>>,
+) {
+    let show = *state == GameState::Playing && placement.any_active();
+    for mut vis in &mut hints {
+        let new = if show {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != new {
+            *vis = new;
+        }
+    }
 }
 
 fn spawn_player_corner(commands: &mut Commands, slot: PlayerSlot, bg: Color, border: Color) {
@@ -369,8 +434,8 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
         });
 }
 
-/// Stats text for one of the four slot indices, matching the panel button
-/// order (0 Tower, 1 Soldier, 2 Archer, 3 Miner).
+/// Stats text for one of the five slot indices, matching the panel button
+/// order (0 Tower, 1 Soldier, 2 Archer, 3 Priest, 4 Miner).
 fn focus_stats_string(index: usize) -> String {
     match index {
         0 => format!(
@@ -386,6 +451,10 @@ fn focus_stats_string(index: usize) -> String {
             ARCHER_HP, ARCHER_DAMAGE, ARCHER_RANGE, ARCHER_COOLDOWN
         ),
         3 => format!(
+            "Priest\nHP {}  HEAL {}  RNG {:.1}  CD {:.1}s",
+            PRIEST_HP, PRIEST_HEAL, PRIEST_RANGE, PRIEST_COOLDOWN
+        ),
+        4 => format!(
             "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
             MINER_HP, MINER_CAPACITY, MINER_SPEED, MINER_COOLDOWN
         ),
@@ -1515,6 +1584,7 @@ pub fn apply_player_focus_visual(
     state: Res<GameState>,
     focuses: Query<&PlayerFocus>,
     mouse: Res<MouseUi>,
+    gold: Res<Gold>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
     mut panels: Query<
@@ -1550,33 +1620,57 @@ pub fn apply_player_focus_visual(
         if hidden {
             continue;
         }
-        if defeated {
-            bg.0 = BTN_DISABLED;
-            *border = BorderColor::all(BORDER_DISABLED);
-            continue;
-        }
+        let unaffordable = slot_cost(panel.index).is_some_and(|cost| gold.get(panel.slot) < cost);
         let focused = active
             && (focuses
                 .iter()
                 .any(|f| f.slot == panel.slot && f.index == panel.index)
                 || mouse.panel_hover == Some((panel.slot, panel.index)));
-        bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
-        *border = BorderColor::all(if focused {
+        // Defeated/unaffordable grey the button out; a focused-but-unaffordable
+        // button keeps the white focus border so navigation stays legible.
+        let new_bg = if defeated || unaffordable {
+            BTN_DISABLED
+        } else if focused {
+            BTN_FOCUSED
+        } else {
+            BTN_NORMAL
+        };
+        let new_border = if focused && !defeated {
             Color::WHITE
+        } else if defeated || unaffordable {
+            BORDER_DISABLED
         } else {
             panel.slot.side().color()
-        });
+        };
+        set_bg(&mut bg, new_bg);
+        set_border(&mut border, new_border);
     }
-    let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
-    let hud_border = Color::srgb(0.85, 0.85, 0.9);
     for (corner, mut bg, mut border) in &mut corners {
         if alive[corner.0.index()] {
-            bg.0 = hud_bg;
-            *border = BorderColor::all(hud_border);
+            set_bg(&mut bg, HUD_BG);
+            set_border(&mut border, HUD_BORDER);
         } else {
-            bg.0 = HUD_BG_DISABLED;
-            *border = BorderColor::all(HUD_BORDER_DISABLED);
+            set_bg(&mut bg, HUD_BG_DISABLED);
+            set_border(&mut border, HUD_BORDER_DISABLED);
         }
+    }
+}
+
+/// Idempotent color writes: an unconditional `bg.0 = …` every frame dirties
+/// Bevy's change detection and forces a UI re-extract even when nothing moved.
+/// Takes `&mut Mut<…>` (not `&mut …`) so the read goes through `Deref` — a
+/// deref-coerced call site would trip `DerefMut` and mark the component
+/// changed before the comparison even runs.
+fn set_bg(bg: &mut Mut<BackgroundColor>, color: Color) {
+    if bg.0 != color {
+        bg.0 = color;
+    }
+}
+
+fn set_border(border: &mut Mut<BorderColor>, color: Color) {
+    let new = BorderColor::all(color);
+    if **border != new {
+        **border = new;
     }
 }
 
@@ -2408,10 +2502,12 @@ fn place_tower_at(
     pos: Vec3,
     confirm: bool,
 ) -> bool {
-    let valid = is_valid_tower_zone(slot.side(), pos, mode)
-        && !collides_with_existing_tower(pos, tower_positions)
-        && gold.get(slot) >= TOWER_COST;
-    if confirm && valid && gold.try_spend(slot, TOWER_COST) {
+    let ghost = ghost_state(
+        is_valid_tower_zone(slot.side(), pos, mode),
+        !collides_with_existing_tower(pos, tower_positions),
+        gold.get(slot) >= TOWER_COST,
+    );
+    if confirm && ghost == GhostState::Valid && gold.try_spend(slot, TOWER_COST) {
         spawn_tower(commands, lib, env, slot, Vec3::new(pos.x, 0.0, pos.z));
         placement.clear(slot);
         return true;
@@ -2423,10 +2519,10 @@ fn place_tower_at(
             armed: true,
         },
     );
-    let mat = if valid {
-        lib.ghost_valid_mat.clone()
-    } else {
-        lib.ghost_invalid_mat.clone()
+    let mat = match ghost {
+        GhostState::Valid => lib.ghost_valid_mat.clone(),
+        GhostState::NoGold => lib.ghost_no_gold_mat.clone(),
+        GhostState::Blocked => lib.ghost_invalid_mat.clone(),
     };
     commands.spawn((
         Mesh3d(lib.tower_ghost_mesh.clone()),
@@ -2851,6 +2947,18 @@ pub fn apply_graphics_settings(
 #[cfg(test)]
 mod seat_tests {
     use super::*;
+
+    #[test]
+    fn slot_cost_matches_panel_order() {
+        // Mapping must follow the panel button order: Tower, Soldier, Archer,
+        // Priest, Miner — see `spawn_player_panel`.
+        assert_eq!(slot_cost(0), Some(TOWER_COST));
+        assert_eq!(slot_cost(1), Some(SOLDIER_COST));
+        assert_eq!(slot_cost(2), Some(ARCHER_COST));
+        assert_eq!(slot_cost(3), Some(PRIEST_COST));
+        assert_eq!(slot_cost(4), Some(MINER_COST));
+        assert_eq!(slot_cost(5), None);
+    }
 
     #[test]
     fn move_seat_step_1v1_picks_side() {

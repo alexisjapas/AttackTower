@@ -108,6 +108,14 @@ pub fn init_mat_library(
         cull_mode: None,
         ..default()
     });
+    // Amber: the spot itself is fine, the player just can't pay yet.
+    lib.ghost_no_gold_mat = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.85, 0.25, 0.35),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
 }
 
 /// Startup: kick off the async load of the glTF building + desert prop scenes.

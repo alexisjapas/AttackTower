@@ -203,10 +203,13 @@ fn main() {
                 apply_dlss_setting,
                 persist_settings,
                 sync_music_playback,
-                update_gold_text,
-                update_base_hp_text,
-                update_focus_stats_text,
-                update_clock_text,
+                (
+                    update_gold_text,
+                    update_base_hp_text,
+                    update_focus_stats_text,
+                    update_placement_hint,
+                    update_clock_text,
+                ),
                 update_health_bars,
                 debug_camera_control,
             )

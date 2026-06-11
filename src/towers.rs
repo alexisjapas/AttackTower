@@ -159,6 +159,25 @@ pub fn collides_with_existing_tower(pos: Vec3, towers: &[Vec3]) -> bool {
     })
 }
 
+/// Placement-ghost feedback state. `Blocked` (bad spot) wins over `NoGold`
+/// (good spot, can't pay yet) so the player always sees the harder problem.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GhostState {
+    Valid,
+    NoGold,
+    Blocked,
+}
+
+pub fn ghost_state(zone_ok: bool, no_collision: bool, affordable: bool) -> GhostState {
+    if !zone_ok || !no_collision {
+        GhostState::Blocked
+    } else if !affordable {
+        GhostState::NoGold
+    } else {
+        GhostState::Valid
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +213,17 @@ mod tests {
         // base is offset and the lane Z range extends further).
         let pos = p(-7.0, GameMode::OneVsOne.tower_z_limit() + 0.5);
         assert!(is_valid_tower_zone(Side::Left, pos, GameMode::TwoVsTwo));
+    }
+
+    #[test]
+    fn ghost_state_truth_table() {
+        // A bad spot is Blocked no matter the gold.
+        assert_eq!(ghost_state(false, true, true), GhostState::Blocked);
+        assert_eq!(ghost_state(true, false, true), GhostState::Blocked);
+        assert_eq!(ghost_state(false, false, false), GhostState::Blocked);
+        // A good spot without gold is NoGold, with gold Valid.
+        assert_eq!(ghost_state(true, true, false), GhostState::NoGold);
+        assert_eq!(ghost_state(true, true, true), GhostState::Valid);
     }
 
     #[test]

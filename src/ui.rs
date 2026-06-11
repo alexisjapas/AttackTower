@@ -1202,10 +1202,33 @@ type BattlefieldEntity = Or<(
     With<TowerGhost>,
 )>;
 
-/// Wipe a finished/abandoned match: despawn every battlefield entity, and reset
-/// gold, placement, player→pad mapping and the day/night clock. The arena is
-/// rebuilt by `spawn_arena` on the next `Playing` transition. Used by both the
-/// pause "Main menu" action and the endgame "Main menu" action.
+/// Wipe the battlefield of a finished/abandoned match: despawn every
+/// battlefield entity, and reset gold, placement and the day/night clock. The
+/// arena is rebuilt by `spawn_arena` on the next `Playing` transition. Keeps
+/// the player→pad mapping, so the endgame "Rematch" action can relaunch with
+/// the same seats.
+fn reset_battlefield(
+    commands: &mut Commands,
+    battlefield: &Query<Entity, BattlefieldEntity>,
+    gold: &mut Gold,
+    placement: &mut PlacementMode,
+    gtime: &mut GameTime,
+    tod: &mut TimeOfDay,
+) {
+    for e in battlefield {
+        commands.entity(e).despawn();
+    }
+    *gold = Gold::default();
+    *placement = PlacementMode::default();
+    // Restart the day/night clock so the new match opens at the same morning,
+    // not wherever the abandoned one left off.
+    *gtime = GameTime::default();
+    *tod = TimeOfDay::default();
+}
+
+/// `reset_battlefield` plus clearing the player→pad mapping. Used by both the
+/// pause "Main menu" action and the endgame "Main menu" action, where the next
+/// match goes back through SideSelect.
 fn reset_match(
     commands: &mut Commands,
     battlefield: &Query<Entity, BattlefieldEntity>,
@@ -1215,16 +1238,8 @@ fn reset_match(
     gtime: &mut GameTime,
     tod: &mut TimeOfDay,
 ) {
-    for e in battlefield {
-        commands.entity(e).despawn();
-    }
-    *gold = Gold::default();
-    *placement = PlacementMode::default();
+    reset_battlefield(commands, battlefield, gold, placement, gtime, tod);
     *players = PlayerControllers::default();
-    // Restart the day/night clock so the new match opens at the same morning,
-    // not wherever the abandoned one left off.
-    *gtime = GameTime::default();
-    *tod = TimeOfDay::default();
 }
 
 pub fn update_settings_toggle_texts(
@@ -1288,9 +1303,12 @@ pub fn update_endgame_overlay(
                     TextFont::from_font_size(40.0),
                     TextColor(winner.color()),
                 ));
-                spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
+                // Same convention as the pause overlay: primary action in the
+                // Left side color, exit-to-menu in the Right side color.
+                spawn_menu_button(parent, 0, "Rematch", Side::Left.color());
+                spawn_menu_button(parent, 1, "Main menu", Side::Right.color());
                 parent.spawn((
-                    Text::new("A: back to menu"),
+                    Text::new("D-pad: navigate   A: select"),
                     TextFont::from_font_size(16.0),
                     TextColor(Color::srgb(0.8, 0.8, 0.85)),
                 ));
@@ -1765,7 +1783,7 @@ pub fn menu_input_system(
         return;
     }
 
-    let slot_count = if in_menu { 4 } else { 1 };
+    let slot_count = if in_menu { 4 } else { 2 };
 
     let mut up = false;
     let mut down = false;
@@ -1838,16 +1856,34 @@ pub fn menu_input_system(
             _ => {}
         }
     } else if in_endgame {
-        reset_match(
-            &mut commands,
-            &battlefield,
-            &mut gold,
-            &mut placement,
-            &mut players,
-            &mut gtime,
-            &mut tod,
-        );
-        *state = GameState::Menu;
+        match menu_focus.index {
+            // Rematch: same GameMode, same player→pad mapping, same nations —
+            // only the battlefield is rebuilt (spawn_arena reacts to the
+            // Playing transition with no bases alive).
+            0 => {
+                reset_battlefield(
+                    &mut commands,
+                    &battlefield,
+                    &mut gold,
+                    &mut placement,
+                    &mut gtime,
+                    &mut tod,
+                );
+                *state = GameState::Playing;
+            }
+            _ => {
+                reset_match(
+                    &mut commands,
+                    &battlefield,
+                    &mut gold,
+                    &mut placement,
+                    &mut players,
+                    &mut gtime,
+                    &mut tod,
+                );
+                *state = GameState::Menu;
+            }
+        }
     }
 }
 

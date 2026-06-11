@@ -619,8 +619,31 @@ pub fn combat_tick(
                             damage: damage.0,
                         });
                     }
-                    // Hold position and shoot — no kiting/retreat.
-                    lin_vel.0 = Vec3::ZERO;
+                    // Kite: keep shooting but back toward our own base when an
+                    // enemy soldier closes in. Retreat is slower than the chaser
+                    // (ARCHER_KITE_SPEED_FACTOR), so kiting delays melee without
+                    // ever escaping it, and stops at the own base front.
+                    let own_base_x = match *side {
+                        Side::Left => LEFT_BASE_X,
+                        Side::Right => RIGHT_BASE_X,
+                    };
+                    let room = (pos.x - own_base_x) * walk_sign;
+                    let threatened =
+                        nearest_melee_threat(&combatants, *side, pos, ARCHER_KITE_RADIUS)
+                            .is_some();
+                    if threatened && room > ARCHER_KITE_MIN_BASE_DIST {
+                        // face=false: rotation stays owned by `face_yaw` above,
+                        // so the volley aim/release is unaffected by the slide.
+                        drive(
+                            &mut lin_vel,
+                            &mut transform,
+                            Vec3::new(-walk_sign, 0.0, 0.0),
+                            speed.0 * ARCHER_KITE_SPEED_FACTOR,
+                            false,
+                        );
+                    } else {
+                        lin_vel.0 = Vec3::ZERO;
+                    }
                     anim.walking = false;
                     continue;
                 }
@@ -792,6 +815,24 @@ fn nearest_enemy_combatant(
     combatants
         .iter()
         .filter(|c| c.side != self_side && (c.kind.is_unit() || c.kind == CombatantKind::Tower))
+        .map(|c| (c, xz_distance(c.pos, pos)))
+        .filter(|(_, d)| *d <= radius)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(c, _)| c)
+}
+
+/// Nearest enemy soldier within `radius` (XZ) of `pos`, if any. Drives the
+/// archer's kite reaction: only melee chasers (soldiers) trigger a retreat —
+/// enemy archers/priests are no reason to give ground.
+fn nearest_melee_threat(
+    combatants: &[Combatant],
+    self_side: Side,
+    pos: Vec3,
+    radius: f32,
+) -> Option<&Combatant> {
+    combatants
+        .iter()
+        .filter(|c| c.side != self_side && c.kind == CombatantKind::Soldier)
         .map(|c| (c, xz_distance(c.pos, pos)))
         .filter(|(_, d)| *d <= radius)
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
@@ -1490,6 +1531,56 @@ mod tests {
             let r = (off.x * off.x + off.z * off.z).sqrt();
             assert!((r - MINER_RING_RADIUS).abs() < 1e-3);
         }
+    }
+
+    fn combatant(side: Side, kind: CombatantKind, pos: Vec3) -> Combatant {
+        Combatant {
+            entity: Entity::PLACEHOLDER,
+            side,
+            slot: None,
+            pos,
+            kind,
+        }
+    }
+
+    #[test]
+    fn nearest_melee_threat_picks_closest_enemy_soldier() {
+        let list = [
+            combatant(Side::Right, CombatantKind::Soldier, Vec3::new(2.0, 0.0, 0.0)),
+            combatant(Side::Right, CombatantKind::Soldier, Vec3::new(1.0, 0.0, 0.5)),
+        ];
+        let hit = nearest_melee_threat(&list, Side::Left, Vec3::ZERO, ARCHER_KITE_RADIUS)
+            .expect("a soldier is in radius");
+        assert_eq!(hit.pos, Vec3::new(1.0, 0.0, 0.5));
+    }
+
+    #[test]
+    fn nearest_melee_threat_ignores_allies_ranged_and_out_of_radius() {
+        let list = [
+            // Allied soldier: not a threat.
+            combatant(Side::Left, CombatantKind::Soldier, Vec3::new(0.5, 0.0, 0.0)),
+            // Enemy archer/priest: ranged, no reason to retreat.
+            combatant(Side::Right, CombatantKind::Archer, Vec3::new(0.5, 0.0, 0.0)),
+            combatant(Side::Right, CombatantKind::Priest, Vec3::new(0.5, 0.0, 0.0)),
+            // Enemy soldier outside the radius.
+            combatant(
+                Side::Right,
+                CombatantKind::Soldier,
+                Vec3::new(ARCHER_KITE_RADIUS + 1.0, 0.0, 0.0),
+            ),
+        ];
+        assert!(nearest_melee_threat(&list, Side::Left, Vec3::ZERO, ARCHER_KITE_RADIUS).is_none());
+    }
+
+    #[test]
+    fn archer_kite_consts_are_coherent() {
+        // The kite reaction must fire after the chaser commits (aggro) but
+        // before it lands a hit (engage).
+        assert!(ENGAGE_RANGE < ARCHER_KITE_RADIUS);
+        assert!(ARCHER_KITE_RADIUS < AGGRO_RADIUS);
+        // A retreating archer must stay slower than a chasing soldier, or
+        // kiting becomes a true escape.
+        assert!(ARCHER_SPEED * ARCHER_KITE_SPEED_FACTOR < SOLDIER_SPEED);
     }
 
     #[test]

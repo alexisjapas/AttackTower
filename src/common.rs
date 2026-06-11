@@ -17,9 +17,10 @@ pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
 pub const MAX_MINERS_PER_PLAYER: usize = 5;
-/// Gold a miner deposits per round-trip. At 1 (with `MINER_GOLD_PER_HIT` = 1)
-/// the miner returns after a single swing, so the economy is deliberately slow.
-pub const MINER_CAPACITY: u32 = 1;
+/// Gold a miner deposits per round-trip. At 2 (with `MINER_GOLD_PER_HIT` = 1)
+/// the miner swings twice before walking back, roughly halving the cost of the
+/// long round-trip per gold so a second miner pays for itself in ~30s.
+pub const MINER_CAPACITY: u32 = 2;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 /// How close (XZ) a velocity-driven miner must get to its mining slot before it
@@ -33,7 +34,9 @@ pub const PRIEST_SPEED: f32 = 1.5;
 /// Seconds between casts (one cast clip per cooldown).
 pub const PRIEST_COOLDOWN: f32 = 2.0;
 /// The priest stops and supports the nearest ally ahead within this range.
-pub const PRIEST_RANGE: f32 = 3.0;
+/// Kept above `FORMATION_PRIEST_GAP` + march jitter so the followed ally does
+/// not drift out of range mid-channel and break buff uptime.
+pub const PRIEST_RANGE: f32 = 4.0;
 pub const PRIEST_SPAWN_OFFSET: f32 = 1.5;
 /// HP restored to the target ally per cast (clamped to its max).
 pub const PRIEST_HEAL: i32 = 3;
@@ -46,11 +49,21 @@ pub const MIN_DAMAGE: i32 = 1;
 
 // Archer
 pub const ARCHER_HP: i32 = 7;
-pub const ARCHER_DAMAGE: i32 = 2;
+pub const ARCHER_DAMAGE: i32 = 3;
 pub const ARCHER_COST: u32 = 3;
 pub const ARCHER_SPEED: f32 = 1.5;
 pub const ARCHER_COOLDOWN: f32 = 1.7;
 pub const ARCHER_RANGE: f32 = 8.0;
+/// A shooting archer backs toward its own base (while still firing) when an
+/// enemy soldier gets this close. Sits between `ENGAGE_RANGE` (1.4) and
+/// `AGGRO_RADIUS` (3.0): the chaser stays committed, the archer reacts before
+/// melee range.
+pub const ARCHER_KITE_RADIUS: f32 = 2.5;
+/// Retreat speed factor while kiting. 1.5 × 0.6 = 0.9 m/s — a soldier
+/// (1.8 m/s) still closes the gap, so kiting delays melee, never escapes it.
+pub const ARCHER_KITE_SPEED_FACTOR: f32 = 0.6;
+/// Stop retreating once this close (march axis) to the own base front.
+pub const ARCHER_KITE_MIN_BASE_DIST: f32 = 2.0;
 pub const ARCHER_SPAWN_OFFSET: f32 = 1.5;
 /// The archer is rendered from a rigged glTF model (Meshy export) instead of
 /// the procedural capsule rig the soldier/miner use. The mesh/skeleton come from
@@ -347,7 +360,7 @@ pub const TOWER_TORCH_FORWARD: f32 = 0.5;
 
 // Tower
 pub const TOWER_HP: i32 = 30;
-pub const TOWER_DAMAGE: i32 = 3;
+pub const TOWER_DAMAGE: i32 = 4;
 pub const TOWER_COST: u32 = 6;
 pub const TOWER_RANGE: f32 = 8.5;
 pub const TOWER_COOLDOWN: f32 = 1.5;

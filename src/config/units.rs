@@ -8,6 +8,9 @@ pub const SOLDIER_DAMAGE: i32 = 3;
 pub const SOLDIER_COST: u32 = 1;
 pub const SOLDIER_SPEED: f32 = 1.8;
 pub const SOLDIER_COOLDOWN: f32 = 1.0;
+/// Fraction through the `Left_Slash` clip at which the blade connects and the
+/// damage lands (just past the windup) — instead of at the start of the clip.
+pub const SOLDIER_HIT_FRACTION: f32 = 0.35;
 
 // Miner
 pub const MINER_HP: i32 = 8;
@@ -16,14 +19,19 @@ pub const MINER_SPEED: f32 = 1.4;
 pub const MINER_COOLDOWN: f32 = 1.1;
 pub const MINER_GOLD_PER_HIT: u32 = 1;
 pub const MAX_MINERS_PER_PLAYER: usize = 5;
-/// Gold a miner deposits per round-trip. At 1 (with `MINER_GOLD_PER_HIT` = 1)
-/// the miner returns after a single swing, so the economy is deliberately slow.
-pub const MINER_CAPACITY: u32 = 1;
+/// Gold a miner deposits per round-trip: it stacks this much across several
+/// swings (`MINER_GOLD_PER_HIT` each) before walking it back to the base, so
+/// most of its time is spent mining rather than commuting.
+pub const MINER_CAPACITY: u32 = 5;
 pub const MINER_RING_RADIUS: f32 = 1.6;
 pub const MINER_DEPOSIT_RANGE: f32 = 1.4;
 /// How close (XZ) a velocity-driven miner must get to its mining slot before it
 /// stops and starts swinging. Replaces the old exact transform snap-to-slot.
 pub const MINER_ARRIVE_RANGE: f32 = 0.25;
+/// Fraction through the `Heavy_Hammer_Swing` clip at which the pick bites the
+/// rock and the ore is gained — near the end of the swing, so a miner finishes
+/// its last swing before turning back to the base instead of leaving mid-air.
+pub const MINER_COLLECT_FRACTION: f32 = 0.9;
 
 // Priest — support unit: no attack, heals and armors a nearby ally.
 pub const PRIEST_HP: i32 = 9;
@@ -40,6 +48,9 @@ pub const PRIEST_HEAL: i32 = 3;
 pub const PRIEST_ARMOR: i32 = 2;
 /// Seconds the armor buff lasts (refreshed on every cast).
 pub const PRIEST_ARMOR_DURATION: f32 = 5.0;
+/// Fraction through the `mage_spell_cast` clip at which the heal/armor lands
+/// (the spell's visual release), not at the start of the cast.
+pub const PRIEST_CAST_FRACTION: f32 = 0.6;
 /// Floor so armor never makes a unit invincible: every hit deals at least this.
 pub const MIN_DAMAGE: i32 = 1;
 

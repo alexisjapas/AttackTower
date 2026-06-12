@@ -29,23 +29,24 @@ now, **P1** = V1 / Steam foundations, **P2** = small or cosmetic.
   glyphs (Bevy's default font is ASCII-only, hints use "(A)"/"(X)"). (A
   production queue is a separate gameplay item in P1, not a HUD concern for
   now.)
-- [ ] **Action timing tied to animation keyframes** — actions currently land
-  at the *start* of their animation; some should land at the right moment of
-  the clip. Examples: the miner should collect the ore at the *end* of the
-  pick swing (so it doesn't start walking back mid-swing), the soldier's
-  damage lands at the start of its slash. The archer's
-  `ARCHER_SHOT_RELEASE_FRACTION` mechanism is the model: give each kind a
-  per-clip "impact fraction" and fire the effect when the clip crosses it.
-  (Subsumes the old "soldier first melee hit is instant" review item.)
+- [x] **Action timing tied to animation keyframes** — done 2026-06-12:
+  per-kind `impact_fraction` in `UnitStats` (soldier blade contact 0.35,
+  miner pick bite 0.9, priest cast 0.6; archer keeps its release fraction);
+  `combat_tick` queues a `PendingImpact`, `animate_unit_model` fires it when
+  the clip crosses the point, `apply_action_impacts` applies it. Units with
+  no bound animation fall back to the timer cadence (headless-harness
+  groundwork; the archer still needs an animation to shoot). Fractions are
+  first-guess values — tune in-game.
 - [ ] **Pause: full freeze + blur** — entering Paused zeroes velocities and
   pauses `Time<Physics>`, but the `AnimationPlayer`s keep running so
   character animations play to completion. Pause/resume every unit's
   animation player on `OnExit`/`OnEnter(Playing)`. Also blur the battlefield
   behind the pause overlay. Any player's pad can pause (verify this is
   already the case in `gameplay_input_system`).
-- [ ] **Miner carry capacity** — miners should stack 5 gold (multiple mining
-  swings) before walking it back to the base, instead of returning after
-  each unit of ore. Economy numbers stay as they are otherwise.
+- [x] **Miner carry capacity** — done 2026-06-12: `MINER_CAPACITY` = 5 (one
+  gold per swing, five swings per round-trip); the carry/phase logic already
+  existed, and the keyframe-timing item makes the miner finish its last
+  swing before turning back.
 - [ ] **2v2 arena too cramped** — the terrain doesn't widen enough in 2v2;
   rescale the play field (lane widths, ground sand band, tower zone, base
   spacing) so four armies have room.
@@ -62,10 +63,12 @@ now, **P1** = V1 / Steam foundations, **P2** = small or cosmetic.
   scenario (army compositions, starting gold), get winner / duration /
   surviving HP; sweep matchups × seeds into a win-rate matrix. Unblocks the
   balancing pass without human testers and becomes the non-regression net
-  for every nation/tech change. Prereq couplings to break (shared with the
-  P0 animation-timing item): archer shot release lives in
-  `animate_unit_model`, and `spawn_unit` requires glTF models — need
-  "bare" units (collider + stats only). Do this *before* the balancing pass.
+  for every nation/tech change. Prereq couplings: partly broken by the P0
+  animation-timing item (soldier/miner/priest now have a timer-driven
+  fallback when no animation is bound); still needed: an archer fallback
+  (its shot only fires from `animate_unit_model`) and "bare" units in
+  `spawn_unit` (collider + stats, no glTF). Do this *before* the balancing
+  pass.
 - [ ] **Balancing pass** — parked at P1: the gap so far is *lack of testing*,
   not a diagnosed imbalance. Anchor: ~25-minute matches, chill pace. Once
   the auto-battle harness and/or playtests identify what dominates, iterate

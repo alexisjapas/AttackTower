@@ -16,7 +16,8 @@ pub struct UnitsPlugin;
 
 impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(InMatch), spawn_initial_miners)
+        app.add_message::<ActionImpact>()
+            .add_systems(OnEnter(InMatch), spawn_initial_miners)
             .add_systems(OnEnter(GameState::Playing), unpause_physics)
             .add_systems(OnExit(GameState::Playing), (pause_physics, freeze_units))
             // Asset/scene binding runs in every state (instancing is async);
@@ -36,23 +37,33 @@ impl Plugin for UnitsPlugin {
                     .run_if(in_state(GameState::Playing))
                     .in_set(CombatSet::Attack),
             )
+            // Impacts fired by `animate_unit_model` land here at the start of
+            // the next frame, before the death-state pass picks up the HP change.
             .add_systems(
                 Update,
-                process_damage_effects.in_set(CombatSet::ApplyDamage),
+                (
+                    apply_action_impacts.run_if(in_state(GameState::Playing)),
+                    process_damage_effects,
+                )
+                    .chain()
+                    .in_set(CombatSet::ApplyDamage),
             )
             .add_systems(Update, animate_unit_model.in_set(CombatSet::Animate))
             .add_systems(Update, cleanup_dead_units.in_set(CombatSet::Cleanup));
     }
 }
 
-/// OnExit(Playing): stop every unit dead (zero velocity, idle pose). Paired
-/// with `pause_physics` so Avian can't keep nudging bodies while the game is
-/// paused/ended; `combat_tick` re-drives velocities on resume.
-pub fn freeze_units(mut units: Query<(&mut LinearVelocity, &mut UnitAnim), With<Unit>>) {
-    for (mut vel, mut anim) in &mut units {
+/// OnExit(Playing): stop every unit dead (zero velocity, idle pose, no queued
+/// impact). Paired with `pause_physics` so Avian can't keep nudging bodies
+/// while the game is paused/ended; `combat_tick` re-drives velocities on resume.
+pub fn freeze_units(
+    mut units: Query<(&mut LinearVelocity, &mut UnitAnim, &mut UnitAnimState), With<Unit>>,
+) {
+    for (mut vel, mut anim, mut state) in &mut units {
         vel.0 = Vec3::ZERO;
         anim.walking = false;
         anim.attacking = false;
+        state.pending_impact = None;
     }
 }
 
@@ -364,7 +375,7 @@ pub fn combat_tick(
         mut carry_opt,
         mut phase_opt,
         slot_opt,
-        mut arch_state,
+        mut anim_state,
     ) in sets.p0().iter_mut()
     {
         if anim.dying {
@@ -372,6 +383,13 @@ pub fn combat_tick(
             anim.walking = false;
             anim.attacking = false;
             continue;
+        }
+
+        // Cleared every frame; the attacking branches below re-queue the
+        // impact the current clip cycle should land, so a stale action (target
+        // gone, phase changed) can never fire.
+        if let Some(state) = anim_state.as_deref_mut() {
+            state.pending_impact = None;
         }
 
         let pos = transform.translation;
@@ -386,17 +404,32 @@ pub fn combat_tick(
 
                 // Melee: hit the nearest enemy within reach — unit, tower or base
                 // — even if it isn't the committed target, so a soldier never
-                // bulldozes through an enemy it is touching. The cooldown is NOT
-                // reset on (re-)entry, so a kiting target that slips in and out of
-                // reach still accumulates hits (resetting it is why soldiers used
-                // to shove archers without ever landing a blow).
+                // bulldozes through an enemy it is touching. The damage lands when
+                // the slash clip crosses the soldier's impact fraction
+                // (`animate_unit_model`): queue a fresh snapshot of the enemy in
+                // reach each frame. The clip keeps cycling through brief target
+                // losses (`ATTACK_HOLD`), so a kiting target that slips in and out
+                // of reach still eats every swing it is present for (a swing it
+                // dodges simply whiffs — the queue was cleared above).
                 if let Some(t) = nearest_enemy_in_reach(&combatants, *side, pos, ENGAGE_RANGE) {
                     ct.current = Some(t.entity);
-                    cooldown.0.tick(time.delta());
                     anim.attacking = true;
                     anim.walking = false;
-                    if cooldown.0.just_finished() {
-                        damage_events.push((t.entity, damage.0, Some(entity)));
+                    match anim_state.as_deref_mut() {
+                        Some(state) if state.player.is_some() => {
+                            state.pending_impact = Some(PendingImpact::Strike {
+                                target: t.entity,
+                                damage: damage.0,
+                            });
+                        }
+                        // No animation bound (just spawned, or a bare headless
+                        // unit): fall back to the timer-driven cadence.
+                        _ => {
+                            cooldown.0.tick(time.delta());
+                            if cooldown.0.just_finished() {
+                                damage_events.push((t.entity, damage.0, Some(entity)));
+                            }
+                        }
                     }
                     face_dir(&mut transform, t.pos - pos);
                     // Creep in to follow a kiting target and stay in reach, but
@@ -492,17 +525,31 @@ pub fn combat_tick(
                     }
                     MinerPhase::Mining => {
                         lin_vel.0 = Vec3::ZERO;
-                        cooldown.0.tick(time.delta());
                         anim.attacking = true;
                         anim.walking = false;
-                        if cooldown.0.just_finished()
-                            && let Some(carry) = carry_opt.as_deref_mut()
-                        {
-                            carry.current = carry.current.saturating_add(MINER_GOLD_PER_HIT);
-                            if carry.current >= MINER_CAPACITY
-                                && let Some(phase) = phase_opt.as_deref_mut()
-                            {
-                                *phase = MinerPhase::Returning;
+                        // The ore is gained when the swing clip crosses the
+                        // miner's impact fraction (end of the pick swing);
+                        // `apply_action_impacts` also flips the phase to
+                        // Returning once the carry is full, so the miner
+                        // finishes its last swing before walking back.
+                        match anim_state.as_deref_mut() {
+                            Some(state) if state.player.is_some() => {
+                                state.pending_impact = Some(PendingImpact::Mine);
+                            }
+                            // No animation bound: timer-driven fallback.
+                            _ => {
+                                cooldown.0.tick(time.delta());
+                                if cooldown.0.just_finished()
+                                    && let Some(carry) = carry_opt.as_deref_mut()
+                                {
+                                    carry.current =
+                                        carry.current.saturating_add(MINER_GOLD_PER_HIT);
+                                    if carry.current >= MINER_CAPACITY
+                                        && let Some(phase) = phase_opt.as_deref_mut()
+                                    {
+                                        *phase = MinerPhase::Returning;
+                                    }
+                                }
                             }
                         }
                     }
@@ -548,8 +595,8 @@ pub fn combat_tick(
                     let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
                     let aimed =
                         shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= FACE_TURN_EPS;
-                    if let Some(arch_state) = arch_state.as_deref_mut() {
-                        arch_state.pending_shot = aimed.then_some(PendingShot {
+                    if aimed && let Some(state) = anim_state.as_deref_mut() {
+                        state.pending_impact = Some(PendingImpact::Shot {
                             aim,
                             damage: damage.0,
                         });
@@ -561,9 +608,6 @@ pub fn combat_tick(
                 }
 
                 anim.attacking = false;
-                if let Some(arch_state) = arch_state.as_deref_mut() {
-                    arch_state.pending_shot = None;
-                }
                 // No target: march straight, paced behind the soldier front
                 // (range layering), and pivot back toward the advance direction
                 // — face_yaw owns the archer's rotation (smoothed in
@@ -591,18 +635,35 @@ pub fn combat_tick(
                     .map(|(c, _)| c);
 
                 if let Some(ally) = ally {
-                    if !anim.attacking {
-                        cooldown.0.reset();
-                    }
-                    cooldown.0.tick(time.delta());
+                    let entered = !anim.attacking;
                     anim.attacking = true;
                     anim.walking = false;
                     lin_vel.0 = Vec3::ZERO;
                     // Face the ally being supported (animate_unit_model smooths to it).
                     anim.face_yaw = face_angle(ally.pos.x - pos.x, ally.pos.z - pos.z);
-                    if cooldown.0.just_finished() {
-                        heal_events.push((ally.entity, PRIEST_HEAL));
-                        buff_events.push((ally.entity, PRIEST_ARMOR, PRIEST_ARMOR_DURATION));
+                    // The heal/armor lands when the cast clip crosses the
+                    // priest's impact fraction (the spell's visual release).
+                    match anim_state.as_deref_mut() {
+                        Some(state) if state.player.is_some() => {
+                            state.pending_impact = Some(PendingImpact::Cast { ally: ally.entity });
+                        }
+                        // No animation bound: timer-driven fallback, restarted
+                        // on entry so the first cast takes a full cycle (the
+                        // clip restarts on its own on the animated path).
+                        _ => {
+                            if entered {
+                                cooldown.0.reset();
+                            }
+                            cooldown.0.tick(time.delta());
+                            if cooldown.0.just_finished() {
+                                heal_events.push((ally.entity, PRIEST_HEAL));
+                                buff_events.push((
+                                    ally.entity,
+                                    PRIEST_ARMOR,
+                                    PRIEST_ARMOR_DURATION,
+                                ));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -911,6 +972,52 @@ fn shortest_yaw_diff(target: f32, current: f32) -> f32 {
     diff
 }
 
+/// Applies the `ActionImpact`s fired by `animate_unit_model` when an attack
+/// clip crossed its impact point: the soldier's melee damage (armor-reduced,
+/// retaliation recorded), the miner's ore gain (turning back once the carry is
+/// full) and the priest's heal + armor buff. Runs in `CombatSet::ApplyDamage`,
+/// before `process_damage_effects`, so a lethal strike flips the victim to
+/// dying in the same frame it lands.
+pub fn apply_action_impacts(
+    mut impacts: MessageReader<ActionImpact>,
+    mut healths: Query<(&mut Health, Option<&mut Armor>)>,
+    mut targets: Query<&mut CombatTarget>,
+    mut miners: Query<(&mut MinerCarry, &mut MinerPhase)>,
+) {
+    for ActionImpact { actor, impact } in impacts.read() {
+        match *impact {
+            PendingImpact::Strike { target, damage } => {
+                if let Ok((mut hp, armor)) = healths.get_mut(target) {
+                    let reduction = armor.as_deref().map(Armor::active).unwrap_or(0);
+                    hp.current -= (damage - reduction).max(MIN_DAMAGE);
+                    if let Ok(mut ct) = targets.get_mut(target) {
+                        ct.last_attacker = Some(*actor);
+                    }
+                }
+            }
+            PendingImpact::Mine => {
+                if let Ok((mut carry, mut phase)) = miners.get_mut(*actor) {
+                    carry.current = carry.current.saturating_add(MINER_GOLD_PER_HIT);
+                    if carry.current >= MINER_CAPACITY {
+                        *phase = MinerPhase::Returning;
+                    }
+                }
+            }
+            PendingImpact::Cast { ally } => {
+                if let Ok((mut hp, armor)) = healths.get_mut(ally) {
+                    hp.current = (hp.current + PRIEST_HEAL).min(hp.max);
+                    if let Some(mut armor) = armor {
+                        armor.amount = PRIEST_ARMOR;
+                        armor.timer = Timer::from_seconds(PRIEST_ARMOR_DURATION, TimerMode::Once);
+                    }
+                }
+            }
+            // Arrows are spawned directly at release in `animate_unit_model`.
+            PendingImpact::Shot { .. } => {}
+        }
+    }
+}
+
 pub fn process_damage_effects(
     mut query: Query<(&Health, &mut UnitAnim), (With<Unit>, Changed<Health>)>,
 ) {
@@ -1191,8 +1298,10 @@ fn uses_face_yaw(kind: UnitKind) -> bool {
 
 /// Drives every modeled unit's `AnimationPlayer` from the `UnitAnim` flags set by
 /// `combat_tick` (walk / attack / death), per kind via `UnitModels`. Owns the
-/// `death_t` bookkeeping and, for the archer, the per-cycle arrow release.
-/// Tolerates kinds with no attack/death clip (the miner).
+/// `death_t` bookkeeping and the per-cycle impact dispatch: when the attack clip
+/// crosses the kind's `impact_fraction`, the queued `PendingImpact` fires (the
+/// archer's arrow spawns here; everything else goes through `ActionImpact` →
+/// `apply_action_impacts`). Tolerates kinds with no attack/death clip.
 pub fn animate_unit_model(
     mut commands: Commands,
     time: Res<Time>,
@@ -1212,6 +1321,7 @@ pub fn animate_unit_model(
     mut players: Query<(&mut AnimationPlayer, &mut AnimationTransitions)>,
     // World transforms of skeleton bones (the hand the arrow leaves from).
     bones: Query<&GlobalTransform>,
+    mut impacts: MessageWriter<ActionImpact>,
 ) {
     let dt = time.delta_secs();
     let blend = Duration::from_secs_f32(0.15);
@@ -1285,38 +1395,46 @@ pub fn animate_unit_model(
                 state.current = ModelClip::Attack;
                 state.last_attack_seek = 0.0;
             }
-            // Archer only: release one arrow per cycle the moment playback crosses
-            // the release point, from the bow hand's world position. combat_tick
-            // leaves `pending_shot` set only while aimed.
-            if *kind == UnitKind::Archer {
-                let seek = player
-                    .animation(attack_node)
-                    .map(|a| a.seek_time())
-                    .unwrap_or(0.0);
-                // Lead is in real seconds; the clip plays at `attack_speed`, so
-                // convert into clip-time before subtracting from the release point.
-                let release_t = (ARCHER_SHOT_RELEASE_FRACTION * nodes.attack_len
-                    - ARCHER_SHOT_RELEASE_LEAD * nodes.attack_speed)
-                    .max(0.0);
-                let crossed = state.last_attack_seek < release_t && seek >= release_t;
-                state.last_attack_seek = seek;
-                if crossed && let Some(shot) = state.pending_shot {
-                    let start = state
-                        .weapon_hand
-                        .and_then(|h| bones.get(h).ok())
-                        .map(|gt| gt.translation())
-                        .unwrap_or_else(|| {
-                            transform.translation + transform.rotation * ARCHER_HAND_OFFSET
+            // Fire the queued impact the moment playback crosses the kind's
+            // impact point — once per clip cycle. combat_tick refreshes
+            // `pending_impact` only while the action is still valid (target in
+            // reach / aimed / still mining), so a vacated impact whiffs.
+            let seek = player
+                .animation(attack_node)
+                .map(|a| a.seek_time())
+                .unwrap_or(0.0);
+            // The archer's arrow leaves a touch before the pose's release.
+            // Lead is in real seconds; the clip plays at `attack_speed`, so
+            // convert into clip-time before subtracting from the impact point.
+            let lead = match *kind {
+                UnitKind::Archer => ARCHER_SHOT_RELEASE_LEAD * nodes.attack_speed,
+                _ => 0.0,
+            };
+            let impact_t = (kind.stats().impact_fraction * nodes.attack_len - lead).max(0.0);
+            let crossed = state.last_attack_seek < impact_t && seek >= impact_t;
+            state.last_attack_seek = seek;
+            if crossed && let Some(impact) = state.pending_impact {
+                match impact {
+                    // The arrow spawns right here, from the bow hand's world
+                    // position toward the volley aim point.
+                    PendingImpact::Shot { aim, damage } => {
+                        let start = state
+                            .weapon_hand
+                            .and_then(|h| bones.get(h).ok())
+                            .map(|gt| gt.translation())
+                            .unwrap_or_else(|| {
+                                transform.translation + transform.rotation * ARCHER_HAND_OFFSET
+                            });
+                        spawn_arrow(&mut commands, &lib, *side, start, aim, entity, damage);
+                    }
+                    // Everything else is gameplay state: hand it to
+                    // `apply_action_impacts` (next frame's ApplyDamage pass).
+                    impact => {
+                        impacts.write(ActionImpact {
+                            actor: entity,
+                            impact,
                         });
-                    spawn_arrow(
-                        &mut commands,
-                        &lib,
-                        *side,
-                        start,
-                        shot.aim,
-                        entity,
-                        shot.damage,
-                    );
+                    }
                 }
             }
         } else if anim.walking {
@@ -1350,6 +1468,22 @@ mod tests {
         let last = lane_z(LANE_COUNT - 1, GameMode::OneVsOne);
         assert!((first + half).abs() < 1e-4);
         assert!((last - half).abs() < 1e-4);
+    }
+
+    #[test]
+    fn impact_fractions_are_within_the_clip() {
+        // The impact must land strictly inside the attack clip: at 0 the
+        // crossing detection in `animate_unit_model` could never trigger
+        // (`last_attack_seek < 0` is false), past 1 it would never be reached.
+        for kind in UNIT_KINDS {
+            let f = kind.stats().impact_fraction;
+            assert!(
+                f > 0.0 && f <= 1.0,
+                "{:?} impact_fraction {} out of (0, 1]",
+                kind,
+                f
+            );
+        }
     }
 
     #[test]

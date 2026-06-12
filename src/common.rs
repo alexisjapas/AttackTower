@@ -258,6 +258,11 @@ pub struct UnitStats {
     /// Signed X offset from the base along the side's forward axis at spawn —
     /// negative for the miner, which exits BEHIND the base (rock side).
     pub spawn_offset: f32,
+    /// Fraction through the attack clip at which the action's effect lands
+    /// (blade contact / arrow loose / pick bite / spell release).
+    /// `animate_unit_model` fires the unit's queued `PendingImpact` when
+    /// playback crosses this point, once per clip cycle.
+    pub impact_fraction: f32,
 }
 
 impl UnitKind {
@@ -289,6 +294,7 @@ impl UnitKind {
                 speed: SOLDIER_SPEED,
                 cooldown: SOLDIER_COOLDOWN,
                 spawn_offset: SOLDIER_SPAWN_OFFSET,
+                impact_fraction: SOLDIER_HIT_FRACTION,
             },
             UnitKind::Miner => UnitStats {
                 hp: MINER_HP,
@@ -297,6 +303,7 @@ impl UnitKind {
                 speed: MINER_SPEED,
                 cooldown: MINER_COOLDOWN,
                 spawn_offset: -MINER_SPAWN_OFFSET,
+                impact_fraction: MINER_COLLECT_FRACTION,
             },
             UnitKind::Archer => UnitStats {
                 hp: ARCHER_HP,
@@ -305,6 +312,7 @@ impl UnitKind {
                 speed: ARCHER_SPEED,
                 cooldown: ARCHER_COOLDOWN,
                 spawn_offset: ARCHER_SPAWN_OFFSET,
+                impact_fraction: ARCHER_SHOT_RELEASE_FRACTION,
             },
             UnitKind::Priest => UnitStats {
                 hp: PRIEST_HP,
@@ -313,6 +321,7 @@ impl UnitKind {
                 speed: PRIEST_SPEED,
                 cooldown: PRIEST_COOLDOWN,
                 spawn_offset: PRIEST_SPAWN_OFFSET,
+                impact_fraction: PRIEST_CAST_FRACTION,
             },
         }
     }
@@ -621,14 +630,33 @@ pub enum ModelClip {
     Death,
 }
 
-/// A shot queued by `combat_tick` and released by `animate_unit_model` (archer
-/// only) when the shot clip reaches its release point. Carries the ground point
-/// (densest enemy cluster centroid) the volley is aimed at — the arrow is a dumb
-/// projectile that damages whatever enemy it flies through.
+/// An action queued by `combat_tick` (refreshed every frame while the unit
+/// attacks) and fired by `animate_unit_model` the moment the attack clip
+/// crosses the kind's `UnitStats::impact_fraction` — once per clip cycle. So
+/// effects land on the right keyframe (blade contact, arrow loose, pick bite,
+/// spell release) instead of at the start of the animation; an action whose
+/// target leaves before the impact point simply whiffs (the queue is cleared).
 #[derive(Clone, Copy)]
-pub struct PendingShot {
-    pub aim: Vec3,
-    pub damage: i32,
+pub enum PendingImpact {
+    /// Archer: loose one arrow toward the volley aim point (the densest enemy
+    /// knot's centroid — the arrow is a dumb projectile, no homing).
+    Shot { aim: Vec3, damage: i32 },
+    /// Soldier: melee damage to the enemy currently in reach.
+    Strike { target: Entity, damage: i32 },
+    /// Miner: gain one swing's ore (and turn back to the base once full).
+    Mine,
+    /// Priest: heal + armor the supported ally.
+    Cast { ally: Entity },
+}
+
+/// A `PendingImpact` whose impact point was crossed, fired by
+/// `animate_unit_model` and applied by `apply_action_impacts` in
+/// `CombatSet::ApplyDamage` (i.e. at the start of the next frame). The archer's
+/// `Shot` is the exception: it spawns its arrow directly at release.
+#[derive(Message)]
+pub struct ActionImpact {
+    pub actor: Entity,
+    pub impact: PendingImpact,
 }
 
 /// Per-unit animation bookkeeping: the descendant `AnimationPlayer` entity
@@ -644,11 +672,12 @@ pub struct UnitAnimState {
     /// Countdown that keeps the attack animation playing through brief target
     /// losses (see `ATTACK_HOLD`).
     pub attack_hold: f32,
-    /// Attack clip `seek_time()` last frame, so the archer fires one arrow per
-    /// cycle the moment playback crosses `ARCHER_SHOT_RELEASE_FRACTION`.
+    /// Attack clip `seek_time()` last frame, so each kind fires one impact per
+    /// cycle the moment playback crosses its `UnitStats::impact_fraction`.
     pub last_attack_seek: f32,
-    /// Archer-only: target snapshot to release on the next shot-cycle end.
-    pub pending_shot: Option<PendingShot>,
+    /// The action the current clip cycle should land at its impact point,
+    /// refreshed by `combat_tick` while the unit attacks.
+    pub pending_impact: Option<PendingImpact>,
 }
 
 /// Indices (and precomputed playback speeds) of one unit kind's clips inside its

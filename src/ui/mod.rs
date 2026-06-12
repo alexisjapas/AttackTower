@@ -95,6 +95,8 @@ impl Plugin for UiPlugin {
                     apply_menu_focus_visual,
                     apply_player_focus_visual,
                     update_gold_text,
+                    update_cell_costs,
+                    update_hint_text,
                     update_base_hp_text,
                     update_focus_stats_text,
                     update_clock_text,

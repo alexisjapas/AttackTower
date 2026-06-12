@@ -37,12 +37,11 @@ now, **P1** = V1 / Steam foundations, **P2** = small or cosmetic.
   no bound animation fall back to the timer cadence (headless-harness
   groundwork; the archer still needs an animation to shoot). Fractions are
   first-guess values — tune in-game.
-- [ ] **Pause: full freeze + blur** — entering Paused zeroes velocities and
-  pauses `Time<Physics>`, but the `AnimationPlayer`s keep running so
-  character animations play to completion. Pause/resume every unit's
-  animation player on `OnExit`/`OnEnter(Playing)`. Also blur the battlefield
-  behind the pause overlay. Any player's pad can pause (verify this is
-  already the case in `gameplay_input_system`).
+- [ ] **Pause: full freeze + blur** — freeze done 2026-06-12: every
+  `AnimationPlayer` is paused on `OnExit(Playing)`/resumed on `OnEnter`,
+  and `animate_unit_model` is gated to Playing (any pad pausing was already
+  the case). REMAINS: blur the battlefield behind the pause overlay — same
+  custom `UiMaterial` backdrop-blur work as HUD phase 2, do them together.
 - [x] **Miner carry capacity** — done 2026-06-12: `MINER_CAPACITY` = 5 (one
   gold per swing, five swings per round-trip); the carry/phase logic already
   existed, and the keyframe-timing item makes the miner finish its last

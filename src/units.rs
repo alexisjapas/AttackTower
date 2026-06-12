@@ -18,8 +18,14 @@ impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ActionImpact>()
             .add_systems(OnEnter(InMatch), spawn_initial_miners)
-            .add_systems(OnEnter(GameState::Playing), unpause_physics)
-            .add_systems(OnExit(GameState::Playing), (pause_physics, freeze_units))
+            .add_systems(
+                OnEnter(GameState::Playing),
+                (unpause_physics, resume_unit_animations),
+            )
+            .add_systems(
+                OnExit(GameState::Playing),
+                (pause_physics, freeze_units, pause_unit_animations),
+            )
             // Asset/scene binding runs in every state (instancing is async);
             // armor only ticks while the match actually plays.
             .add_systems(
@@ -48,7 +54,14 @@ impl Plugin for UnitsPlugin {
                     .chain()
                     .in_set(CombatSet::ApplyDamage),
             )
-            .add_systems(Update, animate_unit_model.in_set(CombatSet::Animate))
+            // Gated like combat: outside `Playing` the clip state machine must
+            // not run (paused players hold their pose; flags are frozen).
+            .add_systems(
+                Update,
+                animate_unit_model
+                    .run_if(in_state(GameState::Playing))
+                    .in_set(CombatSet::Animate),
+            )
             .add_systems(Update, cleanup_dead_units.in_set(CombatSet::Cleanup));
     }
 }
@@ -64,6 +77,23 @@ pub fn freeze_units(
         anim.walking = false;
         anim.attacking = false;
         state.pending_impact = None;
+    }
+}
+
+/// OnExit(Playing): freeze every `AnimationPlayer` so a paused/ended match
+/// holds its pose — without this the clips kept playing to completion behind
+/// the overlay while gameplay was frozen.
+pub fn pause_unit_animations(mut players: Query<&mut AnimationPlayer>) {
+    for mut player in &mut players {
+        player.pause_all();
+    }
+}
+
+/// OnEnter(Playing): resume what `pause_unit_animations` froze (harmless on
+/// the initial entry, when no player is paused).
+pub fn resume_unit_animations(mut players: Query<&mut AnimationPlayer>) {
+    for mut player in &mut players {
+        player.resume_all();
     }
 }
 

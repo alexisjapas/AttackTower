@@ -1,36 +1,13 @@
 # Backlog
 
-Findings from the June 2026 architecture/perf review, minus the quick wins
-already applied (Priest HUD stats, miner death doc, `FACE_TURN_*`/`ATTACK_HOLD`
-renames, `shortest_yaw_diff` reuse, `load_settings` clamp dedup, single shared
-`Rng`, `expect` → `let-else` in `combat_tick`). Lots are ordered by suggested
-sequencing: (b) → (c) → (d), the rest opportunistically.
-
-## Lot (b) — UI / healthbar performance (local, measurable)
-
-- [ ] **Healthbar asset churn** — `healthbar.rs::spawn_bar` allocates 2 meshes +
-  2 materials *per spawned bar*. Cache the bg mesh/material (only 2 width
-  variants: unit vs tower/base) in `MatLibrary`; only the fill material must
-  stay per-entity (it is re-tinted). Also delete the stale "Deferred: cannot
-  allocate…" comment block at the top of `spawn_bar` (abandoned reasoning).
-- [ ] **Per-frame material mutation** — `update_health_bars` calls
-  `materials.get_mut()` unconditionally each frame for every bar (GPU re-upload
-  even when HP unchanged). Remember the last fraction per bar (or gate on
-  `Changed<Health>`); same for the fill `Transform` writes.
-- [ ] **Ungated idempotent UI writes** (inconsistent with the convention stated
-  in `update_clock_text`):
-  - `update_sideselect_cards` rewrites every `Text`/`TextColor`/card color each
-    frame during SideSelect → continuous glyph re-upload. Gate on
-    `Changed<SeatSelection>` / `Added`.
-  - `apply_menu_focus_visual` / `apply_player_focus_visual` write `bg.0`/border
-    on every button every frame (the same system *does* compare `node.display`
-    before writing). Compare before write.
-  - `apply_player_focus_visual` iterates all units each frame to count miners.
-- [ ] **Settings overlay full rebuild on every toggle** —
-  `update_settings_overlay` despawns/respawns the whole tree on each
-  `settings.is_changed()`. Only needed when the *slot list* changes
-  (sub-parameter row appears/disappears); compare `tab_slots(...)` length
-  before/after instead. `update_settings_toggle_texts` already handles labels.
+Findings from the June 2026 architecture/perf review. Lot (a) — quick wins
+(Priest HUD stats, miner death doc, `FACE_TURN_*`/`ATTACK_HOLD` renames,
+`shortest_yaw_diff` reuse, `load_settings` clamp dedup, single shared `Rng`,
+`expect` → `let-else` in `combat_tick`) — and lot (b) — UI/healthbar perf
+(shared `HealthBarAssets` + tint ramp, gated healthbar/sideselect/focus-visual
+writes, change-gated `MouseUi`, structural-only settings-overlay rebuild) —
+are done. Remaining lots ordered by suggested sequencing: (c) → (d), the rest
+opportunistically.
 
 ## Lot (c) — architecture (cross-cutting, do before the code grows)
 
@@ -88,6 +65,9 @@ sequencing: (b) → (c) → (d), the rest opportunistically.
   `volley_aim` is O(enemies²) per archer with 2 Vec allocs per call. Fine at
   POC scale; revisit with a profile beyond ~150–200 units (cache `volley_aim`
   per side, pre-partition combatants by side, then spatial grid if needed).
+  Same family: `apply_player_focus_visual` still counts miners by iterating
+  all units once per frame while in-match (cheap; cache per-slot counts if it
+  ever shows in a profile).
 - [ ] **Startup chain over-serialized** — all 6 Startup systems are
   `.chain()`ed; only `init_mat_library → setup_world` and
   `load_env_assets → setup_world` are real dependencies.

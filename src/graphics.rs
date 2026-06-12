@@ -40,8 +40,9 @@ pub enum ParamId {
 }
 
 /// A row in the settings menu. The `Preset` slot only exists on the Graphics
-/// tab; `Back` closes the menu.
-#[derive(Clone, Copy)]
+/// tab; `Back` closes the menu. `PartialEq` lets the overlay compare slot
+/// lists to rebuild only on structural changes (rows appearing/disappearing).
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuSlot {
     Preset,
     Param(ParamId),

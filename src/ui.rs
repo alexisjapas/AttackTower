@@ -142,7 +142,7 @@ pub struct MenuButton(pub usize);
 /// Only the currently active overlay's buttons exist (the others are despawned
 /// on state change), so the `MenuButton`-indexed fields are unambiguous across
 /// the Menu / Pause / Settings / Endgame screens.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, PartialEq, Eq)]
 pub struct MouseUi {
     /// `MenuButton` index under the cursor (drives focus on hover).
     pub menu_hover: Option<usize>,
@@ -169,15 +169,15 @@ pub fn read_mouse_ui(
     tab_buttons: Query<(&SettingsTabButton, &Interaction)>,
     panel_buttons: Query<(&PanelSlot, &Interaction)>,
 ) {
-    *mouse = MouseUi::default();
+    let mut next = MouseUi::default();
     let clicked = mouse_buttons.just_pressed(MouseButton::Left);
     for (btn, interaction) in &menu_buttons {
         match interaction {
-            Interaction::Hovered => mouse.menu_hover = Some(btn.0),
+            Interaction::Hovered => next.menu_hover = Some(btn.0),
             Interaction::Pressed => {
-                mouse.menu_hover = Some(btn.0);
+                next.menu_hover = Some(btn.0);
                 if clicked {
-                    mouse.menu_click = Some(btn.0);
+                    next.menu_click = Some(btn.0);
                 }
             }
             Interaction::None => {}
@@ -185,11 +185,11 @@ pub fn read_mouse_ui(
     }
     for (slot, interaction) in &panel_buttons {
         match interaction {
-            Interaction::Hovered => mouse.panel_hover = Some((slot.slot, slot.index)),
+            Interaction::Hovered => next.panel_hover = Some((slot.slot, slot.index)),
             Interaction::Pressed => {
-                mouse.panel_hover = Some((slot.slot, slot.index));
+                next.panel_hover = Some((slot.slot, slot.index));
                 if clicked {
-                    mouse.panel_click = Some((slot.slot, slot.index));
+                    next.panel_click = Some((slot.slot, slot.index));
                 }
             }
             Interaction::None => {}
@@ -198,10 +198,14 @@ pub fn read_mouse_ui(
     if clicked {
         for (tab, interaction) in &tab_buttons {
             if *interaction == Interaction::Pressed {
-                mouse.tab_click = Some(tab.0);
+                next.tab_click = Some(tab.0);
             }
         }
     }
+    // Write only when the snapshot moved, so `MouseUi.is_changed()` means
+    // something (a steady hover or an idle mouse no longer dirties the
+    // resource every frame). Clicks stay one-frame pulses either way.
+    mouse.set_if_neq(next);
 }
 
 const BTN_NORMAL: Color = Color::srgb(0.16, 0.16, 0.20);
@@ -560,28 +564,37 @@ pub fn update_settings_overlay(
     tab: Res<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<SettingsOverlay>>,
+    // Slot list of the last build, to rebuild only on STRUCTURAL settings
+    // changes (a sub-parameter row appearing/disappearing). Plain toggles are
+    // already reflected in place by `update_settings_toggle_texts` /
+    // `update_settings_description`, so tearing the whole tree down for them
+    // was pure churn.
+    mut last_slots: Local<Vec<MenuSlot>>,
 ) {
-    // Rebuild on state change, on tab change, OR on settings change (so
-    // sub-parameter rows appear/disappear immediately when their parent
-    // toggle flips).
     let in_settings = *state == GameState::Settings;
-    let rebuild =
-        state.is_changed() || (in_settings && (tab.is_changed() || settings.is_changed()));
+    if !in_settings {
+        if state.is_changed() {
+            for entity in &overlay {
+                commands.entity(entity).despawn();
+            }
+        }
+        return;
+    }
+    let slots = tab_slots(*tab, &settings);
+    let rebuild = state.is_changed() || tab.is_changed() || *last_slots != slots;
     if !rebuild {
         return;
     }
+    *last_slots = slots;
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
-    if !in_settings {
-        return;
-    }
-    // Reset focus only when entering Settings or switching tab. Settings-only
-    // rebuilds (parameter toggles) keep focus where the user just acted.
+    // Reset focus only when entering Settings or switching tab. Structural
+    // rebuilds (sub-parameter toggles) keep focus where the user just acted.
     if state.is_changed() || tab.is_changed() {
         menu_focus.index = 0;
     }
-    let slots_after = slot_count(*tab, &settings);
+    let slots_after = last_slots.len();
     if menu_focus.index >= slots_after {
         menu_focus.index = slots_after.saturating_sub(1);
     }
@@ -1489,11 +1502,16 @@ pub fn apply_menu_focus_visual(
         GameState::Menu | GameState::Settings | GameState::Paused | GameState::Ended(_)
     );
     for (btn, mut bg) in &mut buttons {
-        bg.0 = if active && btn.0 == focus.index {
+        let target = if active && btn.0 == focus.index {
             BTN_FOCUSED
         } else {
             BTN_NORMAL
         };
+        // Compare before writing: an unconditional write would flag every
+        // button changed every frame and re-extract the UI for nothing.
+        if bg.0 != target {
+            bg.0 = target;
+        }
     }
 }
 
@@ -1515,6 +1533,18 @@ pub fn apply_player_focus_visual(
     mut corners: Query<(&PlayerCorner, &mut BackgroundColor, &mut BorderColor), Without<PanelSlot>>,
 ) {
     let active = matches!(*state, GameState::Playing | GameState::Paused);
+    // Outside a match the HUD is hidden, so repainting it is pure waste; one
+    // extra pass on the transition frame leaves everything in the idle state.
+    if !active && !state.is_changed() {
+        return;
+    }
+    // Compare-before-write below: unconditional writes would flag every panel
+    // changed every frame and re-extract the whole HUD for nothing.
+    let set_bg = |bg: &mut BackgroundColor, c: Color| {
+        if bg.0 != c {
+            bg.0 = c;
+        }
+    };
     let mut miners_per_slot = [0usize; 4];
     for (s, k) in &units {
         if *k == UnitKind::Miner {
@@ -1536,33 +1566,33 @@ pub fn apply_player_focus_visual(
         if hidden {
             continue;
         }
-        if defeated {
-            bg.0 = BTN_DISABLED;
-            *border = BorderColor::all(BORDER_DISABLED);
-            continue;
-        }
-        let focused = active
-            && (focuses
-                .iter()
-                .any(|f| f.slot == panel.slot && f.index == panel.index)
-                || mouse.panel_hover == Some((panel.slot, panel.index)));
-        bg.0 = if focused { BTN_FOCUSED } else { BTN_NORMAL };
-        *border = BorderColor::all(if focused {
-            Color::WHITE
+        let (new_bg, new_border) = if defeated {
+            (BTN_DISABLED, BORDER_DISABLED)
         } else {
-            panel.slot.side().color()
-        });
+            let focused = active
+                && (focuses
+                    .iter()
+                    .any(|f| f.slot == panel.slot && f.index == panel.index)
+                    || mouse.panel_hover == Some((panel.slot, panel.index)));
+            if focused {
+                (BTN_FOCUSED, Color::WHITE)
+            } else {
+                (BTN_NORMAL, panel.slot.side().color())
+            }
+        };
+        set_bg(&mut bg, new_bg);
+        border.set_if_neq(BorderColor::all(new_border));
     }
     let hud_bg = Color::srgba(0.0, 0.0, 0.0, 0.65);
     let hud_border = Color::srgb(0.85, 0.85, 0.9);
     for (corner, mut bg, mut border) in &mut corners {
-        if alive[corner.0.index()] {
-            bg.0 = hud_bg;
-            *border = BorderColor::all(hud_border);
+        let (new_bg, new_border) = if alive[corner.0.index()] {
+            (hud_bg, hud_border)
         } else {
-            bg.0 = HUD_BG_DISABLED;
-            *border = BorderColor::all(HUD_BORDER_DISABLED);
-        }
+            (HUD_BG_DISABLED, HUD_BORDER_DISABLED)
+        };
+        set_bg(&mut bg, new_bg);
+        border.set_if_neq(BorderColor::all(new_border));
     }
 }
 
@@ -1579,11 +1609,19 @@ fn pad_short_name(name: &str) -> String {
 
 pub fn update_sideselect_cards(
     state: Res<GameState>,
+    changed_seats: Query<(), Changed<SeatSelection>>,
+    mut removed_seats: RemovedComponents<SeatSelection>,
     seats: Query<(&SeatSelection, Option<&Name>)>,
     mut texts: Query<(&SideCardLine, &mut Text, &mut TextColor)>,
     mut cards: Query<(&SideCard, &mut BackgroundColor, &mut BorderColor)>,
 ) {
     if *state != GameState::SideSelect {
+        return;
+    }
+    // Repaint only when a seat selection actually moved (insert/mutation/
+    // removal) or on the entry frame — every `Text` write below re-uploads
+    // glyphs, so running unconditionally churned the UI every frame.
+    if !state.is_changed() && changed_seats.is_empty() && removed_seats.read().next().is_none() {
         return;
     }
 

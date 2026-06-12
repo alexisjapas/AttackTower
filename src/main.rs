@@ -94,6 +94,7 @@ fn main() {
         .init_resource::<UnitModels>()
         .init_resource::<EnvAssets>()
         .init_resource::<MouseUi>()
+        .init_resource::<HealthBarAssets>()
         .add_systems(
             Startup,
             (
@@ -103,6 +104,7 @@ fn main() {
                 setup_ui,
                 setup_music,
                 load_unit_models,
+                init_health_bar_assets,
             )
                 .chain(),
         )

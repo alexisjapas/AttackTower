@@ -12,13 +12,13 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 #[cfg(feature = "raytracing")]
-use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
+use bevy::solari::prelude::RaytracingMesh3d;
 
 use crate::common::*;
 
 /// World authoring + renderer plumbing: startup scene/assets, the arena built
-/// on match entry, day/night cycle, and the raytracing/DLSS/colorblind
-/// appliers (feature-gated where needed).
+/// on match entry, day/night cycle, raytracing mesh registration and the debug
+/// camera. Settings application lives in `graphics.rs`.
 pub struct SetupPlugin;
 
 impl Plugin for SetupPlugin {
@@ -52,17 +52,7 @@ impl Plugin for SetupPlugin {
                 Update,
                 (update_torches, sync_raytracing_meshes).in_set(AppSet::React),
             )
-            .add_systems(
-                Update,
-                (
-                    apply_raytracing_setting,
-                    detect_dlss_support,
-                    apply_dlss_setting,
-                    apply_colorblind_palette,
-                    debug_camera_control,
-                )
-                    .in_set(AppSet::Visual),
-            );
+            .add_systems(Update, debug_camera_control.in_set(AppSet::Visual));
     }
 }
 
@@ -611,43 +601,6 @@ pub fn sync_raytracing_meshes(
 #[cfg(not(feature = "raytracing"))]
 pub fn sync_raytracing_meshes() {}
 
-#[cfg(feature = "raytracing")]
-pub fn apply_raytracing_setting(
-    settings: Res<GameSettings>,
-    avail: Res<RaytracingAvailable>,
-    mut commands: Commands,
-    cameras: Query<Entity, With<Camera3d>>,
-    enabled: Query<Entity, With<SolariLighting>>,
-) {
-    if !settings.is_changed() {
-        return;
-    }
-    // SolariPlugins isn't loaded when the adapter can't support it, so
-    // inserting SolariLighting would be a no-op at best and a crash at worst.
-    if settings.raytracing && avail.0 {
-        for cam in &cameras {
-            if enabled.get(cam).is_err() {
-                commands.entity(cam).insert((
-                    SolariLighting::default(),
-                    Msaa::Off,
-                    bevy::camera::CameraMainTextureUsages::default()
-                        .with(bevy::render::render_resource::TextureUsages::STORAGE_BINDING),
-                ));
-            }
-        }
-    } else {
-        for e in &enabled {
-            commands
-                .entity(e)
-                .remove::<SolariLighting>()
-                .remove::<bevy::camera::CameraMainTextureUsages>();
-        }
-    }
-}
-
-#[cfg(not(feature = "raytracing"))]
-pub fn apply_raytracing_setting() {}
-
 /// Free-fly debug camera, driven by mouse + keyboard (the shipped game is
 /// gamepad-only, so these inputs are otherwise unused and won't clash). Hold the
 /// **right mouse button** to look around; **WASD** moves in the view plane,
@@ -753,103 +706,6 @@ pub fn probe_raytracing_support() -> bool {
 #[cfg(not(feature = "raytracing"))]
 pub fn probe_raytracing_support() -> bool {
     false
-}
-
-#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-pub fn detect_dlss_support(
-    // SR is the broad gate — RR is a strict subset (RR-capable cards also support SR).
-    sr_supported: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>,
-    mut avail: ResMut<DlssAvailable>,
-) {
-    let new = sr_supported.is_some();
-    if avail.0 != new {
-        avail.0 = new;
-    }
-}
-
-#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
-pub fn detect_dlss_support(_: ResMut<DlssAvailable>) {}
-
-/// Applies the DLSS setting to every camera. Picks Ray Reconstruction when
-/// raytracing is on (and supported) — RR is the denoiser variant designed to
-/// pair with Solari. Falls back to Super Resolution otherwise. Removes TAA
-/// when DLSS is active since the two are mutually exclusive.
-#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-pub fn apply_dlss_setting(
-    settings: Res<GameSettings>,
-    avail: Res<DlssAvailable>,
-    rr_supported: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>,
-    mut commands: Commands,
-    cameras: Query<Entity, With<Camera3d>>,
-) {
-    use bevy::anti_alias::dlss::{
-        Dlss, DlssPerfQualityMode, DlssRayReconstructionFeature, DlssSuperResolutionFeature,
-    };
-    use bevy::anti_alias::taa::TemporalAntiAliasing;
-
-    if !settings.is_changed() && !avail.is_changed() {
-        return;
-    }
-    let enabled = settings.dlss && avail.0;
-    let use_rr = enabled && settings.raytracing && rr_supported.is_some();
-    let mode = match settings.dlss_quality {
-        0 => DlssPerfQualityMode::Performance,
-        1 => DlssPerfQualityMode::Balanced,
-        2 => DlssPerfQualityMode::Quality,
-        3 => DlssPerfQualityMode::Dlaa,
-        _ => DlssPerfQualityMode::Auto,
-    };
-    for cam in &cameras {
-        let mut e = commands.entity(cam);
-        if enabled {
-            e.remove::<TemporalAntiAliasing>().insert(Msaa::Off);
-            if use_rr {
-                e.remove::<Dlss<DlssSuperResolutionFeature>>()
-                    .insert(Dlss::<DlssRayReconstructionFeature> {
-                        perf_quality_mode: mode,
-                        reset: false,
-                        _phantom_data: core::marker::PhantomData,
-                    });
-            } else {
-                e.remove::<Dlss<DlssRayReconstructionFeature>>()
-                    .insert(Dlss::<DlssSuperResolutionFeature> {
-                        perf_quality_mode: mode,
-                        reset: false,
-                        _phantom_data: core::marker::PhantomData,
-                    });
-            }
-        } else {
-            e.remove::<Dlss<DlssSuperResolutionFeature>>()
-                .remove::<Dlss<DlssRayReconstructionFeature>>();
-        }
-    }
-}
-
-#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
-pub fn apply_dlss_setting() {}
-
-/// Mutate the shared side colour materials whenever the colorblind toggle
-/// flips, so every entity that references them (units, towers, castle accents,
-/// arrows) picks up the new palette without a respawn.
-pub fn apply_colorblind_palette(
-    settings: Res<GameSettings>,
-    lib: Res<MatLibrary>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    if !settings.is_changed() {
-        return;
-    }
-    let cb = settings.colorblind;
-    for (handle, color) in [
-        (&lib.left, Side::Left.color_for(cb)),
-        (&lib.right, Side::Right.color_for(cb)),
-        (&lib.left_dark, Side::Left.color_dark_for(cb)),
-        (&lib.right_dark, Side::Right.color_dark_for(cb)),
-    ] {
-        if let Some(mat) = materials.get_mut(handle) {
-            mat.base_color = color;
-        }
-    }
 }
 
 pub fn update_torches(
@@ -1089,10 +945,7 @@ fn spawn_castle(
     z: f32,
 ) {
     let side = slot.side();
-    let x = match side {
-        Side::Left => LEFT_BASE_X,
-        Side::Right => RIGHT_BASE_X,
-    };
+    let x = side.base_x();
 
     let base_entity = commands
         .spawn((
@@ -1132,12 +985,8 @@ fn spawn_castle(
 
 fn spawn_rock(commands: &mut Commands, env: &EnvAssets, slot: PlayerSlot, z: f32) {
     let side = slot.side();
-    let base_x = match side {
-        Side::Left => LEFT_BASE_X,
-        Side::Right => RIGHT_BASE_X,
-    };
     // Rocks are placed behind each base (opposite of unit forward).
-    let x = base_x - side.forward() * ROCK_OFFSET;
+    let x = side.base_x() - side.forward() * ROCK_OFFSET;
 
     commands
         .spawn((

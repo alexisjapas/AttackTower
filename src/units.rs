@@ -64,21 +64,18 @@ pub fn unpause_physics(mut time: ResMut<Time<Physics>>) {
     time.unpause();
 }
 
-pub fn spawn_soldier(
+/// Spawn a fighting/support unit (soldier, archer or priest) on its spawn
+/// lane. The miner has its own `spawn_miner` (extra mining components, ring
+/// slot instead of a lane).
+pub fn spawn_combat_unit(
     commands: &mut Commands,
     models: &UnitModels,
     slot: PlayerSlot,
     mode: GameMode,
+    kind: UnitKind,
     lane: usize,
 ) {
-    let _ = spawn_unit(
-        commands,
-        models,
-        slot,
-        mode,
-        UnitKind::Soldier,
-        Some(lane_z(lane, mode)),
-    );
+    let _ = spawn_unit(commands, models, slot, mode, kind, Some(lane_z(lane, mode)));
 }
 
 pub fn lane_z(lane: usize, mode: GameMode) -> f32 {
@@ -138,40 +135,6 @@ pub fn miner_slot_offset(slot: usize, side: Side) -> Vec3 {
     Vec3::new(x_local * side.forward(), 0.0, z_local)
 }
 
-pub fn spawn_archer(
-    commands: &mut Commands,
-    models: &UnitModels,
-    slot: PlayerSlot,
-    mode: GameMode,
-    lane: usize,
-) {
-    let _ = spawn_unit(
-        commands,
-        models,
-        slot,
-        mode,
-        UnitKind::Archer,
-        Some(lane_z(lane, mode)),
-    );
-}
-
-pub fn spawn_priest(
-    commands: &mut Commands,
-    models: &UnitModels,
-    slot: PlayerSlot,
-    mode: GameMode,
-    lane: usize,
-) {
-    let _ = spawn_unit(
-        commands,
-        models,
-        slot,
-        mode,
-        UnitKind::Priest,
-        Some(lane_z(lane, mode)),
-    );
-}
-
 fn spawn_unit(
     commands: &mut Commands,
     models: &UnitModels,
@@ -181,42 +144,11 @@ fn spawn_unit(
     fixed_z: Option<f32>,
 ) -> Entity {
     let side = slot.side();
-    let base_x = match side {
-        Side::Left => LEFT_BASE_X,
-        Side::Right => RIGHT_BASE_X,
-    };
     let base_z = slot.base_z(mode);
-    let (spawn_x, hp, dmg, speed, cooldown) = match kind {
-        UnitKind::Soldier => (
-            base_x + side.forward() * SOLDIER_SPAWN_OFFSET,
-            SOLDIER_HP,
-            SOLDIER_DAMAGE,
-            SOLDIER_SPEED,
-            SOLDIER_COOLDOWN,
-        ),
-        UnitKind::Miner => (
-            base_x - side.forward() * MINER_SPAWN_OFFSET,
-            MINER_HP,
-            0,
-            MINER_SPEED,
-            MINER_COOLDOWN,
-        ),
-        UnitKind::Archer => (
-            base_x + side.forward() * ARCHER_SPAWN_OFFSET,
-            ARCHER_HP,
-            ARCHER_DAMAGE,
-            ARCHER_SPEED,
-            ARCHER_COOLDOWN,
-        ),
-        // The priest is support-only: no attack damage.
-        UnitKind::Priest => (
-            base_x + side.forward() * PRIEST_SPAWN_OFFSET,
-            PRIEST_HP,
-            0,
-            PRIEST_SPEED,
-            PRIEST_COOLDOWN,
-        ),
-    };
+    // Per-kind gameplay numbers all come from the shared stats table; the
+    // miner's negative spawn_offset puts it behind the base (rock side).
+    let stats = kind.stats();
+    let spawn_x = side.base_x() + side.forward() * stats.spawn_offset;
     let z = base_z
         + match fixed_z {
             Some(z) => z + (rand_jitter() - 0.5) * 0.25,
@@ -252,10 +184,10 @@ fn spawn_unit(
             kind,
             side,
             slot,
-            Health::new(hp),
-            Damage(dmg),
-            MoveSpeed(speed),
-            AttackCooldown::ready(cooldown),
+            Health::new(stats.hp),
+            Damage(stats.damage),
+            MoveSpeed(stats.speed),
+            AttackCooldown::ready(stats.cooldown),
             UnitAnim::default(),
             Armor::default(),
             ModeledUnit,
@@ -314,10 +246,9 @@ pub struct Combatant {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CombatantKind {
-    Soldier,
-    Miner,
-    Archer,
-    Priest,
+    /// A mobile unit, carrying its gameplay kind (so role comparisons reuse
+    /// `UnitKind` instead of a parallel enum).
+    Unit(UnitKind),
     Base,
     Rock,
     Tower,
@@ -327,13 +258,7 @@ impl CombatantKind {
     /// True for the mobile fighting/support units (everything that targets or is
     /// targeted as an enemy unit, excluding structures and rocks).
     fn is_unit(self) -> bool {
-        matches!(
-            self,
-            CombatantKind::Soldier
-                | CombatantKind::Miner
-                | CombatantKind::Archer
-                | CombatantKind::Priest
-        )
+        matches!(self, CombatantKind::Unit(_))
     }
 }
 
@@ -387,18 +312,12 @@ pub fn combat_tick(
     heal_events.clear();
     buff_events.clear();
     for (entity, side, slot, kind, transform, _, _, _, _, _, _, _, _, _) in sets.p0().iter() {
-        let ckind = match *kind {
-            UnitKind::Soldier => CombatantKind::Soldier,
-            UnitKind::Miner => CombatantKind::Miner,
-            UnitKind::Archer => CombatantKind::Archer,
-            UnitKind::Priest => CombatantKind::Priest,
-        };
         combatants.push(Combatant {
             entity,
             side: *side,
             slot: Some(*slot),
             pos: transform.translation,
-            kind: ckind,
+            kind: CombatantKind::Unit(*kind),
         });
     }
     for (entity, side, slot, transform) in sets.p1().iter() {
@@ -459,7 +378,6 @@ pub fn combat_tick(
 
         match *kind {
             UnitKind::Soldier => {
-                let walk_sign = side.forward();
                 // Every unit spawns with CombatTarget, but stay defensive (and
                 // consistent with the rest of the loop) rather than panicking.
                 let Ok(mut ct) = targets.get_mut(entity) else {
@@ -521,32 +439,11 @@ pub fn combat_tick(
                 let target = aggro.or(committed).or_else(retaliation);
                 ct.current = target.map(|c| c.entity);
 
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
-                let move_dir = match target {
-                    Some(t) => t.pos - pos,
-                    None => match enemy_base {
-                        Some(base) => march_dir(pos, base.pos, walk_sign),
-                        None => Vec3::new(walk_sign, 0.0, 0.0),
-                    },
-                };
                 // Only shape the free march into a battalion; a committed target
                 // is chased at full speed.
-                let move_speed = if target.is_some() {
-                    speed.0
-                } else {
-                    speed.0
-                        * formation_speed_factor(
-                            &combatants,
-                            *side,
-                            entity,
-                            pos,
-                            CombatantKind::Soldier,
-                        )
+                let (move_dir, move_speed) = match target {
+                    Some(t) => (t.pos - pos, speed.0),
+                    None => free_march(&combatants, *side, entity, pos, UnitKind::Soldier, speed.0),
                 };
                 drive(&mut lin_vel, &mut transform, move_dir, move_speed, true);
                 anim.walking = true;
@@ -638,7 +535,6 @@ pub fn combat_tick(
                 }
             }
             UnitKind::Archer => {
-                let walk_sign = side.forward();
                 // Aim at the densest enemy knot in range (a zone, not one unit).
                 if let Some(aim) = volley_aim(&combatants, *side, pos) {
                     // The shot clip looses to the model's left, so add the offset
@@ -668,31 +564,13 @@ pub fn combat_tick(
                 if let Some(arch_state) = arch_state.as_deref_mut() {
                     arch_state.pending_shot = None;
                 }
-                // No target: face the advance direction so it turns back to the
-                // front (animate_unit_model smoothly pivots toward this yaw).
-                anim.face_yaw = face_angle(walk_sign, 0.0);
-
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
-                let dir = match enemy_base {
-                    Some(base) => march_dir(pos, base.pos, walk_sign),
-                    None => Vec3::new(walk_sign, 0.0, 0.0),
-                };
+                // No target: march straight, paced behind the soldier front
+                // (range layering), and pivot back toward the advance direction
+                // — face_yaw owns the archer's rotation (smoothed in
+                // animate_unit_model).
+                let (dir, march_speed) =
+                    free_march(&combatants, *side, entity, pos, UnitKind::Archer, speed.0);
                 anim.face_yaw = face_angle(dir.x, dir.z);
-                // face_yaw owns the archer's rotation (smoothed in animate_unit_model).
-                // Hold behind the soldier front (range layering) while marching.
-                let march_speed = speed.0
-                    * formation_speed_factor(
-                        &combatants,
-                        *side,
-                        entity,
-                        pos,
-                        CombatantKind::Archer,
-                    );
                 drive(&mut lin_vel, &mut transform, dir, march_speed, false);
                 anim.walking = march_speed > 1e-3;
             }
@@ -730,29 +608,12 @@ pub fn combat_tick(
                 }
 
                 anim.attacking = false;
-                anim.face_yaw = face_angle(walk_sign, 0.0);
-
-                let enemy_base = combatants
-                    .iter()
-                    .filter(|c| c.kind == CombatantKind::Base && c.side != *side)
-                    .map(|c| (c, xz_distance(c.pos, pos)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .map(|(c, _)| c);
-                let dir = match enemy_base {
-                    Some(base) => march_dir(pos, base.pos, walk_sign),
-                    None => Vec3::new(walk_sign, 0.0, 0.0),
-                };
+                // No ally to support: march straight, paced behind the soldier
+                // front (range layering) — face_yaw owns the priest's rotation
+                // (smoothed in animate_unit_model).
+                let (dir, march_speed) =
+                    free_march(&combatants, *side, entity, pos, UnitKind::Priest, speed.0);
                 anim.face_yaw = face_angle(dir.x, dir.z);
-                // face_yaw owns the priest's rotation (smoothed in animate_unit_model).
-                // Hold behind the soldier front (range layering) while marching.
-                let march_speed = speed.0
-                    * formation_speed_factor(
-                        &combatants,
-                        *side,
-                        entity,
-                        pos,
-                        CombatantKind::Priest,
-                    );
                 drive(&mut lin_vel, &mut transform, dir, march_speed, false);
                 anim.walking = march_speed > 1e-3;
             }
@@ -911,6 +772,33 @@ fn march_dir(pos: Vec3, base_pos: Vec3, walk_sign: f32) -> Vec3 {
     }
 }
 
+/// March step for a unit with no enemy target: the direction (dead-straight
+/// toward the nearest enemy base via `march_dir`) and the speed scaled by the
+/// local battalion-formation rules. Shared by the soldier, archer and priest
+/// branches of `combat_tick`.
+fn free_march(
+    combatants: &[Combatant],
+    side: Side,
+    self_entity: Entity,
+    pos: Vec3,
+    kind: UnitKind,
+    speed: f32,
+) -> (Vec3, f32) {
+    let walk_sign = side.forward();
+    let enemy_base = combatants
+        .iter()
+        .filter(|c| c.kind == CombatantKind::Base && c.side != side)
+        .map(|c| (c, xz_distance(c.pos, pos)))
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(c, _)| c);
+    let dir = match enemy_base {
+        Some(base) => march_dir(pos, base.pos, walk_sign),
+        None => Vec3::new(walk_sign, 0.0, 0.0),
+    };
+    let factor = formation_speed_factor(combatants, side, self_entity, pos, kind);
+    (dir, speed * factor)
+}
+
 /// Local battalion steering applied while a unit MARCHES (no enemy target).
 /// Returns a forward-speed factor in `[FORMATION_MIN_FACTOR, 1.0]`, the smaller of
 /// two graduated slow-downs (see the `common.rs` formation block):
@@ -928,7 +816,7 @@ fn formation_speed_factor(
     side: Side,
     self_entity: Entity,
     pos: Vec3,
-    kind: CombatantKind,
+    kind: UnitKind,
 ) -> f32 {
     let walk_sign = side.forward();
     // Forward coordinate on the march axis: larger = closer to the enemy.
@@ -938,10 +826,9 @@ fn formation_speed_factor(
     // peers behind us, weighting nearby and laterally-close (lane) neighbours.
     let mut lead_sum = 0.0;
     let mut weight_sum = 0.0;
-    for c in combatants
-        .iter()
-        .filter(|c| c.side == side && c.entity != self_entity && c.kind == kind && c.kind.is_unit())
-    {
+    for c in combatants.iter().filter(|c| {
+        c.side == side && c.entity != self_entity && c.kind == CombatantKind::Unit(kind)
+    }) {
         let d = xz_distance(c.pos, pos);
         if d > FORMATION_RADIUS {
             continue;
@@ -965,8 +852,8 @@ fn formation_speed_factor(
 
     // ── Ranged pacing: keep the per-role gap behind the nearest soldier ahead.
     let role_gap = match kind {
-        CombatantKind::Priest => FORMATION_PRIEST_GAP,
-        CombatantKind::Archer => FORMATION_ARCHER_GAP,
+        UnitKind::Priest => FORMATION_PRIEST_GAP,
+        UnitKind::Archer => FORMATION_ARCHER_GAP,
         _ => 0.0,
     };
     let pacing = if role_gap > 0.0 {
@@ -974,7 +861,7 @@ fn formation_speed_factor(
             .iter()
             .filter(|c| {
                 c.side == side
-                    && c.kind == CombatantKind::Soldier
+                    && c.kind == CombatantKind::Unit(UnitKind::Soldier)
                     && fwd(c.pos) > fwd(pos)
                     && xz_distance(c.pos, pos) <= FORMATION_RADIUS
             })

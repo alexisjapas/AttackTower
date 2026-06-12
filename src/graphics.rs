@@ -1,11 +1,28 @@
+use bevy::anti_alias::fxaa::Fxaa;
+use bevy::anti_alias::taa::TemporalAntiAliasing;
+use bevy::camera::Exposure;
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::light::VolumetricFog;
+use bevy::pbr::{
+    Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
+    ScreenSpaceAmbientOcclusionQualityLevel,
+};
+use bevy::post_process::bloom::Bloom;
+use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
+use bevy::render::view::Msaa;
+#[cfg(feature = "raytracing")]
+use bevy::solari::prelude::SolariLighting;
+use bevy::window::{PresentMode, WindowMode};
 use std::path::PathBuf;
 
 use crate::common::*;
 
-/// Settings UX backend: preset detection, invariants between graphics
-/// settings, persistence, and the FPS cap. The `GameSettings` resource itself
-/// is inserted by `main` (loaded + sanitized before the App is built).
+/// Settings UX backend AND applier: preset detection, invariants between
+/// graphics settings, persistence, the FPS cap, and every system that pushes
+/// `GameSettings` onto the world (camera components, window mode, raytracing/
+/// DLSS toggling, colorblind palette). The `GameSettings` resource itself is
+/// inserted by `main` (loaded + sanitized before the App is built).
 pub struct GraphicsSettingsPlugin;
 
 impl Plugin for GraphicsSettingsPlugin {
@@ -16,7 +33,16 @@ impl Plugin for GraphicsSettingsPlugin {
             .add_systems(Update, update_graphics_preset.in_set(AppSet::React))
             .add_systems(
                 Update,
-                (enforce_settings_invariants, persist_settings).in_set(AppSet::Visual),
+                (
+                    enforce_settings_invariants,
+                    persist_settings,
+                    apply_graphics_settings,
+                    apply_raytracing_setting,
+                    detect_dlss_support,
+                    apply_dlss_setting,
+                    apply_colorblind_palette,
+                )
+                    .in_set(AppSet::Visual),
             )
             .add_systems(Update, limit_fps.in_set(AppSet::FrameLimit));
     }
@@ -1089,6 +1115,340 @@ pub fn persist_settings(settings: Res<GameSettings>, mut started: Local<bool>) {
         return;
     }
     save_settings(&settings);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Applying settings to the world (camera components, window, sun, materials).
+// ────────────────────────────────────────────────────────────────────────────
+
+pub fn apply_graphics_settings(
+    settings: Res<GameSettings>,
+    atmo: Res<AtmosphereHandle>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    mut tonemap: Query<&mut Tonemapping>,
+    mut exposures: Query<&mut Exposure, With<Camera3d>>,
+    mut sun: Query<&mut DirectionalLight, With<Sun>>,
+    mut windows: Query<&mut Window>,
+    // Cached copy of the last fully-applied settings. We only touch the camera
+    // components whose underlying fields actually moved, instead of reinserting
+    // a dozen renderer features on every settings change.
+    mut last_applied: Local<Option<GameSettings>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let first = last_applied.is_none();
+    let prev = last_applied.unwrap_or(*settings);
+    let curr = *settings;
+    let changed_any = |fields: &[bool]| first || fields.iter().any(|b| *b);
+
+    // Window mode + vsync.
+    if first || curr.fullscreen != prev.fullscreen || curr.vsync != prev.vsync {
+        let mode = if curr.fullscreen {
+            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+        } else {
+            WindowMode::Windowed
+        };
+        let present = if curr.vsync {
+            PresentMode::AutoVsync
+        } else {
+            PresentMode::AutoNoVsync
+        };
+        for mut window in &mut windows {
+            if window.mode != mode {
+                window.mode = mode;
+            }
+            if window.present_mode != present {
+                window.present_mode = present;
+            }
+        }
+    }
+    // Per-camera components. Both Solari (raytracing) and TAA force the
+    // deferred renderer, which is incompatible with MSAA — Bevy logs a warning
+    // every frame the camera setting changes if we'd insert MSAA anyway. Drop
+    // it silently in both cases.
+    let msaa_changed = first
+        || curr.msaa != prev.msaa
+        || curr.raytracing != prev.raytracing
+        || curr.taa != prev.taa;
+    let msaa = if curr.raytracing || curr.taa {
+        Msaa::Off
+    } else {
+        match curr.msaa {
+            2 => Msaa::Sample2,
+            4 => Msaa::Sample4,
+            8 => Msaa::Sample8,
+            _ => Msaa::Off,
+        }
+    };
+    let hdr_changed = first || curr.hdr != prev.hdr;
+    let bloom_changed =
+        first || curr.bloom != prev.bloom || curr.bloom_intensity != prev.bloom_intensity;
+    let atmo_changed = first || curr.atmosphere != prev.atmosphere;
+    let vfog_changed = changed_any(&[
+        curr.volumetric_fog != prev.volumetric_fog,
+        curr.fog_density != prev.fog_density,
+    ]);
+    let dfog_changed = first || curr.distance_fog != prev.distance_fog;
+    let taa_changed = first || curr.taa != prev.taa;
+    let fxaa_changed = first || curr.fxaa != prev.fxaa;
+    let ssao_changed = first || curr.ssao != prev.ssao || curr.ssao_quality != prev.ssao_quality;
+    let mblur_changed = first || curr.motion_blur != prev.motion_blur;
+    for cam in &cameras {
+        let mut e = commands.entity(cam);
+        if msaa_changed {
+            e.insert(msaa);
+        }
+        if hdr_changed {
+            if curr.hdr {
+                e.insert(bevy::render::view::Hdr);
+            } else {
+                e.remove::<bevy::render::view::Hdr>();
+            }
+        }
+        if bloom_changed {
+            if curr.bloom {
+                e.insert(Bloom {
+                    intensity: bloom_intensity_value(curr.bloom_intensity),
+                    ..Bloom::NATURAL
+                });
+            } else {
+                e.remove::<Bloom>();
+            }
+        }
+        if atmo_changed {
+            if curr.atmosphere {
+                e.insert((
+                    Atmosphere::earthlike(atmo.0.clone()),
+                    AtmosphereSettings::default(),
+                ));
+            } else {
+                e.remove::<Atmosphere>().remove::<AtmosphereSettings>();
+            }
+        }
+        if vfog_changed {
+            if curr.volumetric_fog {
+                e.insert(VolumetricFog {
+                    ambient_intensity: fog_density_value(curr.fog_density),
+                    ..default()
+                });
+            } else {
+                e.remove::<VolumetricFog>();
+            }
+        }
+        if dfog_changed {
+            if curr.distance_fog {
+                e.insert(DistanceFog {
+                    color: Color::srgba(0.55, 0.70, 0.85, 1.0),
+                    falloff: FogFalloff::ExponentialSquared { density: 0.012 },
+                    ..default()
+                });
+            } else {
+                e.remove::<DistanceFog>();
+            }
+        }
+        if taa_changed {
+            if curr.taa {
+                e.insert(TemporalAntiAliasing::default());
+            } else {
+                e.remove::<TemporalAntiAliasing>();
+            }
+        }
+        if fxaa_changed {
+            if curr.fxaa {
+                e.insert(Fxaa::default());
+            } else {
+                e.remove::<Fxaa>();
+            }
+        }
+        if ssao_changed {
+            if curr.ssao {
+                e.insert(ScreenSpaceAmbientOcclusion {
+                    quality_level: match curr.ssao_quality {
+                        0 => ScreenSpaceAmbientOcclusionQualityLevel::Low,
+                        1 => ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+                        3 => ScreenSpaceAmbientOcclusionQualityLevel::Ultra,
+                        _ => ScreenSpaceAmbientOcclusionQualityLevel::High,
+                    },
+                    ..default()
+                });
+            } else {
+                e.remove::<ScreenSpaceAmbientOcclusion>();
+            }
+        }
+        if mblur_changed {
+            if curr.motion_blur {
+                e.insert(MotionBlur::default());
+            } else {
+                e.remove::<MotionBlur>();
+            }
+        }
+    }
+    // Tonemapping (mutates existing component on the camera).
+    if first || curr.tonemapping != prev.tonemapping {
+        for mut t in &mut tonemap {
+            *t = match curr.tonemapping {
+                0 => Tonemapping::AcesFitted,
+                1 => Tonemapping::TonyMcMapface,
+                2 => Tonemapping::Reinhard,
+                _ => Tonemapping::None,
+            };
+        }
+    }
+    // Exposure (HDR sub-parameter; meaningful only when HDR is on but applying
+    // is harmless either way).
+    if first || curr.exposure != prev.exposure {
+        let target_ev100 = exposure_ev100(curr.exposure);
+        for mut exp in &mut exposures {
+            if (exp.ev100 - target_ev100).abs() > f32::EPSILON {
+                exp.ev100 = target_ev100;
+            }
+        }
+    }
+    // Sun shadows on/off.
+    if first || curr.shadows != prev.shadows {
+        for mut light in &mut sun {
+            if light.shadows_enabled != curr.shadows {
+                light.shadows_enabled = curr.shadows;
+            }
+        }
+    }
+    *last_applied = Some(curr);
+}
+
+#[cfg(feature = "raytracing")]
+pub fn apply_raytracing_setting(
+    settings: Res<GameSettings>,
+    avail: Res<RaytracingAvailable>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+    enabled: Query<Entity, With<SolariLighting>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    // SolariPlugins isn't loaded when the adapter can't support it, so
+    // inserting SolariLighting would be a no-op at best and a crash at worst.
+    if settings.raytracing && avail.0 {
+        for cam in &cameras {
+            if enabled.get(cam).is_err() {
+                commands.entity(cam).insert((
+                    SolariLighting::default(),
+                    Msaa::Off,
+                    bevy::camera::CameraMainTextureUsages::default()
+                        .with(bevy::render::render_resource::TextureUsages::STORAGE_BINDING),
+                ));
+            }
+        }
+    } else {
+        for e in &enabled {
+            commands
+                .entity(e)
+                .remove::<SolariLighting>()
+                .remove::<bevy::camera::CameraMainTextureUsages>();
+        }
+    }
+}
+
+#[cfg(not(feature = "raytracing"))]
+pub fn apply_raytracing_setting() {}
+
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+pub fn detect_dlss_support(
+    // SR is the broad gate — RR is a strict subset (RR-capable cards also support SR).
+    sr_supported: Option<Res<bevy::anti_alias::dlss::DlssSuperResolutionSupported>>,
+    mut avail: ResMut<DlssAvailable>,
+) {
+    let new = sr_supported.is_some();
+    if avail.0 != new {
+        avail.0 = new;
+    }
+}
+
+#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
+pub fn detect_dlss_support(_: ResMut<DlssAvailable>) {}
+
+/// Applies the DLSS setting to every camera. Picks Ray Reconstruction when
+/// raytracing is on (and supported) — RR is the denoiser variant designed to
+/// pair with Solari. Falls back to Super Resolution otherwise. Removes TAA
+/// when DLSS is active since the two are mutually exclusive.
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+pub fn apply_dlss_setting(
+    settings: Res<GameSettings>,
+    avail: Res<DlssAvailable>,
+    rr_supported: Option<Res<bevy::anti_alias::dlss::DlssRayReconstructionSupported>>,
+    mut commands: Commands,
+    cameras: Query<Entity, With<Camera3d>>,
+) {
+    use bevy::anti_alias::dlss::{
+        Dlss, DlssPerfQualityMode, DlssRayReconstructionFeature, DlssSuperResolutionFeature,
+    };
+    use bevy::anti_alias::taa::TemporalAntiAliasing;
+
+    if !settings.is_changed() && !avail.is_changed() {
+        return;
+    }
+    let enabled = settings.dlss && avail.0;
+    let use_rr = enabled && settings.raytracing && rr_supported.is_some();
+    let mode = match settings.dlss_quality {
+        0 => DlssPerfQualityMode::Performance,
+        1 => DlssPerfQualityMode::Balanced,
+        2 => DlssPerfQualityMode::Quality,
+        3 => DlssPerfQualityMode::Dlaa,
+        _ => DlssPerfQualityMode::Auto,
+    };
+    for cam in &cameras {
+        let mut e = commands.entity(cam);
+        if enabled {
+            e.remove::<TemporalAntiAliasing>().insert(Msaa::Off);
+            if use_rr {
+                e.remove::<Dlss<DlssSuperResolutionFeature>>()
+                    .insert(Dlss::<DlssRayReconstructionFeature> {
+                        perf_quality_mode: mode,
+                        reset: false,
+                        _phantom_data: core::marker::PhantomData,
+                    });
+            } else {
+                e.remove::<Dlss<DlssRayReconstructionFeature>>()
+                    .insert(Dlss::<DlssSuperResolutionFeature> {
+                        perf_quality_mode: mode,
+                        reset: false,
+                        _phantom_data: core::marker::PhantomData,
+                    });
+            }
+        } else {
+            e.remove::<Dlss<DlssSuperResolutionFeature>>()
+                .remove::<Dlss<DlssRayReconstructionFeature>>();
+        }
+    }
+}
+
+#[cfg(not(all(feature = "dlss", not(feature = "force_disable_dlss"))))]
+pub fn apply_dlss_setting() {}
+
+/// Mutate the shared side colour materials whenever the colorblind toggle
+/// flips, so every entity that references them (units, towers, castle accents,
+/// arrows) picks up the new palette without a respawn.
+pub fn apply_colorblind_palette(
+    settings: Res<GameSettings>,
+    lib: Res<MatLibrary>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let cb = settings.colorblind;
+    for (handle, color) in [
+        (&lib.left, Side::Left.color_for(cb)),
+        (&lib.right, Side::Right.color_for(cb)),
+        (&lib.left_dark, Side::Left.color_dark_for(cb)),
+        (&lib.right_dark, Side::Right.color_dark_for(cb)),
+    ] {
+        if let Some(mat) = materials.get_mut(handle) {
+            mat.base_color = color;
+        }
+    }
 }
 
 #[cfg(test)]

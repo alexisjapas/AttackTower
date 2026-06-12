@@ -644,6 +644,15 @@ impl Side {
         }
     }
 
+    /// World X of this side's base line (single source for the four spawners
+    /// that used to re-match on `Side`).
+    pub fn base_x(self) -> f32 {
+        match self {
+            Side::Left => LEFT_BASE_X,
+            Side::Right => RIGHT_BASE_X,
+        }
+    }
+
     pub fn base_rotation(self) -> Quat {
         match self {
             Side::Left => Quat::IDENTITY,
@@ -733,6 +742,23 @@ pub const UNIT_KINDS: [UnitKind; 4] = [
     UnitKind::Priest,
 ];
 
+/// Gameplay stats of one unit kind — the single source of truth shared by
+/// `spawn_unit` (combat components), the HUD panel (button labels + stats
+/// card) and the buy actions (cost). Add a field here rather than matching on
+/// `UnitKind` at a call site.
+#[derive(Clone, Copy)]
+pub struct UnitStats {
+    pub hp: i32,
+    /// Per-hit damage. 0 for the non-fighting kinds (miner, priest).
+    pub damage: i32,
+    pub cost: u32,
+    pub speed: f32,
+    pub cooldown: f32,
+    /// Signed X offset from the base along the side's forward axis at spawn —
+    /// negative for the miner, which exits BEHIND the base (rock side).
+    pub spawn_offset: f32,
+}
+
 impl UnitKind {
     /// Stable index into `UnitModels.models`.
     pub fn index(self) -> usize {
@@ -741,6 +767,52 @@ impl UnitKind {
             UnitKind::Miner => 1,
             UnitKind::Archer => 2,
             UnitKind::Priest => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UnitKind::Soldier => "Soldier",
+            UnitKind::Miner => "Miner",
+            UnitKind::Archer => "Archer",
+            UnitKind::Priest => "Priest",
+        }
+    }
+
+    pub const fn stats(self) -> UnitStats {
+        match self {
+            UnitKind::Soldier => UnitStats {
+                hp: SOLDIER_HP,
+                damage: SOLDIER_DAMAGE,
+                cost: SOLDIER_COST,
+                speed: SOLDIER_SPEED,
+                cooldown: SOLDIER_COOLDOWN,
+                spawn_offset: SOLDIER_SPAWN_OFFSET,
+            },
+            UnitKind::Miner => UnitStats {
+                hp: MINER_HP,
+                damage: 0,
+                cost: MINER_COST,
+                speed: MINER_SPEED,
+                cooldown: MINER_COOLDOWN,
+                spawn_offset: -MINER_SPAWN_OFFSET,
+            },
+            UnitKind::Archer => UnitStats {
+                hp: ARCHER_HP,
+                damage: ARCHER_DAMAGE,
+                cost: ARCHER_COST,
+                speed: ARCHER_SPEED,
+                cooldown: ARCHER_COOLDOWN,
+                spawn_offset: ARCHER_SPAWN_OFFSET,
+            },
+            UnitKind::Priest => UnitStats {
+                hp: PRIEST_HP,
+                damage: 0,
+                cost: PRIEST_COST,
+                speed: PRIEST_SPEED,
+                cooldown: PRIEST_COOLDOWN,
+                spawn_offset: PRIEST_SPAWN_OFFSET,
+            },
         }
     }
 }

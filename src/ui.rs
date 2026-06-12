@@ -1,26 +1,12 @@
-use bevy::anti_alias::fxaa::Fxaa;
-use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::camera::Exposure;
-use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::light::VolumetricFog;
-use bevy::pbr::{
-    Atmosphere, AtmosphereSettings, DistanceFog, FogFalloff, ScreenSpaceAmbientOcclusion,
-    ScreenSpaceAmbientOcclusionQualityLevel,
-};
-use bevy::post_process::bloom::Bloom;
-use bevy::post_process::motion_blur::MotionBlur;
 use bevy::prelude::*;
-use bevy::render::view::Msaa;
-use bevy::window::{PresentMode, WindowMode};
 
 use crate::common::*;
 use crate::graphics::{
-    DescriptionKind, GraphicsPreset, Impact, MenuSlot, ParamDescription, ParamId,
-    bloom_intensity_value, description_for, exposure_ev100, fog_density_value, param_label,
-    slot_count, tab_slots,
+    DescriptionKind, GraphicsPreset, Impact, MenuSlot, ParamDescription, ParamId, description_for,
+    param_label, slot_count, tab_slots,
 };
 use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
-use crate::units::{spawn_archer, spawn_miner, spawn_priest, spawn_soldier};
+use crate::units::{spawn_combat_unit, spawn_miner};
 
 /// Every Bevy UI node (HUD + state overlays) and the per-state input systems.
 /// Overlays are spawned/torn down by `OnEnter`/`OnExit` transitions; input
@@ -95,7 +81,6 @@ impl Plugin for UiPlugin {
                     scroll_focused_into_view.run_if(in_state(GameState::Settings)),
                     apply_menu_focus_visual,
                     apply_player_focus_visual,
-                    apply_graphics_settings,
                     update_gold_text,
                     update_base_hp_text,
                     update_focus_stats_text,
@@ -419,15 +404,15 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
                 TextColor(slot.side().color()),
                 BaseHpText(slot),
             ));
-            // Order matches navigation order (0 → 3, top to bottom).
+            // Order matches navigation order (0 → 4, top to bottom).
             spawn_category_header(panel, "Buildings");
             spawn_slot(panel, slot, 0, &format!("Tower ({}g)", TOWER_COST));
             spawn_category_header(panel, "Combat");
-            spawn_slot(panel, slot, 1, &format!("Soldier ({}g)", SOLDIER_COST));
-            spawn_slot(panel, slot, 2, &format!("Archer ({}g)", ARCHER_COST));
-            spawn_slot(panel, slot, 3, &format!("Priest ({}g)", PRIEST_COST));
+            spawn_slot(panel, slot, 1, &unit_slot_label(UnitKind::Soldier));
+            spawn_slot(panel, slot, 2, &unit_slot_label(UnitKind::Archer));
+            spawn_slot(panel, slot, 3, &unit_slot_label(UnitKind::Priest));
             spawn_category_header(panel, "Resources");
-            spawn_slot(panel, slot, 4, &format!("Miner ({}g)", MINER_COST));
+            spawn_slot(panel, slot, 4, &unit_slot_label(UnitKind::Miner));
             panel.spawn((
                 Node {
                     margin: UiRect::top(Val::Px(8.0)),
@@ -460,30 +445,49 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
         });
 }
 
+/// HUD button label for a unit kind, from the shared stats table.
+fn unit_slot_label(kind: UnitKind) -> String {
+    format!("{} ({}g)", kind.label(), kind.stats().cost)
+}
+
 /// Stats text for one of the five slot indices, matching the panel button
-/// order (0 Tower, 1 Soldier, 2 Archer, 3 Priest, 4 Miner).
+/// order (0 Tower, 1 Soldier, 2 Archer, 3 Priest, 4 Miner). Unit numbers come
+/// from `UnitKind::stats()`; only the kind-specific third value (range, heal,
+/// carry capacity) still reads its dedicated constant.
 fn focus_stats_string(index: usize) -> String {
     match index {
         0 => format!(
             "Tower\nHP {}  DMG {}  RNG {:.1}  CD {:.1}s",
             TOWER_HP, TOWER_DAMAGE, TOWER_RANGE, TOWER_COOLDOWN
         ),
-        1 => format!(
-            "Soldier\nHP {}  DMG {}  SPD {:.1}  CD {:.1}s",
-            SOLDIER_HP, SOLDIER_DAMAGE, SOLDIER_SPEED, SOLDIER_COOLDOWN
-        ),
-        2 => format!(
-            "Archer\nHP {}  DMG {}  RNG {:.1}  CD {:.1}s",
-            ARCHER_HP, ARCHER_DAMAGE, ARCHER_RANGE, ARCHER_COOLDOWN
-        ),
-        3 => format!(
-            "Priest\nHP {}  HEAL {}  RNG {:.1}  CD {:.1}s",
-            PRIEST_HP, PRIEST_HEAL, PRIEST_RANGE, PRIEST_COOLDOWN
-        ),
-        4 => format!(
-            "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
-            MINER_HP, MINER_CAPACITY, MINER_SPEED, MINER_COOLDOWN
-        ),
+        1 => {
+            let s = UnitKind::Soldier.stats();
+            format!(
+                "Soldier\nHP {}  DMG {}  SPD {:.1}  CD {:.1}s",
+                s.hp, s.damage, s.speed, s.cooldown
+            )
+        }
+        2 => {
+            let s = UnitKind::Archer.stats();
+            format!(
+                "Archer\nHP {}  DMG {}  RNG {:.1}  CD {:.1}s",
+                s.hp, s.damage, ARCHER_RANGE, s.cooldown
+            )
+        }
+        3 => {
+            let s = UnitKind::Priest.stats();
+            format!(
+                "Priest\nHP {}  HEAL {}  RNG {:.1}  CD {:.1}s",
+                s.hp, PRIEST_HEAL, PRIEST_RANGE, s.cooldown
+            )
+        }
+        4 => {
+            let s = UnitKind::Miner.stats();
+            format!(
+                "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
+                s.hp, MINER_CAPACITY, s.speed, s.cooldown
+            )
+        }
         _ => String::new(),
     }
 }
@@ -2421,35 +2425,32 @@ fn buy_or_place_slot(
     index: usize,
     mode: GameMode,
 ) {
+    let count_of = |kind: UnitKind| {
+        units
+            .iter()
+            .filter(|(s, k)| **s == slot && **k == kind)
+            .count()
+    };
     match index {
         0 => arm_placement(placement, slot, mode),
-        1 if gold.try_spend(slot, SOLDIER_COST) => {
-            let count = units
-                .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Soldier)
-                .count();
-            spawn_soldier(commands, models, slot, mode, count % LANE_COUNT);
-        }
-        2 if gold.try_spend(slot, ARCHER_COST) => {
-            let count = units
-                .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Archer)
-                .count();
-            spawn_archer(commands, models, slot, mode, count % LANE_COUNT);
-        }
-        3 if gold.try_spend(slot, PRIEST_COST) => {
-            let count = units
-                .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Priest)
-                .count();
-            spawn_priest(commands, models, slot, mode, count % LANE_COUNT);
+        1 | 2 | 3 => {
+            let kind = match index {
+                1 => UnitKind::Soldier,
+                2 => UnitKind::Archer,
+                _ => UnitKind::Priest,
+            };
+            if gold.try_spend(slot, kind.stats().cost) {
+                // Cycle the spawn lane per kind so successive purchases don't
+                // stack on the same spot.
+                let lane = count_of(kind) % LANE_COUNT;
+                spawn_combat_unit(commands, models, slot, mode, kind, lane);
+            }
         }
         4 => {
-            let miner_count = units
-                .iter()
-                .filter(|(s, k)| **s == slot && **k == UnitKind::Miner)
-                .count();
-            if miner_count < MAX_MINERS_PER_PLAYER && gold.try_spend(slot, MINER_COST) {
+            let miner_count = count_of(UnitKind::Miner);
+            if miner_count < MAX_MINERS_PER_PLAYER
+                && gold.try_spend(slot, UnitKind::Miner.stats().cost)
+            {
                 spawn_miner(commands, models, slot, mode, miner_count);
             }
         }
@@ -2605,202 +2606,6 @@ pub fn settings_input_system(
         },
         Some(MenuSlot::Back) | None => next.set(origin.to_state()),
     }
-}
-
-pub fn apply_graphics_settings(
-    settings: Res<GameSettings>,
-    atmo: Res<AtmosphereHandle>,
-    mut commands: Commands,
-    cameras: Query<Entity, With<Camera3d>>,
-    mut tonemap: Query<&mut Tonemapping>,
-    mut exposures: Query<&mut Exposure, With<Camera3d>>,
-    mut sun: Query<&mut DirectionalLight, With<Sun>>,
-    mut windows: Query<&mut Window>,
-    // Cached copy of the last fully-applied settings. We only touch the camera
-    // components whose underlying fields actually moved, instead of reinserting
-    // a dozen renderer features on every settings change.
-    mut last_applied: Local<Option<GameSettings>>,
-) {
-    if !settings.is_changed() {
-        return;
-    }
-    let first = last_applied.is_none();
-    let prev = last_applied.unwrap_or(*settings);
-    let curr = *settings;
-    let changed_any = |fields: &[bool]| first || fields.iter().any(|b| *b);
-
-    // Window mode + vsync.
-    if first || curr.fullscreen != prev.fullscreen || curr.vsync != prev.vsync {
-        let mode = if curr.fullscreen {
-            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
-        } else {
-            WindowMode::Windowed
-        };
-        let present = if curr.vsync {
-            PresentMode::AutoVsync
-        } else {
-            PresentMode::AutoNoVsync
-        };
-        for mut window in &mut windows {
-            if window.mode != mode {
-                window.mode = mode;
-            }
-            if window.present_mode != present {
-                window.present_mode = present;
-            }
-        }
-    }
-    // Per-camera components. Both Solari (raytracing) and TAA force the
-    // deferred renderer, which is incompatible with MSAA — Bevy logs a warning
-    // every frame the camera setting changes if we'd insert MSAA anyway. Drop
-    // it silently in both cases.
-    let msaa_changed = first
-        || curr.msaa != prev.msaa
-        || curr.raytracing != prev.raytracing
-        || curr.taa != prev.taa;
-    let msaa = if curr.raytracing || curr.taa {
-        Msaa::Off
-    } else {
-        match curr.msaa {
-            2 => Msaa::Sample2,
-            4 => Msaa::Sample4,
-            8 => Msaa::Sample8,
-            _ => Msaa::Off,
-        }
-    };
-    let hdr_changed = first || curr.hdr != prev.hdr;
-    let bloom_changed =
-        first || curr.bloom != prev.bloom || curr.bloom_intensity != prev.bloom_intensity;
-    let atmo_changed = first || curr.atmosphere != prev.atmosphere;
-    let vfog_changed = changed_any(&[
-        curr.volumetric_fog != prev.volumetric_fog,
-        curr.fog_density != prev.fog_density,
-    ]);
-    let dfog_changed = first || curr.distance_fog != prev.distance_fog;
-    let taa_changed = first || curr.taa != prev.taa;
-    let fxaa_changed = first || curr.fxaa != prev.fxaa;
-    let ssao_changed = first || curr.ssao != prev.ssao || curr.ssao_quality != prev.ssao_quality;
-    let mblur_changed = first || curr.motion_blur != prev.motion_blur;
-    for cam in &cameras {
-        let mut e = commands.entity(cam);
-        if msaa_changed {
-            e.insert(msaa);
-        }
-        if hdr_changed {
-            if curr.hdr {
-                e.insert(bevy::render::view::Hdr);
-            } else {
-                e.remove::<bevy::render::view::Hdr>();
-            }
-        }
-        if bloom_changed {
-            if curr.bloom {
-                e.insert(Bloom {
-                    intensity: bloom_intensity_value(curr.bloom_intensity),
-                    ..Bloom::NATURAL
-                });
-            } else {
-                e.remove::<Bloom>();
-            }
-        }
-        if atmo_changed {
-            if curr.atmosphere {
-                e.insert((
-                    Atmosphere::earthlike(atmo.0.clone()),
-                    AtmosphereSettings::default(),
-                ));
-            } else {
-                e.remove::<Atmosphere>().remove::<AtmosphereSettings>();
-            }
-        }
-        if vfog_changed {
-            if curr.volumetric_fog {
-                e.insert(VolumetricFog {
-                    ambient_intensity: fog_density_value(curr.fog_density),
-                    ..default()
-                });
-            } else {
-                e.remove::<VolumetricFog>();
-            }
-        }
-        if dfog_changed {
-            if curr.distance_fog {
-                e.insert(DistanceFog {
-                    color: Color::srgba(0.55, 0.70, 0.85, 1.0),
-                    falloff: FogFalloff::ExponentialSquared { density: 0.012 },
-                    ..default()
-                });
-            } else {
-                e.remove::<DistanceFog>();
-            }
-        }
-        if taa_changed {
-            if curr.taa {
-                e.insert(TemporalAntiAliasing::default());
-            } else {
-                e.remove::<TemporalAntiAliasing>();
-            }
-        }
-        if fxaa_changed {
-            if curr.fxaa {
-                e.insert(Fxaa::default());
-            } else {
-                e.remove::<Fxaa>();
-            }
-        }
-        if ssao_changed {
-            if curr.ssao {
-                e.insert(ScreenSpaceAmbientOcclusion {
-                    quality_level: match curr.ssao_quality {
-                        0 => ScreenSpaceAmbientOcclusionQualityLevel::Low,
-                        1 => ScreenSpaceAmbientOcclusionQualityLevel::Medium,
-                        3 => ScreenSpaceAmbientOcclusionQualityLevel::Ultra,
-                        _ => ScreenSpaceAmbientOcclusionQualityLevel::High,
-                    },
-                    ..default()
-                });
-            } else {
-                e.remove::<ScreenSpaceAmbientOcclusion>();
-            }
-        }
-        if mblur_changed {
-            if curr.motion_blur {
-                e.insert(MotionBlur::default());
-            } else {
-                e.remove::<MotionBlur>();
-            }
-        }
-    }
-    // Tonemapping (mutates existing component on the camera).
-    if first || curr.tonemapping != prev.tonemapping {
-        for mut t in &mut tonemap {
-            *t = match curr.tonemapping {
-                0 => Tonemapping::AcesFitted,
-                1 => Tonemapping::TonyMcMapface,
-                2 => Tonemapping::Reinhard,
-                _ => Tonemapping::None,
-            };
-        }
-    }
-    // Exposure (HDR sub-parameter; meaningful only when HDR is on but applying
-    // is harmless either way).
-    if first || curr.exposure != prev.exposure {
-        let target_ev100 = exposure_ev100(curr.exposure);
-        for mut exp in &mut exposures {
-            if (exp.ev100 - target_ev100).abs() > f32::EPSILON {
-                exp.ev100 = target_ev100;
-            }
-        }
-    }
-    // Sun shadows on/off.
-    if first || curr.shadows != prev.shadows {
-        for mut light in &mut sun {
-            if light.shadows_enabled != curr.shadows {
-                light.shadows_enabled = curr.shadows;
-            }
-        }
-    }
-    *last_applied = Some(curr);
 }
 
 #[cfg(test)]

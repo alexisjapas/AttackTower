@@ -9,35 +9,14 @@ writes, change-gated `MouseUi`, structural-only settings-overlay rebuild) —
 are done. Lot (c) — Bevy `States` migration (`GameState` + `InMatch` computed
 state + `Winner` resource, overlays on `OnEnter`/`OnExit`, `run_if` gating,
 physics paused outside Playing, `reset_match` on `OnEnter(Menu)` in game.rs)
-and per-module `Plugin`s — is done too. Remaining: lot (d), then the rest
-opportunistically.
-
-## Lot (d) — file/module split
-
-- [ ] **Split `ui.rs` (~2.9k lines)** into `ui/hud.rs`, `ui/overlays.rs`,
-  `ui/input.rs`, `placement.rs`. Move `apply_graphics_settings` to
-  `graphics.rs` (camera/window mutation, not UI — CLAUDE.md already describes
-  graphics.rs as the settings backend) and consolidate the graphics-application
-  logic currently spread over ui.rs / setup.rs (`apply_raytracing_setting`,
-  `apply_dlss_setting`) / graphics.rs. (`reset_match` + `BattlefieldEntity`
-  already moved to game.rs with lot c.)
-- [ ] **Split `common.rs` (~1.5k lines)** — keep the "all tunables in one
-  place" promise but per-domain (`consts_units`, `consts_env`,
-  `consts_weapons`, …). The ~200-line weapon-placement block is an obvious
-  standalone chunk.
-- [ ] **`UnitKind::stats()` table** — per-kind hp/damage/cost/speed/cooldown/
-  spawn-offset currently live in 3+ places (consts, `spawn_unit` match,
-  `focus_stats_string`, `buy_or_place_slot` costs). A single `UnitStats` table
-  makes the Priest-stats class of bug impossible. Also merge the identical
-  `spawn_soldier`/`spawn_archer`/`spawn_priest` wrappers into
-  `spawn_combat_unit(kind, lane)`, and add `Side::base_x()` (the
-  `match side { Left => LEFT_BASE_X, … }` is copied 4×).
-- [ ] **`combat_tick` structure** — the "nearest enemy base + `march_dir` +
-  `formation_speed_factor`" block is copy-pasted in the Soldier, Archer and
-  Priest branches → extract a `free_march()` helper. `CombatantKind` duplicates
-  `UnitKind` → `enum CombatantKind { Unit(UnitKind), Base, Rock, Tower }`
-  removes the mapping boilerplate. Longer term: per-kind AI systems sharing a
-  once-per-frame snapshot.
+and per-module `Plugin`s — is done too. Lot (d) — file/module split — is done:
+`UnitStats` table + `spawn_combat_unit` + `Side::base_x()`, `free_march()` +
+`CombatantKind::Unit(UnitKind)` in combat_tick, graphics application
+consolidated into graphics.rs, constants split into `config/{units,weapons,
+arena,world}.rs` (re-exported flat via `common`), and `ui.rs` split into
+`ui/{mod,hud,overlays,input}.rs` + top-level `placement.rs`. Only the items
+below remain; pick them opportunistically. (Longer-term idea parked from lot
+d: per-kind AI systems sharing a once-per-frame combatant snapshot.)
 
 ## Unscheduled / smaller
 
@@ -59,9 +38,6 @@ opportunistically.
   Same family: `apply_player_focus_visual` still counts miners by iterating
   all units once per frame while in-match (cheap; cache per-slot counts if it
   ever shows in a profile).
-- [ ] **Startup chain over-serialized** — all 6 Startup systems are
-  `.chain()`ed; only `init_mat_library → setup_world` and
-  `load_env_assets → setup_world` are real dependencies.
 - [ ] **Non-deterministic damage ordering** — `combat_tick`,
   `tower_attack_tick` and `arrow_flight_system` are declared parallel but
   conflict on `Health`, so Bevy serializes them in an ambiguous order (frame-

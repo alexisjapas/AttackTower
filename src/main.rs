@@ -1,10 +1,12 @@
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
 mod common;
+mod config;
 mod game;
 mod graphics;
 mod healthbar;
 mod music;
+mod placement;
 mod setup;
 mod towers;
 mod ui;

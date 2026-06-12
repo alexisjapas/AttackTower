@@ -905,36 +905,11 @@ pub fn load_settings() -> GameSettings {
             _ => {}
         }
     }
-    if !cfg!(feature = "raytracing") {
-        s.raytracing = false;
-    }
-    if !cfg!(feature = "dlss") {
-        s.dlss = false;
-    }
-    if s.tonemapping > 3 {
-        s.tonemapping = 0;
-    }
-    if s.fps_cap > 5 {
-        s.fps_cap = 0;
-    }
-    if !matches!(s.msaa, 0 | 2 | 4 | 8) {
-        s.msaa = 0;
-    }
-    if s.exposure > 2 {
-        s.exposure = 1;
-    }
-    if s.bloom_intensity > 2 {
-        s.bloom_intensity = 1;
-    }
-    if s.dlss_quality > 4 {
-        s.dlss_quality = 4;
-    }
-    if s.ssao_quality > 3 {
-        s.ssao_quality = 2;
-    }
-    if s.fog_density > 2 {
-        s.fog_density = 1;
-    }
+    // Single source of truth for feature gates and value clamps. Hardware
+    // availability isn't probed yet at load time, so pass `true` for both and
+    // let the caller (main) / `enforce_settings_invariants` re-sanitize once
+    // the real support flags are known.
+    sanitize_settings(&mut s, true, true);
     s
 }
 

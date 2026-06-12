@@ -242,18 +242,12 @@ fn unit_base_rotation(side: Side, kind: UnitKind) -> Quat {
 }
 
 pub fn rand_jitter() -> f32 {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static SEED: AtomicU32 = AtomicU32::new(0x1234_5678);
-    // fetch_add then hash, so concurrent callers get distinct seeds even on
-    // platforms with weak memory ordering. The previous load+store had a TOCTOU
-    // race that could produce duplicate jitter values.
-    let mut x = SEED
-        .fetch_add(0x9E37_79B9, Ordering::Relaxed)
-        .wrapping_add(0x9E37_79B9);
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    (x & 0x00FF_FFFF) as f32 / 0x0100_0000 as f32
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEED: AtomicU64 = AtomicU64::new(0x1234_5678_9ABC_DEF1);
+    // fetch_add hands every caller a distinct seed even under concurrency; the
+    // shared xorshift `Rng` (one step) then decorrelates consecutive seeds.
+    let seed = SEED.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    Rng::new(seed).unit()
 }
 
 #[derive(Clone, Copy)]
@@ -425,7 +419,11 @@ pub fn combat_tick(
         match *kind {
             UnitKind::Soldier => {
                 let walk_sign = side.forward();
-                let mut ct = targets.get_mut(entity).expect("unit has CombatTarget");
+                // Every unit spawns with CombatTarget, but stay defensive (and
+                // consistent with the rest of the loop) rather than panicking.
+                let Ok(mut ct) = targets.get_mut(entity) else {
+                    continue;
+                };
 
                 // Melee: hit the nearest enemy within reach — unit, tower or base
                 // — even if it isn't the committed target, so a soldier never
@@ -608,11 +606,11 @@ pub fn combat_tick(
                         face_angle(aim.x - pos.x, aim.z - pos.z) + ARCHER_SHOT_YAW_OFFSET;
                     anim.attacking = true;
                     // Queue the volley only once the pivot is done (facing within
-                    // ARCHER_TURN_EPS); `animate_unit_model` looses one arrow per
+                    // FACE_TURN_EPS); `animate_unit_model` looses one arrow per
                     // shot-clip cycle toward the aim point.
                     let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
                     let aimed =
-                        shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= ARCHER_TURN_EPS;
+                        shortest_yaw_diff(anim.face_yaw, current_yaw).abs() <= FACE_TURN_EPS;
                     if let Some(arch_state) = arch_state.as_deref_mut() {
                         arch_state.pending_shot = aimed.then_some(PendingShot {
                             aim,
@@ -1308,12 +1306,9 @@ pub fn animate_unit_model(
         // rotation that fights this). Frozen while dying so the fall clip owns it.
         if !anim.dying && uses_face_yaw(*kind) {
             let current_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
-            let mut diff = (anim.face_yaw - current_yaw).rem_euclid(std::f32::consts::TAU);
-            if diff > PI {
-                diff -= std::f32::consts::TAU;
-            }
-            if diff.abs() > ARCHER_TURN_EPS {
-                let step = (ARCHER_TURN_SPEED * dt).min(diff.abs()) * diff.signum();
+            let diff = shortest_yaw_diff(anim.face_yaw, current_yaw);
+            if diff.abs() > FACE_TURN_EPS {
+                let step = (FACE_TURN_SPEED * dt).min(diff.abs()) * diff.signum();
                 transform.rotation = Quat::from_rotation_y(current_yaw + step);
             } else {
                 transform.rotation = Quat::from_rotation_y(anim.face_yaw);
@@ -1323,7 +1318,7 @@ pub fn animate_unit_model(
         // Keep "attacking" latched for a moment after the target leaves range so
         // the shot pose doesn't flicker back to idle between volleys.
         if anim.attacking {
-            state.attack_hold = ARCHER_ATTACK_HOLD;
+            state.attack_hold = ATTACK_HOLD;
         } else if state.attack_hold > 0.0 {
             state.attack_hold = (state.attack_hold - dt).max(0.0);
         }

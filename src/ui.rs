@@ -369,8 +369,8 @@ fn spawn_player_panel(parent: &mut ChildSpawnerCommands, slot: PlayerSlot) {
         });
 }
 
-/// Stats text for one of the four slot indices, matching the panel button
-/// order (0 Tower, 1 Soldier, 2 Archer, 3 Miner).
+/// Stats text for one of the five slot indices, matching the panel button
+/// order (0 Tower, 1 Soldier, 2 Archer, 3 Priest, 4 Miner).
 fn focus_stats_string(index: usize) -> String {
     match index {
         0 => format!(
@@ -386,6 +386,10 @@ fn focus_stats_string(index: usize) -> String {
             ARCHER_HP, ARCHER_DAMAGE, ARCHER_RANGE, ARCHER_COOLDOWN
         ),
         3 => format!(
+            "Priest\nHP {}  HEAL {}  RNG {:.1}  CD {:.1}s",
+            PRIEST_HP, PRIEST_HEAL, PRIEST_RANGE, PRIEST_COOLDOWN
+        ),
+        4 => format!(
             "Miner\nHP {}  CAP {}  SPD {:.1}  CD {:.1}s",
             MINER_HP, MINER_CAPACITY, MINER_SPEED, MINER_COOLDOWN
         ),

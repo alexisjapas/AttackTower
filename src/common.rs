@@ -82,16 +82,17 @@ pub const ARCHER_SHOT_YAW_OFFSET: f32 = -std::f32::consts::FRAC_PI_2;
 /// The archer plays a full "shot in the back and fall" clip on death, longer
 /// than the generic `DEATH_DURATION`; hold the corpse until it lands.
 pub const ARCHER_DEATH_DURATION: f32 = 1.8;
-/// How fast (rad/s) the archer pivots toward its target before shooting (and
-/// back toward the advance direction when it departs). The `Idle_Turn_*` clips
-/// play while this rotation is in progress.
-pub const ARCHER_TURN_SPEED: f32 = 6.0;
-/// Below this facing error (rad) the archer is considered aimed: it stops
-/// turning and may shoot / walk.
-pub const ARCHER_TURN_EPS: f32 = 0.06;
-/// How long (s) the archer keeps playing the shot animation after its target
-/// briefly leaves range, so the pose doesn't flicker to idle between volleys.
-pub const ARCHER_ATTACK_HOLD: f32 = 0.6;
+/// How fast (rad/s) an aiming kind (`uses_face_yaw`: archer + priest) pivots
+/// toward `UnitAnim.face_yaw` (its target, or back toward the advance
+/// direction when the target departs).
+pub const FACE_TURN_SPEED: f32 = 6.0;
+/// Below this facing error (rad) an aiming kind is considered aimed: it stops
+/// turning and may shoot / cast / walk.
+pub const FACE_TURN_EPS: f32 = 0.06;
+/// How long (s) any unit keeps playing its attack animation after its target
+/// briefly leaves range, so the pose doesn't flicker to idle between strikes
+/// (originally tuned for the archer's volleys).
+pub const ATTACK_HOLD: f32 = 0.6;
 /// Fraction through the `Archery_Shot` clip at which the arrow leaves the bow.
 /// The clip ends with the archer lowering the bow arm, so releasing slightly
 /// before the end (rather than at the cycle boundary) reads as the actual loose.
@@ -1099,7 +1100,7 @@ pub struct UnitAnimState {
     pub weapon_hand: Option<Entity>,
     pub current: ModelClip,
     /// Countdown that keeps the attack animation playing through brief target
-    /// losses (see `ARCHER_ATTACK_HOLD`).
+    /// losses (see `ATTACK_HOLD`).
     pub attack_hold: f32,
     /// Attack clip `seek_time()` last frame, so the archer fires one arrow per
     /// cycle the moment playback crosses `ARCHER_SHOT_RELEASE_FRACTION`.
@@ -1181,6 +1182,34 @@ impl UnitModels {
 /// Marker on a weapon scene entity parented to a unit's hand bone.
 #[derive(Component)]
 pub struct UnitWeapon;
+
+/// Tiny deterministic xorshift RNG — the project's single random source (no
+/// `rand` dependency). Seeded per call site: the scenery/mountain scatter uses
+/// fixed seeds for a reproducible layout; `units::rand_jitter` feeds it from an
+/// atomic counter for cheap spawn jitter.
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Rng(seed | 1)
+    }
+    pub fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x >> 32) as u32
+    }
+    /// Uniform in [0, 1).
+    pub fn unit(&mut self) -> f32 {
+        self.next_u32() as f32 / (u32::MAX as f32 + 1.0)
+    }
+    /// Uniform in [a, b).
+    pub fn range(&mut self, a: f32, b: f32) -> f32 {
+        a + (b - a) * self.unit()
+    }
+}
 
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {

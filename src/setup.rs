@@ -986,33 +986,12 @@ impl DesertProp {
     }
 }
 
-/// Tiny deterministic xorshift RNG so the scatter is varied but reproducible
-/// across runs (no `rand` dependency, no per-frame state).
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        (x >> 32) as u32
-    }
-    /// Uniform in [0, 1).
-    fn unit(&mut self) -> f32 {
-        self.next_u32() as f32 / (u32::MAX as f32 + 1.0)
-    }
-    /// Uniform in [a, b).
-    fn range(&mut self, a: f32, b: f32) -> f32 {
-        a + (b - a) * self.unit()
-    }
-    fn pick_prop(&mut self) -> DesertProp {
+impl DesertProp {
+    /// Weighted random pick over `ALL_DESERT_PROPS` (the shared `common::Rng`
+    /// keeps the scatter reproducible across runs — fixed seed, no `rand`).
+    fn pick(rng: &mut Rng) -> DesertProp {
         let total: f32 = ALL_DESERT_PROPS.iter().map(|k| k.weight()).sum();
-        let mut r = self.unit() * total;
+        let mut r = rng.unit() * total;
         for &k in &ALL_DESERT_PROPS {
             if r < k.weight() {
                 return k;
@@ -1040,7 +1019,7 @@ fn spawn_scenery(commands: &mut Commands, env: &EnvAssets) {
             if x.abs() < SCENERY_CLEAR_X && z > SCENERY_CLEAR_Z_MIN && z < SCENERY_CLEAR_Z_MAX {
                 continue;
             }
-            let kind = rng.pick_prop();
+            let kind = DesertProp::pick(&mut rng);
             let variant = (rng.next_u32() & 1) as usize;
             let (base_scale, base_lift) = kind.dims();
             let s = rng.range(SCENERY_SCALE_MIN, SCENERY_SCALE_MAX);

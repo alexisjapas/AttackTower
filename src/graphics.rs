@@ -3,6 +3,25 @@ use std::path::PathBuf;
 
 use crate::common::*;
 
+/// Settings UX backend: preset detection, invariants between graphics
+/// settings, persistence, and the FPS cap. The `GameSettings` resource itself
+/// is inserted by `main` (loaded + sanitized before the App is built).
+pub struct GraphicsSettingsPlugin;
+
+impl Plugin for GraphicsSettingsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<GraphicsPreset>()
+            .init_resource::<SettingsTab>()
+            .init_resource::<SettingsOrigin>()
+            .add_systems(Update, update_graphics_preset.in_set(AppSet::React))
+            .add_systems(
+                Update,
+                (enforce_settings_invariants, persist_settings).in_set(AppSet::Visual),
+            )
+            .add_systems(Update, limit_fps.in_set(AppSet::FrameLimit));
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Parameters
 // ────────────────────────────────────────────────────────────────────────────

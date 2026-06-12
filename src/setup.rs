@@ -16,6 +16,56 @@ use bevy::solari::prelude::{RaytracingMesh3d, SolariLighting};
 
 use crate::common::*;
 
+/// World authoring + renderer plumbing: startup scene/assets, the arena built
+/// on match entry, day/night cycle, and the raytracing/DLSS/colorblind
+/// appliers (feature-gated where needed).
+pub struct SetupPlugin;
+
+impl Plugin for SetupPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MatLibrary>()
+            .init_resource::<EnvAssets>()
+            .init_resource::<UnitModels>()
+            .init_resource::<TimeOfDay>()
+            .init_resource::<GameTime>()
+            .init_resource::<DlssAvailable>()
+            // init_mat_library and load_env_assets must precede setup_world
+            // (it reads both); load_unit_models is independent.
+            .add_systems(
+                Startup,
+                (
+                    (init_mat_library, load_env_assets, setup_world).chain(),
+                    load_unit_models,
+                ),
+            )
+            .add_systems(OnEnter(InMatch), spawn_arena)
+            .add_systems(
+                Update,
+                (
+                    advance_game_time.run_if(in_state(GameState::Playing)),
+                    animate_sun,
+                    build_unit_graphs,
+                )
+                    .in_set(AppSet::World),
+            )
+            .add_systems(
+                Update,
+                (update_torches, sync_raytracing_meshes).in_set(AppSet::React),
+            )
+            .add_systems(
+                Update,
+                (
+                    apply_raytracing_setting,
+                    detect_dlss_support,
+                    apply_dlss_setting,
+                    apply_colorblind_palette,
+                    debug_camera_control,
+                )
+                    .in_set(AppSet::Visual),
+            );
+    }
+}
+
 pub fn init_mat_library(
     mut lib: ResMut<MatLibrary>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -381,23 +431,19 @@ pub fn setup_world(
     spawn_scenery(&mut commands, &env);
 }
 
-/// Build bases + rocks for the active GameMode when entering Playing with an
-/// empty arena. Despawned on return-to-menu paths so the next match can be
-/// rebuilt cleanly for either 1v1 or 2v2. Guarded by `state.is_changed()` so
-/// the bases query isn't iterated every frame during a match.
+/// OnEnter(InMatch): build bases + rocks for the active GameMode. Despawned by
+/// `reset_match` on return to the menu, so the next match can be rebuilt
+/// cleanly for either 1v1 or 2v2.
 pub fn spawn_arena(
     mut commands: Commands,
     lib: Res<MatLibrary>,
     env: Res<EnvAssets>,
-    state: Res<GameState>,
     mode: Res<GameMode>,
     mut images: ResMut<Assets<Image>>,
     bases: Query<Entity, With<Base>>,
 ) {
-    if !state.is_changed() || *state != GameState::Playing {
-        return;
-    }
-    // Resume from Paused → Playing must keep the existing arena.
+    // `Paused → Settings → Paused` re-enters InMatch with the arena already
+    // built — keep it (see the `InMatch` doc in common.rs).
     if bases.iter().next().is_some() {
         return;
     }
@@ -501,10 +547,10 @@ fn spawn_sun(commands: &mut Commands) {
     ));
 }
 
-pub fn advance_game_time(time: Res<Time>, state: Res<GameState>, mut gtime: ResMut<GameTime>) {
-    if *state == GameState::Playing {
-        gtime.0 += time.delta_secs();
-    }
+/// Runs only in `GameState::Playing` (run condition), so pause/menus freeze
+/// the in-game clock.
+pub fn advance_game_time(time: Res<Time>, mut gtime: ResMut<GameTime>) {
+    gtime.0 += time.delta_secs();
 }
 
 pub fn animate_sun(

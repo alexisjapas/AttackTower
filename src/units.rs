@@ -8,6 +8,62 @@ use bevy::prelude::*;
 
 use crate::common::*;
 
+/// Unit lifecycle: spawning, the combat/AI tick, arrows, armor buffs, model
+/// animation and corpse cleanup. Combat only advances in `Playing`; leaving it
+/// freezes every unit and pauses Avian's clock so nothing drifts while the
+/// match is paused or has ended.
+pub struct UnitsPlugin;
+
+impl Plugin for UnitsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(InMatch), spawn_initial_miners)
+            .add_systems(OnEnter(GameState::Playing), unpause_physics)
+            .add_systems(OnExit(GameState::Playing), (pause_physics, freeze_units))
+            // Asset/scene binding runs in every state (instancing is async);
+            // armor only ticks while the match actually plays.
+            .add_systems(
+                Update,
+                (
+                    bind_unit_animation_player,
+                    bind_unit_weapon_hand,
+                    tick_armor_buffs.run_if(in_state(GameState::Playing)),
+                )
+                    .in_set(AppSet::World),
+            )
+            .add_systems(
+                Update,
+                (combat_tick, arrow_flight_system)
+                    .run_if(in_state(GameState::Playing))
+                    .in_set(CombatSet::Attack),
+            )
+            .add_systems(
+                Update,
+                process_damage_effects.in_set(CombatSet::ApplyDamage),
+            )
+            .add_systems(Update, animate_unit_model.in_set(CombatSet::Animate))
+            .add_systems(Update, cleanup_dead_units.in_set(CombatSet::Cleanup));
+    }
+}
+
+/// OnExit(Playing): stop every unit dead (zero velocity, idle pose). Paired
+/// with `pause_physics` so Avian can't keep nudging bodies while the game is
+/// paused/ended; `combat_tick` re-drives velocities on resume.
+pub fn freeze_units(mut units: Query<(&mut LinearVelocity, &mut UnitAnim), With<Unit>>) {
+    for (mut vel, mut anim) in &mut units {
+        vel.0 = Vec3::ZERO;
+        anim.walking = false;
+        anim.attacking = false;
+    }
+}
+
+pub fn pause_physics(mut time: ResMut<Time<Physics>>) {
+    time.pause();
+}
+
+pub fn unpause_physics(mut time: ResMut<Time<Physics>>) {
+    time.unpause();
+}
+
 pub fn spawn_soldier(
     commands: &mut Commands,
     models: &UnitModels,
@@ -51,19 +107,16 @@ pub fn spawn_miner(
     ));
 }
 
-/// Each active player slot starts with one miner so the economy works without
-/// the player having to spend gold first. Runs on the Menu→Playing transition;
-/// skips when units already exist (Paused→Playing resume).
+/// OnEnter(InMatch): each active player slot starts with one miner so the
+/// economy works without the player having to spend gold first.
 pub fn spawn_initial_miners(
-    state: Res<GameState>,
     mode: Res<GameMode>,
     mut commands: Commands,
     models: Res<UnitModels>,
     units: Query<Entity, With<Unit>>,
 ) {
-    if !state.is_changed() || *state != GameState::Playing {
-        return;
-    }
+    // `Paused → Settings → Paused` re-enters InMatch mid-match — keep the
+    // existing army (see the `InMatch` doc in common.rs).
     if units.iter().next().is_some() {
         return;
     }
@@ -286,7 +339,6 @@ impl CombatantKind {
 
 pub fn combat_tick(
     time: Res<Time>,
-    state: Res<GameState>,
     mut gold: ResMut<Gold>,
     // Reused across frames to avoid per-frame Vec allocations.
     mut combatants: Local<Vec<Combatant>>,
@@ -327,17 +379,6 @@ pub fn combat_tick(
     // read/written during the decision loop and again after damage is applied.
     mut targets: Query<&mut CombatTarget>,
 ) {
-    if *state != GameState::Playing {
-        // Freeze movement so nothing drifts while paused/ended (physics keeps
-        // stepping regardless of GameState).
-        for (_, _, _, _, _, mut lin_vel, _, _, _, mut anim, _, _, _, _) in sets.p0().iter_mut() {
-            lin_vel.0 = Vec3::ZERO;
-            anim.walking = false;
-            anim.attacking = false;
-        }
-        return;
-    }
-
     // 1. Snapshot every combatant's position.
     combatants.clear();
     damage_events.clear();
@@ -1075,15 +1116,11 @@ pub fn spawn_arrow(
 pub fn arrow_flight_system(
     mut commands: Commands,
     time: Res<Time>,
-    state: Res<GameState>,
     spatial: SpatialQuery,
     mut arrows: Query<(Entity, &mut Arrow, &mut Transform)>,
     mut healths: Query<(&mut Health, Option<&Armor>)>,
     mut combat_targets: Query<&mut CombatTarget>,
 ) {
-    if *state != GameState::Playing {
-        return;
-    }
     let dt = time.delta_secs();
     // One sphere reused to test every arrow against enemy colliders this frame.
     let hit_shape = Collider::sphere(ARROW_HIT_RADIUS);

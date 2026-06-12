@@ -6,30 +6,21 @@ Findings from the June 2026 architecture/perf review. Lot (a) — quick wins
 `expect` → `let-else` in `combat_tick`) — and lot (b) — UI/healthbar perf
 (shared `HealthBarAssets` + tint ramp, gated healthbar/sideselect/focus-visual
 writes, change-gated `MouseUi`, structural-only settings-overlay rebuild) —
-are done. Remaining lots ordered by suggested sequencing: (c) → (d), the rest
+are done. Lot (c) — Bevy `States` migration (`GameState` + `InMatch` computed
+state + `Winner` resource, overlays on `OnEnter`/`OnExit`, `run_if` gating,
+physics paused outside Playing, `reset_match` on `OnEnter(Menu)` in game.rs)
+and per-module `Plugin`s — is done too. Remaining: lot (d), then the rest
 opportunistically.
 
-## Lot (c) — architecture (cross-cutting, do before the code grows)
-
-- [ ] **Migrate `GameState` to Bevy `States`** — biggest structural lever.
-  Replaces: per-system `if *state != Playing` early-returns, the
-  `!state.is_changed()` double-press guard in every input system, the
-  poll-based overlay rebuilds (→ `OnEnter`/`OnExit`), the `spawn_arena` /
-  `spawn_initial_miners` guards, and centralizes `reset_match`. `Ended(Side)`
-  carries data → use an `Ended` state + a `Winner(Side)` resource.
-- [ ] **Per-module `Plugin`s** — everything is registered in `main.rs` with 8
-  glob imports. One plugin per module (`UnitsPlugin`, `UiPlugin`, …) owning its
-  systems/resources; `main.rs` only assembles. Removes the glob imports.
-
-## Lot (d) — file/module split (ideally alongside lot c)
+## Lot (d) — file/module split
 
 - [ ] **Split `ui.rs` (~2.9k lines)** into `ui/hud.rs`, `ui/overlays.rs`,
   `ui/input.rs`, `placement.rs`. Move `apply_graphics_settings` to
   `graphics.rs` (camera/window mutation, not UI — CLAUDE.md already describes
   graphics.rs as the settings backend) and consolidate the graphics-application
   logic currently spread over ui.rs / setup.rs (`apply_raytracing_setting`,
-  `apply_dlss_setting`) / graphics.rs. Move `reset_match` + `BattlefieldEntity`
-  to `game.rs`.
+  `apply_dlss_setting`) / graphics.rs. (`reset_match` + `BattlefieldEntity`
+  already moved to game.rs with lot c.)
 - [ ] **Split `common.rs` (~1.5k lines)** — keep the "all tunables in one
   place" promise but per-domain (`consts_units`, `consts_env`,
   `consts_weapons`, …). The ~200-line weapon-placement block is an obvious

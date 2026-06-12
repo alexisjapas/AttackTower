@@ -3,6 +3,18 @@ use bevy::prelude::*;
 
 use crate::common::*;
 
+/// Billboarded health bars over units, towers and bases, built from shared
+/// startup assets (see [`HealthBarAssets`]).
+pub struct HealthBarPlugin;
+
+impl Plugin for HealthBarPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<HealthBarAssets>()
+            .add_systems(Startup, init_health_bar_assets)
+            .add_systems(Update, update_health_bars.in_set(AppSet::Visual));
+    }
+}
+
 const BAR_WIDTH: f32 = 0.9;
 const BAR_HEIGHT: f32 = 0.10;
 const BAR_DEPTH: f32 = 0.02;

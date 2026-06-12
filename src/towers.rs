@@ -4,6 +4,24 @@ use bevy::prelude::*;
 use crate::common::*;
 use crate::units::spawn_arrow;
 
+/// Tower aiming/firing and the collapse-on-death animation. Construction
+/// (`spawn_tower`) is driven by the placement flow in `ui.rs`.
+pub struct TowersPlugin;
+
+impl Plugin for TowersPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            (
+                tower_attack_tick
+                    .run_if(in_state(GameState::Playing))
+                    .in_set(CombatSet::Attack),
+                cleanup_dead_towers.in_set(CombatSet::Cleanup),
+            ),
+        );
+    }
+}
+
 pub fn spawn_tower(
     commands: &mut Commands,
     lib: &MatLibrary,
@@ -55,7 +73,6 @@ pub fn spawn_tower(
 pub fn tower_attack_tick(
     mut commands: Commands,
     time: Res<Time>,
-    state: Res<GameState>,
     lib: Res<MatLibrary>,
     mut towers: Query<
         (Entity, &Side, &Transform, &Damage, &mut AttackCooldown),
@@ -64,10 +81,6 @@ pub fn tower_attack_tick(
     units: Query<(&Side, &Transform), (With<Unit>, Without<Tower>)>,
     bases: Query<(&Side, &Transform), (With<Base>, Without<Tower>, Without<BaseDestroyed>)>,
 ) {
-    if *state != GameState::Playing {
-        return;
-    }
-
     for (tower_entity, side, transform, damage, mut cooldown) in towers.iter_mut() {
         let pos = transform.translation;
         // Aim at the nearest enemy's position; the arrow then damages whatever

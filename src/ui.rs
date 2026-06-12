@@ -22,6 +22,90 @@ use crate::graphics::{
 use crate::towers::{collides_with_existing_tower, is_valid_tower_zone, spawn_tower};
 use crate::units::{spawn_archer, spawn_miner, spawn_priest, spawn_soldier};
 
+/// Every Bevy UI node (HUD + state overlays) and the per-state input systems.
+/// Overlays are spawned/torn down by `OnEnter`/`OnExit` transitions; input
+/// systems are gated by `run_if(in_state(..))`, and since `NextState` applies
+/// between frames, the system of the new state never sees the press that
+/// caused the transition.
+pub struct UiPlugin;
+
+impl Plugin for UiPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MouseUi>()
+            .init_resource::<MenuFocus>()
+            .init_resource::<PlacementMode>()
+            .init_resource::<PlayerControllers>()
+            .init_resource::<PlayerNations>()
+            .add_systems(Startup, setup_ui)
+            // Input: read_mouse_ui first (the others consume its snapshot);
+            // the per-state systems are mutually exclusive via run_if but stay
+            // chained so the mouse snapshot is always fresh.
+            .add_systems(
+                Update,
+                (
+                    read_mouse_ui,
+                    menu_input_system.run_if(in_state(GameState::Menu)),
+                    endgame_input_system.run_if(in_state(GameState::Ended)),
+                    settings_input_system.run_if(in_state(GameState::Settings)),
+                    pause_input_system.run_if(in_state(GameState::Paused)),
+                    sideselect_input_system.run_if(in_state(GameState::SideSelect)),
+                    gameplay_input_system.run_if(in_state(GameState::Playing)),
+                    placement_system.run_if(in_state(GameState::Playing)),
+                )
+                    .chain()
+                    .in_set(AppSet::Input),
+            )
+            // Overlays: built on state entry, torn down on exit. The pause and
+            // settings overlays keep an Update refresher for in-state rebuilds
+            // (pad disconnect warning / structural slot changes).
+            .add_systems(OnEnter(GameState::Menu), spawn_menu_overlay)
+            .add_systems(OnExit(GameState::Menu), despawn_all::<MenuOverlay>)
+            .add_systems(OnExit(GameState::Settings), despawn_all::<SettingsOverlay>)
+            .add_systems(OnEnter(GameState::Paused), spawn_pause_overlay)
+            .add_systems(OnExit(GameState::Paused), despawn_all::<PauseOverlay>)
+            .add_systems(OnEnter(GameState::SideSelect), spawn_sideselect_overlay)
+            .add_systems(
+                OnExit(GameState::SideSelect),
+                (despawn_all::<SideSelectOverlay>, clear_seat_selections),
+            )
+            .add_systems(OnEnter(GameState::Ended), spawn_endgame_overlay)
+            .add_systems(OnExit(GameState::Ended), despawn_all::<EndgameOverlay>)
+            // Match lifecycle: HUD, per-pad focus and tower placement follow
+            // the InMatch computed state (Playing | Paused).
+            .add_systems(OnEnter(InMatch), (show_game_hud, grant_player_focus))
+            .add_systems(
+                OnExit(InMatch),
+                (hide_game_hud, revoke_player_focus, clear_placement),
+            )
+            .add_systems(
+                Update,
+                (
+                    detect_pad_disconnect.run_if(in_state(InMatch)),
+                    refresh_pause_overlay.run_if(in_state(GameState::Paused)),
+                    update_settings_overlay.run_if(in_state(GameState::Settings)),
+                )
+                    .in_set(AppSet::React),
+            )
+            .add_systems(
+                Update,
+                (
+                    update_sideselect_cards.run_if(in_state(GameState::SideSelect)),
+                    (update_settings_toggle_texts, update_settings_description)
+                        .run_if(in_state(GameState::Settings)),
+                    scroll_focused_into_view.run_if(in_state(GameState::Settings)),
+                    apply_menu_focus_visual,
+                    apply_player_focus_visual,
+                    apply_graphics_settings,
+                    update_gold_text,
+                    update_base_hp_text,
+                    update_focus_stats_text,
+                    update_clock_text,
+                )
+                    .in_set(AppSet::Visual),
+            );
+    }
+}
+
 #[derive(Component, Clone, Copy)]
 pub struct PanelSlot {
     pub slot: PlayerSlot,
@@ -291,23 +375,26 @@ fn spawn_player_corner(commands: &mut Commands, slot: PlayerSlot, bg: Color, bor
     });
 }
 
-pub fn update_game_hud_visibility(
-    state: Res<GameState>,
+/// OnEnter(InMatch): reveal the HUD. The top corners only exist in 2v2 (the
+/// mode is final by the time a match starts).
+pub fn show_game_hud(
     mode: Res<GameMode>,
     mut hud: Query<(&mut Visibility, Option<&TopPlayerHud>), With<GameHud>>,
 ) {
-    if !state.is_changed() && !mode.is_changed() {
-        return;
-    }
-    let active = matches!(*state, GameState::Playing | GameState::Paused);
     let two_v_two = *mode == GameMode::TwoVsTwo;
     for (mut vis, top) in &mut hud {
-        let show = active && (top.is_none() || two_v_two);
-        *vis = if show {
+        *vis = if top.is_none() || two_v_two {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// OnExit(InMatch): hide the whole HUD (menus, settings and endgame screens).
+pub fn hide_game_hud(mut hud: Query<&mut Visibility, With<GameHud>>) {
+    for mut vis in &mut hud {
+        *vis = Visibility::Hidden;
     }
 }
 
@@ -503,21 +590,8 @@ pub fn update_base_hp_text(
 // Overlays
 // ────────────────────────────────────────────────────────────────────────────
 
-pub fn update_menu_overlay(
-    mut commands: Commands,
-    state: Res<GameState>,
-    mut menu_focus: ResMut<MenuFocus>,
-    overlay: Query<Entity, With<MenuOverlay>>,
-) {
-    if !state.is_changed() {
-        return;
-    }
-    for entity in &overlay {
-        commands.entity(entity).despawn();
-    }
-    if *state != GameState::Menu {
-        return;
-    }
+/// OnEnter(Menu): build the main menu (torn down by `despawn_all` on exit).
+pub fn spawn_menu_overlay(mut commands: Commands, mut menu_focus: ResMut<MenuFocus>) {
     menu_focus.index = 0;
     commands
         .spawn((
@@ -554,9 +628,15 @@ pub fn update_menu_overlay(
         });
 }
 
+/// Runs only in Settings (run condition); teardown on exit is `despawn_all`.
+/// Builds on entry (`State` change) and rebuilds in place on tab change or a
+/// STRUCTURAL settings change (a sub-parameter row appearing/disappearing).
+/// Plain toggles are already reflected in place by
+/// `update_settings_toggle_texts` / `update_settings_description`, so tearing
+/// the whole tree down for them would be pure churn.
 pub fn update_settings_overlay(
     mut commands: Commands,
-    state: Res<GameState>,
+    state: Res<State<GameState>>,
     settings: Res<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
     rt_avail: Res<RaytracingAvailable>,
@@ -564,22 +644,9 @@ pub fn update_settings_overlay(
     tab: Res<SettingsTab>,
     mut menu_focus: ResMut<MenuFocus>,
     overlay: Query<Entity, With<SettingsOverlay>>,
-    // Slot list of the last build, to rebuild only on STRUCTURAL settings
-    // changes (a sub-parameter row appearing/disappearing). Plain toggles are
-    // already reflected in place by `update_settings_toggle_texts` /
-    // `update_settings_description`, so tearing the whole tree down for them
-    // was pure churn.
+    // Slot list of the last build, compared for the structural trigger.
     mut last_slots: Local<Vec<MenuSlot>>,
 ) {
-    let in_settings = *state == GameState::Settings;
-    if !in_settings {
-        if state.is_changed() {
-            for entity in &overlay {
-                commands.entity(entity).despawn();
-            }
-        }
-        return;
-    }
     let slots = tab_slots(*tab, &settings);
     let rebuild = state.is_changed() || tab.is_changed() || *last_slots != slots;
     if !rebuild {
@@ -904,7 +971,6 @@ fn describe_for_layout(
 }
 
 pub fn update_settings_description(
-    state: Res<GameState>,
     focus: Res<MenuFocus>,
     preset: Res<GraphicsPreset>,
     tab: Res<SettingsTab>,
@@ -912,15 +978,9 @@ pub fn update_settings_description(
     mut q: Query<(&DescField, &mut Text, &mut TextColor)>,
     mut rows: Query<&mut Node, With<ImpactRowNode>>,
 ) {
-    if *state != GameState::Settings {
-        return;
-    }
-    if !focus.is_changed()
-        && !preset.is_changed()
-        && !state.is_changed()
-        && !tab.is_changed()
-        && !settings.is_changed()
-    {
+    // The card spawns populated for focus index 0 and entering Settings resets
+    // MenuFocus (a change), so these triggers also cover the entry frame.
+    if !focus.is_changed() && !preset.is_changed() && !tab.is_changed() && !settings.is_changed() {
         return;
     }
     let (title, functional, technical, impacts) =
@@ -954,16 +1014,12 @@ pub fn update_settings_description(
 /// `max_height` + `Overflow::scroll_y`, so this is what makes D-pad navigation
 /// past the visible area actually scroll into view on small screens.
 pub fn scroll_focused_into_view(
-    state: Res<GameState>,
     focus: Res<MenuFocus>,
     tab: Res<SettingsTab>,
     settings: Res<GameSettings>,
     mut columns: Query<(&ComputedNode, &Children, &mut ScrollPosition), With<SettingsMenuColumn>>,
     buttons: Query<(&ComputedNode, &MenuButton)>,
 ) {
-    if *state != GameState::Settings {
-        return;
-    }
     if !focus.is_changed() && !tab.is_changed() && !settings.is_changed() {
         return;
     }
@@ -1045,28 +1101,35 @@ fn spawn_toggle_button<M: Component>(
         ));
 }
 
-pub fn update_pause_overlay(
+/// OnEnter(Paused): build the pause overlay (torn down by `despawn_all`).
+pub fn spawn_pause_overlay(
     mut commands: Commands,
-    state: Res<GameState>,
     mode: Res<GameMode>,
     players: Res<PlayerControllers>,
     mut menu_focus: ResMut<MenuFocus>,
+) {
+    menu_focus.index = 0;
+    build_pause_overlay(&mut commands, &mode, &players);
+}
+
+/// While paused: rebuild the overlay when the controller set changes, so a
+/// pad disconnect mid-pause refreshes the "Pad disconnected" warning lines.
+pub fn refresh_pause_overlay(
+    mut commands: Commands,
+    mode: Res<GameMode>,
+    players: Res<PlayerControllers>,
     overlay: Query<Entity, With<PauseOverlay>>,
 ) {
-    // Also rebuild on PlayerControllers change so a pad disconnect during
-    // pause refreshes the "Pad X disconnected" warning.
-    if !state.is_changed() && !players.is_changed() {
+    if !players.is_changed() {
         return;
     }
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
-    if *state != GameState::Paused {
-        return;
-    }
-    if state.is_changed() {
-        menu_focus.index = 0;
-    }
+    build_pause_overlay(&mut commands, &mode, &players);
+}
+
+fn build_pause_overlay(commands: &mut Commands, mode: &GameMode, players: &PlayerControllers) {
     let missing: Vec<PlayerSlot> = mode
         .active_slots()
         .iter()
@@ -1115,27 +1178,13 @@ pub fn update_pause_overlay(
 }
 
 pub fn pause_input_system(
-    mut commands: Commands,
-    mut state: ResMut<GameState>,
+    mut next: ResMut<NextState<GameState>>,
     mut menu_focus: ResMut<MenuFocus>,
     mut origin: ResMut<SettingsOrigin>,
-    mut gold: ResMut<Gold>,
-    mut placement: ResMut<PlacementMode>,
-    mut players: ResMut<PlayerControllers>,
-    mut gtime: ResMut<GameTime>,
-    mut tod: ResMut<TimeOfDay>,
-    battlefield: Query<Entity, BattlefieldEntity>,
     gamepads: Query<&Gamepad>,
     mouse: Res<MouseUi>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
-    if *state != GameState::Paused {
-        return;
-    }
-    if state.is_changed() {
-        return;
-    }
-
     const SLOTS: usize = 3;
     if menu_focus.index >= SLOTS {
         menu_focus.index = 0;
@@ -1178,70 +1227,22 @@ pub fn pause_input_system(
     }
 
     if resume {
-        *state = GameState::Playing;
+        next.set(GameState::Playing);
         return;
     }
 
     if activate {
         match menu_focus.index {
-            0 => *state = GameState::Playing,
+            0 => next.set(GameState::Playing),
             1 => {
                 *origin = SettingsOrigin::Paused;
-                *state = GameState::Settings;
+                next.set(GameState::Settings);
             }
-            2 => {
-                reset_match(
-                    &mut commands,
-                    &battlefield,
-                    &mut gold,
-                    &mut placement,
-                    &mut players,
-                    &mut gtime,
-                    &mut tod,
-                );
-                *state = GameState::Menu;
-            }
+            // Match teardown happens in game.rs::reset_match, OnEnter(Menu).
+            2 => next.set(GameState::Menu),
             _ => {}
         }
     }
-}
-
-/// Query filter for everything that belongs to a live match and must be wiped
-/// on reset (bases and rocks included, since GameMode may change before the next
-/// match). Bundled into one filter so the reset systems stay under Bevy's
-/// system-parameter count limit.
-type BattlefieldEntity = Or<(
-    With<Base>,
-    With<Rock>,
-    With<Unit>,
-    With<Arrow>,
-    With<Tower>,
-    With<TowerGhost>,
-)>;
-
-/// Wipe a finished/abandoned match: despawn every battlefield entity, and reset
-/// gold, placement, player→pad mapping and the day/night clock. The arena is
-/// rebuilt by `spawn_arena` on the next `Playing` transition. Used by both the
-/// pause "Main menu" action and the endgame "Main menu" action.
-fn reset_match(
-    commands: &mut Commands,
-    battlefield: &Query<Entity, BattlefieldEntity>,
-    gold: &mut Gold,
-    placement: &mut PlacementMode,
-    players: &mut PlayerControllers,
-    gtime: &mut GameTime,
-    tod: &mut TimeOfDay,
-) {
-    for e in battlefield {
-        commands.entity(e).despawn();
-    }
-    *gold = Gold::default();
-    *placement = PlacementMode::default();
-    *players = PlayerControllers::default();
-    // Restart the day/night clock so the new match opens at the same morning,
-    // not wherever the abandoned one left off.
-    *gtime = GameTime::default();
-    *tod = TimeOfDay::default();
 }
 
 pub fn update_settings_toggle_texts(
@@ -1268,73 +1269,59 @@ pub fn update_settings_toggle_texts(
     }
 }
 
-pub fn update_endgame_overlay(
+/// OnEnter(Ended): build the victory screen from the [`Winner`] resource (set
+/// by `check_winner` right before the transition).
+pub fn spawn_endgame_overlay(
     mut commands: Commands,
-    state: Res<GameState>,
+    winner: Res<Winner>,
     mut menu_focus: ResMut<MenuFocus>,
-    overlay: Query<Entity, With<EndgameOverlay>>,
 ) {
-    if !state.is_changed() {
+    let Some(winner) = winner.0 else {
         return;
-    }
-    for entity in &overlay {
-        commands.entity(entity).despawn();
-    }
-    if let GameState::Ended(winner) = *state {
-        menu_focus.index = 0;
-        commands
-            .spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    top: Val::Px(0.0),
-                    left: Val::Px(0.0),
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
-                    row_gap: Val::Px(14.0),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
-                EndgameOverlay,
-            ))
-            .with_children(|parent| {
-                parent.spawn((
-                    Text::new(format!("Player {} wins", winner.label())),
-                    TextFont::from_font_size(40.0),
-                    TextColor(winner.color()),
-                ));
-                spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
-                parent.spawn((
-                    Text::new("A: back to menu"),
-                    TextFont::from_font_size(16.0),
-                    TextColor(Color::srgb(0.8, 0.8, 0.85)),
-                ));
-            });
-    }
+    };
+    menu_focus.index = 0;
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(14.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            EndgameOverlay,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(format!("Player {} wins", winner.label())),
+                TextFont::from_font_size(40.0),
+                TextColor(winner.color()),
+            ));
+            spawn_menu_button(parent, 0, "Main menu", Color::WHITE);
+            parent.spawn((
+                Text::new("A: back to menu"),
+                TextFont::from_font_size(16.0),
+                TextColor(Color::srgb(0.8, 0.8, 0.85)),
+            ));
+        });
 }
 
-pub fn update_sideselect_overlay(
-    mut commands: Commands,
-    state: Res<GameState>,
-    mode: Res<GameMode>,
-    overlay: Query<Entity, With<SideSelectOverlay>>,
-    seats: Query<Entity, With<SeatSelection>>,
-) {
-    if !state.is_changed() {
-        return;
-    }
-    for entity in &overlay {
-        commands.entity(entity).despawn();
-    }
-    // Clear any leftover seat selections when entering/leaving SideSelect.
+/// OnExit(SideSelect): drop every pad's in-progress seat choice so the next
+/// visit starts from a clean slate.
+pub fn clear_seat_selections(mut commands: Commands, seats: Query<Entity, With<SeatSelection>>) {
     for entity in &seats {
         commands.entity(entity).remove::<SeatSelection>();
     }
-    if *state != GameState::SideSelect {
-        return;
-    }
+}
+
+/// OnEnter(SideSelect): build the seat-pick screen for the chosen GameMode.
+pub fn spawn_sideselect_overlay(mut commands: Commands, mode: Res<GameMode>) {
     commands
         .spawn((
             Node {
@@ -1493,13 +1480,13 @@ fn spawn_menu_button(parent: &mut ChildSpawnerCommands, index: usize, label: &st
 // ────────────────────────────────────────────────────────────────────────────
 
 pub fn apply_menu_focus_visual(
-    state: Res<GameState>,
+    state: Res<State<GameState>>,
     focus: Res<MenuFocus>,
     mut buttons: Query<(&MenuButton, &mut BackgroundColor)>,
 ) {
     let active = matches!(
-        *state,
-        GameState::Menu | GameState::Settings | GameState::Paused | GameState::Ended(_)
+        *state.get(),
+        GameState::Menu | GameState::Settings | GameState::Paused | GameState::Ended
     );
     for (btn, mut bg) in &mut buttons {
         let target = if active && btn.0 == focus.index {
@@ -1516,7 +1503,7 @@ pub fn apply_menu_focus_visual(
 }
 
 pub fn apply_player_focus_visual(
-    state: Res<GameState>,
+    state: Res<State<GameState>>,
     focuses: Query<&PlayerFocus>,
     mouse: Res<MouseUi>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
@@ -1532,7 +1519,7 @@ pub fn apply_player_focus_visual(
     >,
     mut corners: Query<(&PlayerCorner, &mut BackgroundColor, &mut BorderColor), Without<PanelSlot>>,
 ) {
-    let active = matches!(*state, GameState::Playing | GameState::Paused);
+    let active = matches!(*state.get(), GameState::Playing | GameState::Paused);
     // Outside a match the HUD is hidden, so repainting it is pure waste; one
     // extra pass on the transition frame leaves everything in the idle state.
     if !active && !state.is_changed() {
@@ -1608,20 +1595,16 @@ fn pad_short_name(name: &str) -> String {
 }
 
 pub fn update_sideselect_cards(
-    state: Res<GameState>,
     changed_seats: Query<(), Changed<SeatSelection>>,
     mut removed_seats: RemovedComponents<SeatSelection>,
     seats: Query<(&SeatSelection, Option<&Name>)>,
     mut texts: Query<(&SideCardLine, &mut Text, &mut TextColor)>,
     mut cards: Query<(&SideCard, &mut BackgroundColor, &mut BorderColor)>,
 ) {
-    if *state != GameState::SideSelect {
-        return;
-    }
     // Repaint only when a seat selection actually moved (insert/mutation/
-    // removal) or on the entry frame — every `Text` write below re-uploads
-    // glyphs, so running unconditionally churned the UI every frame.
-    if !state.is_changed() && changed_seats.is_empty() && removed_seats.read().next().is_none() {
+    // removal) — every `Text` write below re-uploads glyphs. The cards spawn
+    // with correct "no seats" defaults, so the entry frame needs no repaint.
+    if changed_seats.is_empty() && removed_seats.read().next().is_none() {
         return;
     }
 
@@ -1724,15 +1707,14 @@ pub fn update_sideselect_cards(
 /// entity disappears from the `Gamepad` query). Without this the abandoned
 /// player would silently freeze in place while the other plays on, with no
 /// way to recover except for the surviving pad to open the pause menu.
+/// Runs only while `InMatch` (run condition).
 pub fn detect_pad_disconnect(
-    mut state: ResMut<GameState>,
+    state: Res<State<GameState>>,
+    mut next: ResMut<NextState<GameState>>,
     mut players: ResMut<PlayerControllers>,
     mode: Res<GameMode>,
     gamepads: Query<Entity, With<Gamepad>>,
 ) {
-    if !matches!(*state, GameState::Playing | GameState::Paused) {
-        return;
-    }
     let mut any_lost = false;
     for &slot in mode.active_slots() {
         if let Some(entity) = players.get(slot)
@@ -1742,30 +1724,22 @@ pub fn detect_pad_disconnect(
             any_lost = true;
         }
     }
-    if any_lost && *state == GameState::Playing {
-        *state = GameState::Paused;
+    if any_lost && *state.get() == GameState::Playing {
+        next.set(GameState::Paused);
     }
 }
 
-pub fn manage_input_components(
+/// OnEnter(InMatch): give each active player's pad its HUD focus cursor.
+pub fn grant_player_focus(
     mut commands: Commands,
-    state: Res<GameState>,
     mode: Res<GameMode>,
     players: Res<PlayerControllers>,
     gamepads: Query<&Gamepad>,
     focuses: Query<Entity, With<PlayerFocus>>,
 ) {
-    if !state.is_changed() {
-        return;
-    }
-    let active = matches!(*state, GameState::Playing | GameState::Paused);
-    if !active {
-        for entity in &focuses {
-            commands.entity(entity).remove::<PlayerFocus>();
-        }
-        return;
-    }
-    // Keep focus if already set (e.g. Pause→Playing).
+    // `Paused → Settings → Paused` re-enters InMatch: keep the existing focus
+    // (see the `InMatch` doc in common.rs)... except it was revoked on exit,
+    // so this guard only matters if that ever changes. Cheap either way.
     if focuses.iter().next().is_some() {
         return;
     }
@@ -1778,36 +1752,27 @@ pub fn manage_input_components(
     }
 }
 
+/// OnExit(InMatch): drop every pad's HUD focus cursor.
+pub fn revoke_player_focus(mut commands: Commands, focuses: Query<Entity, With<PlayerFocus>>) {
+    for entity in &focuses {
+        commands.entity(entity).remove::<PlayerFocus>();
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Input systems (gamepad-only)
 // ────────────────────────────────────────────────────────────────────────────
 
 pub fn menu_input_system(
-    mut commands: Commands,
-    mut state: ResMut<GameState>,
+    mut next: ResMut<NextState<GameState>>,
     mut mode: ResMut<GameMode>,
     mut menu_focus: ResMut<MenuFocus>,
     mut origin: ResMut<SettingsOrigin>,
-    mut gold: ResMut<Gold>,
-    mut placement: ResMut<PlacementMode>,
-    mut players: ResMut<PlayerControllers>,
-    mut gtime: ResMut<GameTime>,
-    mut tod: ResMut<TimeOfDay>,
-    battlefield: Query<Entity, BattlefieldEntity>,
     mut exit: MessageWriter<AppExit>,
     gamepads: Query<&Gamepad>,
     mouse: Res<MouseUi>,
 ) {
-    let in_menu = *state == GameState::Menu;
-    let in_endgame = matches!(*state, GameState::Ended(_));
-    if !in_menu && !in_endgame {
-        return;
-    }
-    if state.is_changed() {
-        return;
-    }
-
-    let slot_count = if in_menu { 4 } else { 1 };
+    const SLOTS: usize = 4;
 
     let mut up = false;
     let mut down = false;
@@ -1825,21 +1790,21 @@ pub fn menu_input_system(
         }
     }
 
-    if menu_focus.index >= slot_count {
+    if menu_focus.index >= SLOTS {
         menu_focus.index = 0;
     }
     if up {
-        menu_focus.index = (menu_focus.index + slot_count - 1) % slot_count;
+        menu_focus.index = (menu_focus.index + SLOTS - 1) % SLOTS;
     }
     if down {
-        menu_focus.index = (menu_focus.index + 1) % slot_count;
+        menu_focus.index = (menu_focus.index + 1) % SLOTS;
     }
 
     // Mouse: hover moves focus, left-click activates the hovered item.
-    if let Some(i) = mouse.menu_hover.filter(|i| *i < slot_count) {
+    if let Some(i) = mouse.menu_hover.filter(|i| *i < SLOTS) {
         menu_focus.index = i;
     }
-    if let Some(i) = mouse.menu_click.filter(|i| *i < slot_count) {
+    if let Some(i) = mouse.menu_click.filter(|i| *i < SLOTS) {
         menu_focus.index = i;
         activate = true;
     }
@@ -1848,66 +1813,64 @@ pub fn menu_input_system(
         return;
     }
 
-    if in_menu {
-        match menu_focus.index {
-            0 if pad_count > 0 => {
-                *mode = GameMode::OneVsOne;
-                *state = GameState::SideSelect;
-            }
-            1 if pad_count > 0 => {
-                *mode = GameMode::TwoVsTwo;
-                *state = GameState::SideSelect;
-            }
-            // Debug launch: with no pad connected only the mouse can have fired
-            // this activation, and SideSelect (which assigns pads to seats) would
-            // be a dead end. Jump straight into a controller-less match so the
-            // HUD buttons can be driven by mouse for debugging.
-            0 => {
-                *mode = GameMode::OneVsOne;
-                *state = GameState::Playing;
-            }
-            1 => {
-                *mode = GameMode::TwoVsTwo;
-                *state = GameState::Playing;
-            }
-            2 => {
-                *origin = SettingsOrigin::Menu;
-                *state = GameState::Settings;
-            }
-            3 => {
-                exit.write(AppExit::Success);
-            }
-            _ => {}
+    match menu_focus.index {
+        0 if pad_count > 0 => {
+            *mode = GameMode::OneVsOne;
+            next.set(GameState::SideSelect);
         }
-    } else if in_endgame {
-        reset_match(
-            &mut commands,
-            &battlefield,
-            &mut gold,
-            &mut placement,
-            &mut players,
-            &mut gtime,
-            &mut tod,
-        );
-        *state = GameState::Menu;
+        1 if pad_count > 0 => {
+            *mode = GameMode::TwoVsTwo;
+            next.set(GameState::SideSelect);
+        }
+        // Debug launch: with no pad connected only the mouse can have fired
+        // this activation, and SideSelect (which assigns pads to seats) would
+        // be a dead end. Jump straight into a controller-less match so the
+        // HUD buttons can be driven by mouse for debugging.
+        0 => {
+            *mode = GameMode::OneVsOne;
+            next.set(GameState::Playing);
+        }
+        1 => {
+            *mode = GameMode::TwoVsTwo;
+            next.set(GameState::Playing);
+        }
+        2 => {
+            *origin = SettingsOrigin::Menu;
+            next.set(GameState::Settings);
+        }
+        3 => {
+            exit.write(AppExit::Success);
+        }
+        _ => {}
+    }
+}
+
+/// Victory screen input: the single "Main menu" button. The match teardown
+/// itself happens in `game.rs::reset_match` on entering Menu.
+pub fn endgame_input_system(
+    mut next: ResMut<NextState<GameState>>,
+    gamepads: Query<&Gamepad>,
+    mouse: Res<MouseUi>,
+) {
+    let mut activate = mouse.menu_click == Some(0);
+    for pad in &gamepads {
+        if pad.just_pressed(GamepadButton::South) || pad.just_pressed(GamepadButton::Start) {
+            activate = true;
+        }
+    }
+    if activate {
+        next.set(GameState::Menu);
     }
 }
 
 pub fn sideselect_input_system(
     mut commands: Commands,
-    mut state: ResMut<GameState>,
+    mut next: ResMut<NextState<GameState>>,
     mode: Res<GameMode>,
     mut players: ResMut<PlayerControllers>,
     mut nations: ResMut<PlayerNations>,
     mut seats: Query<(Entity, &Gamepad, Option<&mut SeatSelection>)>,
 ) {
-    if *state != GameState::SideSelect {
-        return;
-    }
-    if state.is_changed() {
-        return;
-    }
-
     let two_v_two = *mode == GameMode::TwoVsTwo;
     let nation_count = Nation::ALL.len();
 
@@ -2050,7 +2013,7 @@ pub fn sideselect_input_system(
             }
             *players = next_controllers;
             *nations = next_nations;
-            *state = GameState::Playing;
+            next.set(GameState::Playing);
         }
     }
 }
@@ -2135,7 +2098,7 @@ fn next_visible_slot(start: usize, dir: i32, hidden: &impl Fn(usize) -> bool) ->
 
 pub fn gameplay_input_system(
     mut commands: Commands,
-    mut state: ResMut<GameState>,
+    mut next: ResMut<NextState<GameState>>,
     mode: Res<GameMode>,
     models: Res<UnitModels>,
     mut gold: ResMut<Gold>,
@@ -2147,13 +2110,6 @@ pub fn gameplay_input_system(
     mouse: Res<MouseUi>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
-    if *state != GameState::Playing {
-        return;
-    }
-    if state.is_changed() {
-        return;
-    }
-
     let mut alive = [false; 4];
     for slot in &alive_bases {
         alive[slot.index()] = true;
@@ -2252,14 +2208,27 @@ pub fn gameplay_input_system(
     }
 
     if pause {
-        *state = GameState::Paused;
+        next.set(GameState::Paused);
+    }
+}
+
+/// OnExit(InMatch): cancel every in-flight tower placement and its preview
+/// ghost. While merely paused (still InMatch) the ghosts stay visible in
+/// place — `placement_system` simply doesn't run outside Playing.
+pub fn clear_placement(
+    mut commands: Commands,
+    mut placement: ResMut<PlacementMode>,
+    ghosts: Query<Entity, With<TowerGhost>>,
+) {
+    *placement = PlacementMode::default();
+    for e in &ghosts {
+        commands.entity(e).despawn();
     }
 }
 
 pub fn placement_system(
     mut commands: Commands,
     time: Res<Time>,
-    state: Res<GameState>,
     mode: Res<GameMode>,
     lib: Res<MatLibrary>,
     env: Res<EnvAssets>,
@@ -2274,19 +2243,6 @@ pub fn placement_system(
     windows: Query<&Window>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
 ) {
-    // While paused, keep the ghosts visible in place but skip input handling.
-    if *state == GameState::Paused {
-        return;
-    }
-    // Outside Playing: wipe everything.
-    if *state != GameState::Playing {
-        *placement = PlacementMode::default();
-        for (e, _) in &ghosts {
-            commands.entity(e).despawn();
-        }
-        return;
-    }
-
     let mut alive = [false; 4];
     for slot in &alive_bases {
         alive[slot.index()] = true;
@@ -2520,7 +2476,7 @@ fn default_placement_pos(slot: PlayerSlot, mode: GameMode) -> Vec3 {
 }
 
 pub fn settings_input_system(
-    mut state: ResMut<GameState>,
+    mut next: ResMut<NextState<GameState>>,
     mut settings: ResMut<GameSettings>,
     dlss_avail: Res<DlssAvailable>,
     rt_avail: Res<RaytracingAvailable>,
@@ -2531,13 +2487,6 @@ pub fn settings_input_system(
     gamepads: Query<&Gamepad>,
     mouse: Res<MouseUi>,
 ) {
-    if *state != GameState::Settings {
-        return;
-    }
-    if state.is_changed() {
-        return;
-    }
-
     let slots = slot_count(*tab, &settings);
     if menu_focus.index >= slots {
         menu_focus.index = 0;
@@ -2599,7 +2548,7 @@ pub fn settings_input_system(
     }
 
     if back {
-        *state = origin.to_state();
+        next.set(origin.to_state());
         return;
     }
 
@@ -2654,7 +2603,7 @@ pub fn settings_input_system(
             ParamId::Shadows => settings.shadows = !settings.shadows,
             ParamId::MotionBlur => settings.motion_blur = !settings.motion_blur,
         },
-        Some(MenuSlot::Back) | None => *state = origin.to_state(),
+        Some(MenuSlot::Back) | None => next.set(origin.to_state()),
     }
 }
 

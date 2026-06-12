@@ -1211,7 +1211,14 @@ impl Rng {
     }
 }
 
-#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+/// Top-level app state, driven by Bevy `States` (`init_state` in `GamePlugin`).
+/// Transitions are requested through `NextState<GameState>` and applied by the
+/// `StateTransition` schedule between frames, so the input system of the new
+/// state never sees the button press that caused the transition (this replaced
+/// the old per-system `!state.is_changed()` guards). The winning side of a
+/// finished match lives in the separate [`Winner`] resource, set by
+/// `check_winner` right before entering `Ended`.
+#[derive(States, Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameState {
     #[default]
     Menu,
@@ -1219,7 +1226,66 @@ pub enum GameState {
     SideSelect,
     Playing,
     Paused,
-    Ended(Side),
+    Ended,
+}
+
+/// Computed state active while a match exists on the battlefield: `Playing` or
+/// `Paused` — NOT `Ended`, where the battlefield lingers behind the endgame
+/// overlay until the player returns to the menu. `OnEnter` builds the arena,
+/// HUD and player focus; `OnExit` tears down focus and tower placement.
+///
+/// CAREFUL: `Paused → Settings → Paused` leaves and re-enters this state, so
+/// every `OnEnter(InMatch)` system must tolerate an already-built match
+/// (`spawn_arena`, `spawn_initial_miners` and `grant_player_focus` keep
+/// existence guards for exactly this).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct InMatch;
+
+impl ComputedStates for InMatch {
+    type SourceStates = GameState;
+
+    fn compute(source: GameState) -> Option<InMatch> {
+        matches!(source, GameState::Playing | GameState::Paused).then_some(InMatch)
+    }
+}
+
+/// Side that won the last finished match (`None` while no match has ended).
+/// Set by `check_winner` before the `Ended` transition, read by the endgame
+/// overlay, cleared by `reset_match`.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct Winner(pub Option<Side>);
+
+/// Despawn every entity carrying `T`. Shared `OnExit` teardown for the state
+/// overlays (despawn is recursive over Bevy 0.18 relationships, so children go
+/// with the root).
+pub fn despawn_all<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+/// Top-level phases of the `Update` schedule, chained in `main.rs`. Every
+/// plugin hangs its systems on one of these so cross-module ordering lives in
+/// a single place.
+#[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug, Copy)]
+pub enum AppSet {
+    Input,
+    World,
+    React,
+    Visual,
+    FrameLimit,
+}
+
+/// Phases of the per-frame gameplay tick inside [`AppSet::World`], chained in
+/// `main.rs` (damage → death state → animation → despawn must propagate within
+/// one frame). Lets the units and towers plugins join the same chain without
+/// referencing each other's systems.
+#[derive(SystemSet, Hash, Eq, PartialEq, Clone, Debug, Copy)]
+pub enum CombatSet {
+    Attack,
+    ApplyDamage,
+    Animate,
+    Cleanup,
 }
 
 #[derive(Resource, Clone, Copy, PartialEq, Eq)]

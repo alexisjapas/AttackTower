@@ -129,6 +129,17 @@ offenders today: the stats card resizing with its text, and the Miner button
 - HP pill gains a real gauge: a fixed-width bar node with an inner fill
   whose width is `percent(hp_fraction)` — width changes are fine *inside*
   a fixed-size pill.
-- Phase 2 (blur): custom `UiMaterial` — needs the backdrop sample; check
-  `bevy_ui` material API in 0.18 for screen-texture access; budget it as
-  its own task, risk: may need a small render-graph addition.
+- Phase 2 (blur): **implemented 2026-06-13** in `src/backdrop.rs`. As
+  predicted it needed a render-graph addition: a `ViewNode` blits the
+  tonemapped scene (after `Node3d::EndMainPassPostProcessing`, before the UI
+  pass) into a standalone `BackdropImage` via Bevy's `BlitPipeline`; a
+  `BackdropBlurMaterial` (`UiMaterial`) then samples it at
+  `@builtin(position) / view.viewport` with a golden-angle disk blur, tints
+  it and clips to the node's rounded rect. The HUD swaps a chip's
+  `MaterialNode` between a shared normal/focused/disabled frost palette
+  (borders stay `BorderColor`, so the old recolor systems are untouched); the
+  pause overlay uses a full-screen frost. The backdrop image is sized once to
+  the window and never resized — blit (uv 0..1) and sampling (uv =
+  screen/viewport) are resolution-independent, so a later resize only softens
+  the frost. Still TODO: icon font for button glyphs (deferred to the
+  SFX/juice pass).

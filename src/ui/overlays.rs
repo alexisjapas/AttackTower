@@ -3,7 +3,9 @@
 //! focus highlight for menu buttons. Torn down by despawn_all on OnExit.
 
 use bevy::prelude::*;
+use bevy::ui_render::prelude::MaterialNode;
 
+use crate::backdrop::BackdropMaterials;
 use crate::graphics::{
     DescriptionKind, GraphicsPreset, Impact, MenuSlot, ParamDescription, ParamId, description_for,
     param_label, tab_slots,
@@ -610,10 +612,11 @@ pub fn spawn_pause_overlay(
     mut commands: Commands,
     mode: Res<GameMode>,
     players: Res<PlayerControllers>,
+    mats: Res<BackdropMaterials>,
     mut menu_focus: ResMut<MenuFocus>,
 ) {
     menu_focus.index = 0;
-    build_pause_overlay(&mut commands, &mode, &players);
+    build_pause_overlay(&mut commands, &mode, &players, &mats);
 }
 
 /// While paused: rebuild the overlay when the controller set changes, so a
@@ -622,6 +625,7 @@ pub fn refresh_pause_overlay(
     mut commands: Commands,
     mode: Res<GameMode>,
     players: Res<PlayerControllers>,
+    mats: Res<BackdropMaterials>,
     overlay: Query<Entity, With<PauseOverlay>>,
 ) {
     if !players.is_changed() {
@@ -630,10 +634,15 @@ pub fn refresh_pause_overlay(
     for entity in &overlay {
         commands.entity(entity).despawn();
     }
-    build_pause_overlay(&mut commands, &mode, &players);
+    build_pause_overlay(&mut commands, &mode, &players, &mats);
 }
 
-fn build_pause_overlay(commands: &mut Commands, mode: &GameMode, players: &PlayerControllers) {
+fn build_pause_overlay(
+    commands: &mut Commands,
+    mode: &GameMode,
+    players: &PlayerControllers,
+    mats: &BackdropMaterials,
+) {
     let missing: Vec<PlayerSlot> = mode
         .active_slots()
         .iter()
@@ -654,7 +663,8 @@ fn build_pause_overlay(commands: &mut Commands, mode: &GameMode, players: &Playe
                 row_gap: Val::Px(14.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            // Real backdrop blur of the frozen battlefield behind the menu.
+            MaterialNode(mats.pause.clone()),
             PauseOverlay,
         ))
         .with_children(|parent| {

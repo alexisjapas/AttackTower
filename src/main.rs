@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity, clippy::too_many_arguments)]
 
+mod backdrop;
 mod common;
 mod config;
 mod game;
@@ -15,6 +16,7 @@ mod units;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::backdrop::BackdropBlurPlugin;
 use crate::common::{AppSet, CombatSet, RaytracingAvailable};
 use crate::game::GamePlugin;
 use crate::graphics::{GraphicsSettingsPlugin, load_settings, sanitize_settings};
@@ -106,6 +108,7 @@ fn main() {
                 .in_set(AppSet::World),
         )
         .add_plugins((
+            BackdropBlurPlugin,
             GamePlugin,
             SetupPlugin,
             UnitsPlugin,

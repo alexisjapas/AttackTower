@@ -24,11 +24,14 @@ now, **P1** = V1 / Steam foundations, **P2** = small or cosmetic.
   gamepad glyphs, single-line stats), fixed sizes everywhere so layout never
   shifts (miner cap → grey `MAX` cell, not `Display::None`), same bar ×4 in
   2v2. Phase 1 (layout + frosted-glass look) is implemented — pending
-  in-game validation; phase 2 = real backdrop blur via a custom `UiMaterial`
-  (user picked real blur over the fake), and an icon font for proper button
-  glyphs (Bevy's default font is ASCII-only, hints use "(A)"/"(X)"). (A
-  production queue is a separate gameplay item in P1, not a HUD concern for
-  now.)
+  in-game validation. Phase 2 backdrop blur **done 2026-06-13** (see
+  `src/backdrop.rs`): real backdrop-blur `UiMaterial` shared by the HUD chips
+  and the pause overlay, fed by a render-graph blit node that copies the
+  tonemapped scene before the UI pass; the HUD swaps a shared normal/focused/
+  disabled frost palette per chip. REMAINS: an icon font for proper button
+  glyphs (Bevy's default font is ASCII-only, hints use "(A)"/"(X)") — defer to
+  the SFX/juice pass. (A production queue is a separate gameplay item in P1,
+  not a HUD concern for now.)
 - [x] **Action timing tied to animation keyframes** — done 2026-06-12:
   per-kind `impact_fraction` in `UnitStats` (soldier blade contact 0.35,
   miner pick bite 0.9, priest cast 0.6; archer keeps its release fraction);
@@ -37,11 +40,12 @@ now, **P1** = V1 / Steam foundations, **P2** = small or cosmetic.
   no bound animation fall back to the timer cadence (headless-harness
   groundwork; the archer still needs an animation to shoot). Fractions are
   first-guess values — tune in-game.
-- [ ] **Pause: full freeze + blur** — freeze done 2026-06-12: every
+- [x] **Pause: full freeze + blur** — freeze done 2026-06-12: every
   `AnimationPlayer` is paused on `OnExit(Playing)`/resumed on `OnEnter`,
   and `animate_unit_model` is gated to Playing (any pad pausing was already
-  the case). REMAINS: blur the battlefield behind the pause overlay — same
-  custom `UiMaterial` backdrop-blur work as HUD phase 2, do them together.
+  the case). Blur done 2026-06-13: the pause overlay's full-screen backdrop
+  is now the shared `BackdropBlurMaterial` (see `src/backdrop.rs` / HUD
+  phase 2), so the frozen battlefield is blurred behind the menu.
 - [x] **Miner carry capacity** — done 2026-06-12: `MINER_CAPACITY` = 5 (one
   gold per swing, five swings per round-trip); the carry/phase logic already
   existed, and the keyframe-timing item makes the miner finish its last

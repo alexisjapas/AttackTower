@@ -8,13 +8,15 @@
 //! backdrop-blur `UiMaterial`.
 
 use bevy::prelude::*;
+use bevy::ui_render::prelude::MaterialNode;
 
+use crate::backdrop::{BackdropBlurMaterial, BackdropMaterials};
 use crate::common::*;
 
 use super::*;
 
-// Frosted-glass chip palette.
-const CHIP_BG: Color = Color::srgba(0.04, 0.05, 0.08, 0.72);
+// Frosted-glass chip palette. The fills are real backdrop-blur materials
+// (see `crate::backdrop`); only the border colors live here.
 const CHIP_BORDER: Color = Color::srgba(0.9, 0.9, 0.95, 0.35);
 const GOLD_TEXT: Color = Color::srgb(0.95, 0.80, 0.35);
 const COST_UNAFFORDABLE: Color = Color::srgb(0.95, 0.35, 0.30);
@@ -89,9 +91,9 @@ pub struct ClockText;
 #[derive(Component)]
 pub struct GameHud;
 
-/// Shared look of every HUD chip (translucent dark, thin light border,
-/// rounded corners).
-fn chip_node(padding: UiRect) -> impl Bundle {
+/// Shared look of every HUD chip (frosted-glass backdrop blur, thin light
+/// border, rounded corners).
+fn chip_node(padding: UiRect, fill: Handle<BackdropBlurMaterial>) -> impl Bundle {
     (
         Node {
             padding,
@@ -101,12 +103,12 @@ fn chip_node(padding: UiRect) -> impl Bundle {
             border_radius: BorderRadius::all(Val::Px(CHIP_RADIUS)),
             ..default()
         },
-        BackgroundColor(CHIP_BG),
+        MaterialNode(fill),
         BorderColor::all(CHIP_BORDER),
     )
 }
 
-pub fn setup_ui(mut commands: Commands) {
+pub fn setup_ui(mut commands: Commands, mats: Res<BackdropMaterials>) {
     // Top clock chip, centered inside an invisible full-width container.
     commands
         .spawn((
@@ -123,7 +125,10 @@ pub fn setup_ui(mut commands: Commands) {
         ))
         .with_children(|parent| {
             parent
-                .spawn(chip_node(UiRect::axes(Val::Px(20.0), Val::Px(8.0))))
+                .spawn(chip_node(
+                    UiRect::axes(Val::Px(20.0), Val::Px(8.0)),
+                    mats.normal.clone(),
+                ))
                 .with_child((
                     Text::new("06:00"),
                     TextFont::from_font_size(24.0),
@@ -132,13 +137,13 @@ pub fn setup_ui(mut commands: Commands) {
                 ));
         });
 
-    spawn_player_bar(&mut commands, PlayerSlot::LeftBottom);
-    spawn_player_bar(&mut commands, PlayerSlot::RightBottom);
-    spawn_player_bar(&mut commands, PlayerSlot::LeftTop);
-    spawn_player_bar(&mut commands, PlayerSlot::RightTop);
+    spawn_player_bar(&mut commands, &mats, PlayerSlot::LeftBottom);
+    spawn_player_bar(&mut commands, &mats, PlayerSlot::RightBottom);
+    spawn_player_bar(&mut commands, &mats, PlayerSlot::LeftTop);
+    spawn_player_bar(&mut commands, &mats, PlayerSlot::RightTop);
 }
 
-fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
+fn spawn_player_bar(commands: &mut Commands, mats: &BackdropMaterials, slot: PlayerSlot) {
     let side = slot.side();
     let (left, right, align) = match side {
         Side::Left => (Val::Px(12.0), Val::Auto, AlignItems::FlexStart),
@@ -185,7 +190,10 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
         .with_children(|pills| {
             pills
                 .spawn((
-                    chip_node(UiRect::axes(Val::Px(12.0), Val::Px(6.0))),
+                    chip_node(
+                        UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                        mats.normal.clone(),
+                    ),
                     PillChip(slot),
                 ))
                 .with_children(|hp| {
@@ -222,7 +230,10 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
                 });
             pills
                 .spawn((
-                    chip_node(UiRect::axes(Val::Px(12.0), Val::Px(6.0))),
+                    chip_node(
+                        UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                        mats.normal.clone(),
+                    ),
                     PillChip(slot),
                 ))
                 .with_child((
@@ -239,9 +250,10 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
             ..default()
         })
         .with_children(|cells| {
-            spawn_cell(cells, slot, 0, "Tower", TOWER_COST);
+            spawn_cell(cells, mats, slot, 0, "Tower", TOWER_COST);
             spawn_cell(
                 cells,
+                mats,
                 slot,
                 1,
                 UnitKind::Soldier.label(),
@@ -249,6 +261,7 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
             );
             spawn_cell(
                 cells,
+                mats,
                 slot,
                 2,
                 UnitKind::Archer.label(),
@@ -256,6 +269,7 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
             );
             spawn_cell(
                 cells,
+                mats,
                 slot,
                 3,
                 UnitKind::Priest.label(),
@@ -263,6 +277,7 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
             );
             spawn_cell(
                 cells,
+                mats,
                 slot,
                 4,
                 UnitKind::Miner.label(),
@@ -297,6 +312,7 @@ fn spawn_player_bar(commands: &mut Commands, slot: PlayerSlot) {
 
 fn spawn_cell(
     row: &mut ChildSpawnerCommands,
+    mats: &BackdropMaterials,
     slot: PlayerSlot,
     index: usize,
     label: &str,
@@ -314,7 +330,7 @@ fn spawn_cell(
             border_radius: BorderRadius::all(Val::Px(CHIP_RADIUS)),
             ..default()
         },
-        BackgroundColor(CHIP_BG),
+        MaterialNode(mats.normal.clone()),
         BorderColor::all(slot.side().color()),
         PanelSlot { slot, index },
         Button,
@@ -550,10 +566,25 @@ pub fn apply_player_focus_visual(
     state: Res<State<GameState>>,
     focuses: Query<&PlayerFocus>,
     mouse: Res<MouseUi>,
+    mats: Res<BackdropMaterials>,
     units: Query<(&PlayerSlot, &UnitKind), With<Unit>>,
     alive_bases: Query<&PlayerSlot, (With<Base>, Without<BaseDestroyed>)>,
-    mut panels: Query<(&PanelSlot, &mut BackgroundColor, &mut BorderColor), Without<PillChip>>,
-    mut pills: Query<(&PillChip, &mut BackgroundColor, &mut BorderColor), Without<PanelSlot>>,
+    mut panels: Query<
+        (
+            &PanelSlot,
+            &mut MaterialNode<BackdropBlurMaterial>,
+            &mut BorderColor,
+        ),
+        Without<PillChip>,
+    >,
+    mut pills: Query<
+        (
+            &PillChip,
+            &mut MaterialNode<BackdropBlurMaterial>,
+            &mut BorderColor,
+        ),
+        Without<PanelSlot>,
+    >,
 ) {
     let active = matches!(*state.get(), GameState::Playing | GameState::Paused);
     // Outside a match the HUD is hidden, so repainting it is pure waste; one
@@ -561,11 +592,13 @@ pub fn apply_player_focus_visual(
     if !active && !state.is_changed() {
         return;
     }
-    // Compare-before-write below: unconditional writes would flag every panel
+    // Compare-before-write: a chip's frosted fill is just a swap between the
+    // shared palette handles, so an unconditional write would flag every chip
     // changed every frame and re-extract the whole HUD for nothing.
-    let set_bg = |bg: &mut BackgroundColor, c: Color| {
-        if bg.0 != c {
-            bg.0 = c;
+    let set_fill = |node: &mut MaterialNode<BackdropBlurMaterial>,
+                    h: &Handle<BackdropBlurMaterial>| {
+        if node.0 != *h {
+            node.0 = h.clone();
         }
     };
     let mut miners_per_slot = [0usize; 4];
@@ -578,14 +611,14 @@ pub fn apply_player_focus_visual(
     for slot in &alive_bases {
         alive[slot.index()] = true;
     }
-    for (panel, mut bg, mut border) in &mut panels {
+    for (panel, mut node, mut border) in &mut panels {
         let defeated = !alive[panel.slot.index()];
         let capped =
             panel.index == 4 && miners_per_slot[panel.slot.index()] >= MAX_MINERS_PER_PLAYER;
         // The miner cell at cap greys out in place — it is never removed, so
         // the bar's layout stays fixed (focus already skips it in input).
-        let (new_bg, new_border) = if defeated || capped {
-            (BTN_DISABLED, BORDER_DISABLED)
+        let (fill, new_border) = if defeated || capped {
+            (&mats.disabled, BORDER_DISABLED)
         } else {
             let focused = active
                 && (focuses
@@ -593,21 +626,21 @@ pub fn apply_player_focus_visual(
                     .any(|f| f.slot == panel.slot && f.index == panel.index)
                     || mouse.panel_hover == Some((panel.slot, panel.index)));
             if focused {
-                (BTN_FOCUSED, Color::WHITE)
+                (&mats.focused, Color::WHITE)
             } else {
-                (CHIP_BG, panel.slot.side().color())
+                (&mats.normal, panel.slot.side().color())
             }
         };
-        set_bg(&mut bg, new_bg);
+        set_fill(&mut node, fill);
         border.set_if_neq(BorderColor::all(new_border));
     }
-    for (pill, mut bg, mut border) in &mut pills {
-        let (new_bg, new_border) = if alive[pill.0.index()] {
-            (CHIP_BG, CHIP_BORDER)
+    for (pill, mut node, mut border) in &mut pills {
+        let (fill, new_border) = if alive[pill.0.index()] {
+            (&mats.normal, CHIP_BORDER)
         } else {
-            (HUD_BG_DISABLED, HUD_BORDER_DISABLED)
+            (&mats.disabled, HUD_BORDER_DISABLED)
         };
-        set_bg(&mut bg, new_bg);
+        set_fill(&mut node, fill);
         border.set_if_neq(BorderColor::all(new_border));
     }
 }

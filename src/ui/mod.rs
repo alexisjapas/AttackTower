@@ -14,9 +14,7 @@ pub use overlays::*;
 // Shared button/panel palette used across the HUD and the overlays.
 pub(crate) const BTN_NORMAL: Color = Color::srgb(0.16, 0.16, 0.20);
 pub(crate) const BTN_FOCUSED: Color = Color::srgb(0.32, 0.32, 0.40);
-pub(crate) const BTN_DISABLED: Color = Color::srgb(0.10, 0.10, 0.12);
 pub(crate) const BORDER_DISABLED: Color = Color::srgb(0.30, 0.30, 0.34);
-pub(crate) const HUD_BG_DISABLED: Color = Color::srgba(0.0, 0.0, 0.0, 0.40);
 pub(crate) const HUD_BORDER_DISABLED: Color = Color::srgb(0.40, 0.40, 0.44);
 pub(crate) const CARD_NORMAL: Color = Color::srgb(0.12, 0.13, 0.18);
 pub(crate) const CARD_HOVERED: Color = Color::srgb(0.22, 0.23, 0.30);
@@ -35,7 +33,12 @@ impl Plugin for UiPlugin {
             .init_resource::<PlacementMode>()
             .init_resource::<PlayerControllers>()
             .init_resource::<PlayerNations>()
-            .add_systems(Startup, setup_ui)
+            // setup_ui spawns the HUD chips with frosted-glass materials, so it
+            // must run after the backdrop palette exists.
+            .add_systems(
+                Startup,
+                setup_ui.after(crate::backdrop::init_backdrop_assets),
+            )
             // Input: read_mouse_ui first (the others consume its snapshot);
             // the per-state systems are mutually exclusive via run_if but stay
             // chained so the mouse snapshot is always fresh.
